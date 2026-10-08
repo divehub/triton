@@ -137,11 +137,21 @@ const RANGES: [(&str, f64, f64); 12] = [
     ("noiseSeed", 1.0, 4_294_967_295.0),
 ];
 
+/// Battery voltage of a fresh profile (both banks), in millivolts: a charged cell, 4.1 V. A saved `inputs.json` keeps
+/// whatever it stores. The range stays 0 to 4200 mV.
+pub const DEFAULT_BATTERY_MV: f64 = 4100.0;
+
+/// The battery voltage the Renode runner's `INPUT_DEFAULTS` used (1500 mV) and so every recording of the analysis
+/// workspace was made with. Scenarios and tests that compare with those recordings pin it explicitly
+/// ([`Inputs::recorded_evidence`]).
+pub const RECORDED_BATTERY_MV: f64 = 1500.0;
+
 impl Inputs {
-    /// `INPUT_DEFAULTS`: batteries 1500 mV, oxygen cells 10 mV, 1013.25 mbar, 20 C, acquisition on, no noise.
+    /// A fresh profile: batteries [`DEFAULT_BATTERY_MV`] (4100 mV, the runner's earlier default was 1500 mV), oxygen
+    /// cells 10 mV, 1013.25 mbar, 20 C, acquisition on, no noise.
     pub fn defaults() -> Inputs {
         Inputs {
-            battery_mv: [1500.0; 2],
+            battery_mv: [DEFAULT_BATTERY_MV; 2],
             oxygen_mv: [10.0; 3],
             pressure_mbar: [1013.25; 2],
             temperature_c: [20.0; 2],
@@ -151,6 +161,11 @@ impl Inputs {
             noise_seed: 1,
             pressure_maximum_timing: false,
         }
+    }
+
+    /// The inputs of the runner recordings: the defaults with both batteries at [`RECORDED_BATTERY_MV`] (1500 mV).
+    pub fn recorded_evidence() -> Inputs {
+        Inputs { battery_mv: [RECORDED_BATTERY_MV; 2], ..Inputs::defaults() }
     }
 
     /// `apply_inputs` validation: `updates` is a JSON object whose keys are the input names. All entries
@@ -307,5 +322,27 @@ pub(crate) mod models {
     /// `pressure1` / `pressure2`: the MS5837 I2C target at 0x76.
     pub fn pressure_sensor(name: &str) -> Option<Box<dyn stm32::i2c::I2cTarget>> {
         Some(Box::new(crate::models::ms5837::NgcMs5837::with_defaults(name)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_fresh_profile_starts_with_4100_mv_batteries_and_the_recordings_pin_1500_mv() {
+        let defaults = Inputs::defaults();
+        assert_eq!(defaults.battery_mv, [4100.0, 4100.0]);
+        assert_eq!(Inputs::default(), defaults);
+        let recorded = Inputs::recorded_evidence();
+        assert_eq!(recorded.battery_mv, [1500.0, 1500.0]);
+        // Nothing but the batteries differs from the defaults.
+        assert_eq!(Inputs { battery_mv: defaults.battery_mv, ..recorded }, defaults);
+        // The range is unchanged: 0 to 4200 mV, both limits inclusive.
+        let mut inputs = Inputs::defaults();
+        inputs.apply_json(&Json::parse("{\"battery1Mv\": 4200, \"battery2Mv\": 0}").unwrap()).unwrap();
+        assert_eq!(inputs.battery_mv, [4200.0, 0.0]);
+        let error = inputs.apply_json(&Json::parse("{\"battery1Mv\": 4201}").unwrap()).unwrap_err();
+        assert_eq!(error, "battery1Mv must be between 0 and 4200");
     }
 }

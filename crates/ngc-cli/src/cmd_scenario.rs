@@ -18,7 +18,9 @@ pub const USAGE: &str = "ngc-cli scenario list\n\
     are written for TRITON-5.8-65.3 (addresses, wizard offsets and Renode recordings); other releases are refused.\n  \
     --out defaults to target/scenarios (ignored by git).\n  \
     The main board's I2C idle-high fixture is on by default. The Renode recordings predate it: with the fixture on their\n  \
-    comparisons are informational, `--no-i2c-idle-high` reproduces the recorded start-up and makes them binding again.";
+    comparisons are informational, `--no-i2c-idle-high` reproduces the recorded start-up and makes them binding again.\n  \
+    The scenarios pin both batteries to the 1500 mV of the Renode recordings (a fresh profile starts at 4100 mV); the\n  \
+    report names it under platformOptions.batteryMv.";
 
 pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     match run_inner(argv, out) {

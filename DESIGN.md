@@ -253,6 +253,19 @@ Status and decisions are tracked in section 13.
   - **Proxy:** the Vercel function `deploy/api/firmware.mjs` is hosted on its own address (`deploy/build_proxy.py` assembles the proxy-only upload directory). The site learns that address at build time from the repository variable `FIRMWARE_PROXY_URL` (a generated `config.js`; its origin is added to `connect-src` of the published `index.html`). Without it "Load from URLs" is unavailable, and the page never falls back to a same-origin `/api/firmware`.
   - **Fix found while checking the published page in Chromium:** `Element.append(null)` prints "null", so every verified firmware slot showed a stray `null` line and the session information did the same in handset-only mode. The null children are now filtered out, the fake DOM of the tests converts non-nodes to text like a browser does, and a regression test covers both places (96 page tests).
   - **CSP:** GitHub Pages cannot send response headers, so the page policy is the `<meta>` tag only; the worker script has no policy of its own there (the header form of `web/serve.py` applies locally).
+- WEBFIX (2026-10-08): UART console freeze, remember by default, 4.1 V batteries.
+  - **UART console:**
+    - **Cause (proved at the DOM level):** `renderUart` replaced the text of all five `<option>`s of `#uart-channel` and re-assigned its `value` and `disabled` on every state update. Measured with real firmware, 365 option-text mutations in 15 s (every option, 5 Hz). A browser rebuilds or closes the dropdown of a select whose children change while it is open, even for identical text.
+    - **Not observed:** the freeze itself. The in-app browser draws the native dropdown outside the page and ignores key events for it, so the report "disappears and reappears, then the whole page freezes" is explained by this cause but was not reproduced end to end. No layout shift, long task or slow render was seen (heartbeat 20 ms, render about 1.7 ms before and after).
+    - **Fix:** the select is written only where the channel list differs (options by id, texts in place, selection kept by channel id, `value` and `disabled` only on change). `setText` in `dom.js` writes a text only when it differs; the console text, its status line and the LED colour selects follow the same rule. The console shows at most 65 536 characters.
+    - **After:** 0 mutations on the select, the same engine state at the same virtual time (HUD1 activations identical), replay flashes unchanged.
+    - **Tests:** six page tests in `test-ui.mjs`, five of which fail on the old code.
+  - **Remember the files:** `#remember` starts ticked; unticking, Forget and the disabled state without OPFS are tested.
+  - **Batteries:**
+    - **Default:** a fresh profile starts with both batteries at 4100 mV (`fixtures::DEFAULT_BATTERY_MV`); saved profiles keep their `inputs.json`. The scenarios pin 1500 mV through `scenario::recorded_inputs` (`platformOptions.batteryMv`, plus a check in `dual-wake`), as do the NEPTUN B1-frame test and the `test-node.mjs` B1-hash test, because every Renode recording used 1500 mV.
+    - **Firmware reaction (synthetic reproduction):**
+      - The B1 prompt is pixel-identical at 4100 and 1500 mV (LCD hash `62c3a30e…`); only the UART line differs ("Main voltage: 4099 mV").
+      - After the wizard the voltage must fit the chosen type: Alkaline at 4100 mV makes the next start show "Change battery" and the main board stands by at 8.1 s with the handset unpowered. Alkaline at 1500 mV and Li-Ion 3.7V-18650 at 4100 mV start normally. This is what made the `diluent-menu` and `can-loss` scenarios fail without the pin. Regression test: `crates/ngc/tests/battery_default.rs`.
 
 ## 14. Session API (contract for FEATURES and WEB)
 

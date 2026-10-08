@@ -111,7 +111,7 @@ Steps, commands and checks: [deploy/README.md](deploy/README.md).
   - The peripheral models replay recorded Renode transcripts identically; those recordings remain as regression tests in `testdata/` and `crates/*/tests/`. The Renode setup that produced them lives in a separate analysis workspace that is not public.
   - With the fixture on (the default), start-up ordering differs as intended.
 - **NEPTUN:** a 10.5 s dual boot releases the handset at 1.05 s and shows the B1 battery-selection screen, with no CPU faults and all 62 CAN frames forwarded.
-- **Tests:** 945 Rust tests pass (12 ignored), as do the 10 TRITON scenarios (with and without the fixture), 23 app tests and 96 page tests.
+- **Tests:** 948 Rust tests pass (12 ignored), as do the 10 TRITON scenarios (with and without the fixture), 24 app tests and 103 page tests.
 
 ## Known differences and limits
 
@@ -127,6 +127,7 @@ Steps, commands and checks: [deploy/README.md](deploy/README.md).
   - The main I2C idle-high lines (PB6/PB7/PB10/PB11) are an explicit fixture, on by default.
   - Output histories record commanded drive (PB15 enable changes exactly; motor commands sampled every 20 virtual ms; HUD commands every 50 virtual ms), not physical edges.
   - The emulated serial number (0–999 999 999) is synthetic.
+  - The sensor inputs are fixtures. A fresh profile starts with both batteries at **4100 mV** (range 0 to 4200 mV; the Renode runner used 1500 mV, so the scenarios and recorded-evidence tests pin 1500 mV explicitly, and a saved profile keeps its stored values). The firmware compares the voltage with the battery type chosen in its wizard: at 4100 mV the B1 prompt is identical to the one at 1500 mV, but after choosing Alkaline the next start shows "Change battery" and the main board stands by (set about 1500 mV for Alkaline; Li-Ion 3.7V-18650 starts normally at 4100 mV). A synthetic reproduction, not a physical observation.
 - **Not provided:** `--stock-pwm` (timers are exact without it) and the older `--demo-peer` synthetic fixture of the Renode setup.
 - **Browsers:** background tabs are throttled by the browser, and the page reports when it cannot keep up. Chromium is verified; Safari and Firefox are untested.
 - **Provenance paths:** comments and test data cite files such as `emulation/models/NGCAdc.cs` or `emulation/runtime/.../result.json`. They name files of the separate Renode-based analysis workspace, which is not public; the values the tests need are embedded in this repository.

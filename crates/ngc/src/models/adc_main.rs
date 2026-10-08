@@ -863,7 +863,7 @@ mod tests {
             (Some(164), Some(164), Some(164), Some(1463), Some(1463), 500)
         );
         assert_eq!(adc.reference_millivolts(), 2500.0);
-        // The runner defaults reproduce the constructor defaults: 1500 mV batteries -> 1463, 10 mV cells -> 164.
+        // The runner's earlier defaults (1500 mV batteries, 10 mV cells) reproduce the constructor defaults: 1463 and 164.
         rig.adc_mut().set_battery_millivolts(0, 1500.0).unwrap();
         rig.adc_mut().set_battery_millivolts(1, 1500.0).unwrap();
         for cell in 0..3 {

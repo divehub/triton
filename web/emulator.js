@@ -6,7 +6,7 @@
 //   conditions.js  action queue, basic/raw input logic     sensors.js  simulated-conditions arithmetic
 //   replay.js      output histories and replay             keys.js     handset keyboard shortcuts
 
-import { byId, confirmDialog, formatBytes, formatClock, h, hex32, prefs } from './dom.js';
+import { byId, confirmDialog, formatBytes, formatClock, h, hex32, prefs, setText } from './dom.js';
 import { ActionQueue, BASIC_IDS, ConditionsController } from './conditions.js';
 import { handsetKeyAction } from './keys.js';
 import { LcdView } from './lcd.js';
@@ -17,6 +17,9 @@ import { readZip } from './zip.js';
 const PROFILE_FILES = ['eeprom.bin', 'nor.ngc', 'rtc-state.json', 'inputs.json', 'led-colors.json'];
 // Actions that recreate the boards: output histories start over.
 const RESET_ACTIONS = new Set(['reset', 'cold', 'wake', 'serial']);
+// The most the UART console shows of a channel: the engine keeps a 16 KiB tail per channel and the text view needs at
+// most four characters per byte (a byte shown as \xNN), so this never clips what the engine sends; it only bounds the page.
+export const UART_CONSOLE_MAX_CHARS = 4 * 16384;
 
 /** The DOM side of `ConditionsController`: the basic controls, the raw sensor form and the status line. */
 class ConditionsDom {
@@ -487,10 +490,13 @@ export class EmulatorView {
         row.historyBody.textContent = historyText(output);
       }
       if (row.color) {
+        // A select is only written where something changed (an open dropdown reacts to any write; see syncUartSelect).
         const color = ['red', 'white'].includes(output.color) ? output.color : 'unknown';
-        row.color.setAttribute('aria-label', `Color for ${output.label || output.id}`);
-        if (document.activeElement !== row.color) row.color.value = color;
-        row.color.disabled = !!this.connectionError;
+        const label = `Color for ${output.label || output.id}`;
+        if (row.color.getAttribute('aria-label') !== label) row.color.setAttribute('aria-label', label);
+        if (document.activeElement !== row.color && row.color.value !== color) row.color.value = color;
+        const disabled = !!this.connectionError;
+        if (row.color.disabled !== disabled) row.color.disabled = disabled;
       }
     }
     byId('outputs-status').textContent = entries.length ? '' : 'No hardware output status is available.';
@@ -500,42 +506,56 @@ export class EmulatorView {
   renderConsole() {
     const channel = this.uartChannels.get(byId('uart-channel').value);
     if (!channel) {
-      byId('uart-status').textContent = this.connectionError ? 'Disconnected; UART status is unavailable.' : 'No UART channels are available.';
-      byId('uart-output').textContent = 'No live UART output available.';
+      setText(byId('uart-status'), this.connectionError ? 'Disconnected; UART status is unavailable.' : 'No UART channels are available.');
+      setText(byId('uart-output'), 'No live UART output available.');
       return;
     }
     const bytes = typeof channel.txBytes === 'number' && Number.isFinite(channel.txBytes) ? channel.txBytes : 0;
     const time = typeof channel.lastTxVirtualTime === 'number' && Number.isFinite(channel.lastTxVirtualTime) ? `Last TX at ${channel.lastTxVirtualTime.toFixed(3)} virtual s` : 'No TX timestamp';
-    byId('uart-status').textContent = [`${bytes} transmitted bytes`, time, channel.truncated ? 'Showing retained tail; earlier bytes omitted' : ''].filter(Boolean).join(' · ');
-    if (!this.uartVisible()) return; // the worker only sends the bytes while the console is on screen
     const view = byId('uart-view').value === 'hex' ? 'hex' : 'text';
+    // The worker sends the bytes only while the console is on screen. The engine keeps a tail of 16 KiB per channel;
+    // whatever arrives, the page shows at most the newest UART_CONSOLE_MAX_CHARS characters of it.
     const content = typeof channel[view] === 'string' ? channel[view] : '';
+    const clipped = content.length > UART_CONSOLE_MAX_CHARS;
+    setText(byId('uart-status'), [`${bytes} transmitted bytes`, time, channel.truncated || clipped ? 'Showing retained tail; earlier bytes omitted' : ''].filter(Boolean).join(' · '));
+    if (!this.uartVisible()) return;
+    const shown = (clipped ? content.slice(-UART_CONSOLE_MAX_CHARS) : content) || (bytes ? 'Loading…' : 'No transmitted bytes captured yet.');
     const pre = byId('uart-output');
+    if (pre.textContent === shown) return; // an unchanged tail costs nothing: no layout, no new text node, the user's selection stays
     const followTail = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 24;
-    const shown = content || (bytes ? 'Loading…' : 'No transmitted bytes captured yet.');
-    if (pre.textContent !== shown) {
-      pre.textContent = shown;
-      if (followTail) pre.scrollTop = pre.scrollHeight;
+    pre.textContent = shown;
+    if (followTail) pre.scrollTop = pre.scrollHeight;
+  }
+
+  /**
+   * Brings the channel select in line with the channel list and touches it only where the list really differs. A
+   * browser rebuilds or closes the dropdown of a select whose children change while it is open, even when a text is
+   * replaced by the same text, so rewriting the options on every state update (5 times a second) made the list vanish
+   * and reappear before a channel could be picked (and a frozen page was reported with it). The selection is kept by
+   * channel id.
+   */
+  syncUartSelect(list) {
+    const select = byId('uart-channel');
+    const wanted = list.length
+      ? list.map((channel) => ({ value: channel.id, text: [channel.board, channel.label || channel.peripheral || channel.id].filter(Boolean).join(' · ') }))
+      : [{ value: '', text: this.connectionError ? 'Disconnected' : 'No channels' }];
+    const options = [...select.options];
+    const selected = select.value;
+    if (options.length === wanted.length && options.every((option, index) => option.value === wanted[index].value)) {
+      options.forEach((option, index) => setText(option, wanted[index].text));
+    } else {
+      select.replaceChildren(...wanted.map(({ value, text }) => h('option', { value }, text)));
     }
+    const target = list.length ? (this.uartChannels.has(selected) ? selected : list[0].id) : '';
+    if (select.value !== target) select.value = target;
+    const disabled = !list.length || !!this.connectionError;
+    if (select.disabled !== disabled) select.disabled = disabled;
   }
 
   renderUart(channels) {
     const list = Array.isArray(channels) ? channels.filter((channel) => channel && typeof channel.id === 'string') : [];
     this.uartChannels = new Map(list.map((channel) => [channel.id, channel]));
-    const select = byId('uart-channel');
-    const selected = select.value;
-    const optionIds = [...select.options].map((option) => option.value);
-    const nextIds = list.map((channel) => channel.id);
-    if (optionIds.length !== nextIds.length || optionIds.some((id, index) => id !== nextIds[index])) {
-      select.replaceChildren(...list.map((channel) => h('option', { value: channel.id })));
-    }
-    for (const [index, channel] of list.entries()) select.options[index].textContent = [channel.board, channel.label || channel.peripheral || channel.id].filter(Boolean).join(' · ');
-    if (!list.length) {
-      select.replaceChildren(h('option', { value: '' }, this.connectionError ? 'Disconnected' : 'No channels'));
-    } else {
-      select.value = this.uartChannels.has(selected) ? selected : list[0].id;
-    }
-    select.disabled = !list.length || !!this.connectionError;
+    this.syncUartSelect(list);
     this.renderConsole();
   }
 

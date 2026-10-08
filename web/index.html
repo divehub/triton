@@ -78,7 +78,7 @@
           <span id="remembered-text">Verified firmware files from an earlier visit are stored in this browser.</span>
           <span class="actions-row"><button type="button" id="use-remembered">Use the remembered files</button><button type="button" id="forget-remembered" class="danger">Forget them</button></span>
         </div>
-        <label class="check"><input type="checkbox" id="remember"><span>Remember these files in this browser (stored locally in the origin-private file system, never uploaded; off by default). Without this the page asks again on every visit.</span></label>
+        <label class="check"><input type="checkbox" id="remember" checked><span>Remember these files in this browser (stored locally in the origin-private file system, never uploaded). They are verified again on every visit; untick this to be asked for them each time, or use Forget to remove them.</span></label>
         <p id="remember-note" class="small warn-text" hidden>Remembering files is unavailable here: this browser or mode does not provide the origin-private file system.</p>
       </div>
 
@@ -205,11 +205,11 @@
 
         <section id="sensor-panel" class="sensor-panel" hidden>
           <h3>Raw sensor inputs</h3>
-          <p id="raw-input-note">Raw edits apply only when you click Apply inputs. Voltages feed the ADC; pressure and temperature feed two MS5837 models. Firmware filtering and stored calibration determine the displayed values. Battery and oxygen changes can take several seconds of virtual time to settle.</p>
+          <p id="raw-input-note">Raw edits apply only when you click Apply inputs. Voltages feed the ADC; pressure and temperature feed two MS5837 models. Firmware filtering and stored calibration determine the displayed values. Battery and oxygen changes can take several seconds of virtual time to settle. A fresh profile starts with both batteries at 4100 mV, which suits the Li-Ion 3.7V-18650 type; the firmware compares the voltage with the type chosen in its battery wizard, so after choosing Alkaline set about 1500 mV here, otherwise the next start shows "Change battery" and the unit goes to standby.</p>
           <form id="sensor-form">
             <div class="inputs">
-              <label>B1 battery (mV)<input name="battery1Mv" type="number" min="0" max="4200" step="1" value="1500" required></label>
-              <label>B2 battery (mV)<input name="battery2Mv" type="number" min="0" max="4200" step="1" value="1500" required></label>
+              <label>B1 battery (mV)<input name="battery1Mv" type="number" min="0" max="4200" step="1" value="4100" required></label>
+              <label>B2 battery (mV)<input name="battery2Mv" type="number" min="0" max="4200" step="1" value="4100" required></label>
               <label>Oxygen cell 1 (mV)<input name="oxygen1Mv" type="number" min="0" max="250" step="any" value="10" required></label>
               <label>Oxygen cell 2 (mV)<input name="oxygen2Mv" type="number" min="0" max="250" step="any" value="10" required></label>
               <label>Oxygen cell 3 (mV)<input name="oxygen3Mv" type="number" min="0" max="250" step="any" value="10" required></label>

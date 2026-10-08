@@ -290,6 +290,9 @@ test('runtime: dual boot reaches the B1 prompt frame; buttons, actions and valid
   assert.equal(booted.state.running, false);
   assert.match(booted.state.engine, /^ngc-wasm\//);
   assert.equal(booted.state.frameReady, false, 'no LCD output before the firmware runs');
+  // The Renode runner recorded the B1 frame below with its 1500 mV default batteries; a fresh profile starts at 4100 mV,
+  // so the recorded value is pinned here, before the first instruction (the next test shows the same frame at 4100 mV).
+  await h.action({ action: 'inputs', inputs: { battery1Mv: 1500, battery2Mv: 1500 } });
 
   const advanced = await h.action({ action: 'advance', seconds: 6 });
   assert.ok(advanced.virtualTime >= 6 && advanced.virtualTime < 6.01, `virtual time ${advanced.virtualTime}`);
@@ -343,6 +346,37 @@ test('runtime: dual boot reaches the B1 prompt frame; buttons, actions and valid
   assert.equal(hud.length, 1);
   assert.equal(hud[0].color, 'red');
   await h.close();
+});
+
+test('runtime: a fresh profile starts with 4100 mV batteries and reaches the identical B1 prompt; a saved profile keeps its own voltage', async () => {
+  const h = new Harness();
+  await h.ready();
+  const booted = await h.request('boot', { options: { mode: 'dual', startPaused: true } });
+  assert.deepEqual([booted.state.inputs.battery1Mv, booted.state.inputs.battery2Mv], [4100, 4100], 'a fresh profile');
+  const advanced = await h.action({ action: 'advance', seconds: 6 });
+  assert.equal(advanced.mainBatteryReady, true);
+  assert.equal(advanced.handsetPowered, true);
+  assert.equal(advanced.frameReady, true);
+  assert.equal(sha256(framePpm(h.last('frame'))), B1_PPM_SHA, 'the B1 prompt shows the same screen at 4100 mV as at the recorded 1500 mV');
+  const uart = advanced.uartConsole.find((channel) => channel.id === 'main.uart4');
+  assert.match(uart.text, /Main voltage: 4099 mV/, 'the firmware reads 4.1 V through its ADC and prints it');
+  await h.close();
+
+  // A saved inputs.json keeps its stored voltage; only a bank missing from the file takes the new default.
+  const storage = new MemoryStorage();
+  await storage.write('profile', 'inputs.json', new TextEncoder().encode('{"battery1Mv": 1500, "battery2Mv": 1400}'));
+  const saved = new Harness({ storage });
+  await saved.ready();
+  const reopened = await saved.request('boot', { options: { mode: 'dual', startPaused: true } });
+  assert.deepEqual([reopened.state.inputs.battery1Mv, reopened.state.inputs.battery2Mv], [1500, 1400]);
+  await saved.close();
+  const partial = new MemoryStorage();
+  await partial.write('profile', 'inputs.json', new TextEncoder().encode('{"battery1Mv": 1500}'));
+  const half = new Harness({ storage: partial });
+  await half.ready();
+  const mixed = await half.request('boot', { options: { mode: 'dual', startPaused: true } });
+  assert.deepEqual([mixed.state.inputs.battery1Mv, mixed.state.inputs.battery2Mv], [1500, 4100]);
+  await half.close();
 });
 
 test('runtime: pause, resume, standby handling and boot modes', async () => {
@@ -478,8 +512,8 @@ test('runtime: changed inputs reach storage within a second without an explicit 
   await new Promise((resolve) => setTimeout(resolve, 1000));
   const text = new TextDecoder().decode(await storage.read('profile', 'inputs.json'));
   assert.match(text, /"temperature1C": 33\.25/, 'the autosave wrote the new value');
-  // The write is the runner's inputs.json layout (Python json.dumps, indent 2).
-  assert.match(text, /^\{\n  "battery1Mv": 1500/);
+  // The write is the runner's inputs.json layout (Python json.dumps, indent 2); a fresh profile holds 4100 mV batteries.
+  assert.match(text, /^\{\n  "battery1Mv": 4100/);
   await h.close();
 });
 

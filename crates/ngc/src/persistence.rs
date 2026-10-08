@@ -683,14 +683,14 @@ mod tests {
         let text = inputs_file_text(&inputs);
         assert_eq!(
             text,
-            "{\n  \"battery1Mv\": 1500.0,\n  \"battery2Mv\": 1500.0,\n  \"oxygen1Mv\": 10.0,\n  \"oxygen2Mv\": 10.0,\n  \"oxygen3Mv\": 10.0,\n  \
+            "{\n  \"battery1Mv\": 4100.0,\n  \"battery2Mv\": 4100.0,\n  \"oxygen1Mv\": 10.0,\n  \"oxygen2Mv\": 10.0,\n  \"oxygen3Mv\": 10.0,\n  \
              \"pressure1Mbar\": 1013.25,\n  \"pressure2Mbar\": 1013.25,\n  \"temperature1C\": 20.0,\n  \"temperature2C\": 20.0,\n  \
              \"acquisitionEnabled\": true,\n  \"acquisitionDelayUs\": 0,\n  \"noiseAmplitudeRaw\": 0,\n  \"noiseSeed\": 1,\n  \"pressureMaximumTiming\": false\n}\n"
         );
         assert_eq!(parse_inputs_file(&text).unwrap(), inputs);
         // The runner merges a partial file into the defaults; unknown keys are rejected by apply_inputs.
         let partial = parse_inputs_file("{\"battery1Mv\": 1450, \"pressureMaximumTiming\": true}").unwrap();
-        assert_eq!(partial.battery_mv, [1450.0, 1500.0]);
+        assert_eq!(partial.battery_mv, [1450.0, 4100.0]);
         assert!(partial.pressure_maximum_timing);
         assert!(parse_inputs_file("{\"bogus\": 1}").unwrap_err().contains("Unknown input: bogus"));
         assert!(parse_inputs_file("{\"battery1Mv\": 5000}").unwrap_err().contains("battery1Mv must be between 0 and 4200"));

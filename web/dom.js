@@ -20,6 +20,15 @@ export function h(tag, props = {}, ...children) {
   return element;
 }
 
+/**
+ * Sets an element's text only when it differs. Replacing a text with identical text still replaces the text node: it
+ * ends a text selection, invalidates layout and, for an <option>, makes the browser rebuild or close an open dropdown.
+ * Use it for anything the periodic state update rewrites.
+ */
+export function setText(element, text) {
+  if (element.textContent !== text) element.textContent = text;
+}
+
 export function formatBytes(count) {
   if (count < 1024) return `${count} bytes`;
   if (count < 1024 * 1024) return `${(count / 1024).toFixed(1)} KiB`;

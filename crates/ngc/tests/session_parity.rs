@@ -416,8 +416,12 @@ fn a_neptun_session_reports_its_release_and_leaves_unproven_fields_unavailable()
 #[test]
 fn neptun_dual_boot_reaches_the_battery_selection_screen() {
     let (main, handset) = images_or_skip!(&NEPTUN);
+    // The B1 frame it is compared with was recorded by the Renode runner with its 1500 mV batteries (a fresh profile starts
+    // at 4100 mV): pin the recorded voltage explicitly.
+    let recorded = Profile { inputs: Some(ngc::persistence::inputs_file_text(&ngc::fixtures::Inputs::recorded_evidence())), ..Profile::default() };
     for idle_high in [true, false] {
-        let mut s = session(SessionConfig { i2c_idle_high: idle_high, ..SessionConfig::default() }, &main, &handset);
+        let config = SessionConfig { i2c_idle_high: idle_high, ..SessionConfig::default() };
+        let mut s = Session::new(config, Some(&main), &handset, recorded.clone()).expect("dual session");
         let state = act(&mut s, "{\"action\":\"advance\",\"seconds\":10.5}");
         assert_eq!(state.get("handsetReleaseTime").and_then(Json::as_f64), Some(1.05), "idle_high {idle_high}");
         assert_eq!(state.get("error"), Some(&Json::Null));

@@ -26,7 +26,7 @@ import { FIRMWARE_PROXY_URL } from './config.js';
 import * as sensors from './sensors.js';
 import { Runtime, nonceFromWords } from './runtime.js';
 import { MemoryStorage } from './storage.js';
-import { installDom } from './fake-dom.mjs';
+import { Element, installDom } from './fake-dom.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const html = fs.readFileSync(path.join(here, 'index.html'), 'utf8');
@@ -739,10 +739,206 @@ test('replay: describeEntry, driveText and historyText present Drive, Replay and
   assert.equal(text, '0.150 s · Off · PWM 0.0%\n0.100 s · On · PWM 95.0%\nEarlier commands omitted; totals retained.');
 });
 
+// ---- the UART / TTL console in the page ---------------------------------------------------------------------------
+//
+// Regression: the page rewrote the text of every <option> of #uart-channel (and re-assigned its value) on every state
+// update, 5 times a second. A browser reacts to any change of an open select's children by rebuilding or closing its
+// dropdown: the list disappeared and reappeared before a channel could be picked, and the page stopped responding.
+// The page now touches the select only when the channel list really changed, and the console text only when it differs.
+
+const uartChannel = (id, extra = {}) => ({
+  id, board: id.split('.')[0], peripheral: id.split('.')[1], label: `${id} label`, txBytes: 12, lastTxVirtualTime: 1.5, truncated: false,
+  text: `text of ${id}\n`, hex: `HEX OF ${id}`, ...extra,
+});
+const uartChannels = () => ['main.uart4', 'main.usart1', 'main.usart2', 'main.uart5', 'handset.usart3'].map((id) => uartChannel(id));
+
+/** Counts the writes the page makes to properties of one element (a write that stores the same value counts too). */
+function spyWrites(element, names) {
+  const writes = Object.fromEntries(names.map((name) => [name, 0]));
+  for (const name of names) {
+    let own = Object.getOwnPropertyDescriptor(element, name);
+    let current = element[name];
+    const inherited = own ? null : Object.getOwnPropertyDescriptor(Element.prototype, name);
+    Object.defineProperty(element, name, {
+      configurable: true,
+      get() { return inherited ? inherited.get.call(this) : current; },
+      set(value) { writes[name]++; if (inherited) inherited.set.call(this, value); else current = value; },
+    });
+  }
+  return writes;
+}
+
+async function uartHarness({ open = true } = {}) {
+  const m = await mount();
+  const document = m.document;
+  document.getElementById('advanced-panel').open = open;
+  document.getElementById('uart-panel').open = open;
+  const select = document.getElementById('uart-channel');
+  const pre = document.getElementById('uart-output');
+  const calls = { console: 0, uart: 0 };
+  for (const [name, key] of [['renderConsole', 'console'], ['renderUart', 'uart']]) {
+    const original = m.view[name].bind(m.view);
+    m.view[name] = (...args) => { calls[key]++; return original(...args); };
+  }
+  return {
+    ...m, select, pre, calls,
+    status: () => document.getElementById('uart-status').textContent,
+    optionIds: () => select.options.map((option) => option.value),
+    optionTexts: () => select.options.map((option) => option.textContent),
+    /** The option elements and their text nodes: any rebuild or text rewrite replaces them (compare with `sameNodes`). */
+    nodes: () => select.options.flatMap((option) => [option, option.children[0]]),
+    update: (channels = uartChannels(), state = {}) => {
+      m.view.onState({ state: { ...baseState, uartConsole: clone(channels), ...state }, host: { ...hostBase } });
+    },
+    choose: (id) => { select.value = id; select.dispatch('change'); },
+  };
+}
+
+/** Object identity of two node lists (`assert.deepEqual` would compare a replaced node with its copy as equal). */
+const sameNodes = (actual, expected, message) => assert.ok(actual.length === expected.length && actual.every((node, index) => node === expected[index]), message);
+
+test('uart page: repeated state updates leave an unchanged channel select alone, so an open dropdown is never rebuilt', async () => {
+  const h = await uartHarness();
+  h.update();
+  assert.deepEqual(h.optionIds(), ['main.uart4', 'main.usart1', 'main.usart2', 'main.uart5', 'handset.usart3']);
+  assert.equal(h.optionTexts()[1], 'main · main.usart1 label');
+  h.choose('main.usart2');
+  assert.match(h.status(), /^12 transmitted bytes · Last TX at 1\.500 virtual s$/);
+  const before = h.nodes();
+  let rebuilt = 0;
+  const replaceChildren = h.select.replaceChildren.bind(h.select);
+  h.select.replaceChildren = (...children) => { rebuilt++; return replaceChildren(...children); };
+  const writes = spyWrites(h.select, ['value', 'disabled']);
+  for (let i = 1; i <= 50; i++) {
+    // Live bytes arrive and the virtual time moves on; the channel list itself does not change.
+    h.update(uartChannels().map((channel) => ({ ...channel, txBytes: 12 + i, lastTxVirtualTime: 1.5 + i / 10 })));
+  }
+  assert.equal(rebuilt, 0, 'the options are not replaced');
+  assert.deepEqual(h.nodes(), before, 'neither the <option> elements nor their text nodes are replaced or rewritten');
+  assert.deepEqual(writes, { value: 0, disabled: 0 }, 'nor are value or disabled assigned again');
+  assert.equal(h.select.value, 'main.usart2', 'the selection survives');
+  assert.match(h.status(), /^62 transmitted bytes · Last TX at 6\.500 virtual s$/, 'the console still follows the selected channel');
+  assert.equal(h.pre.textContent, 'text of main.usart2\n');
+});
+
+test('uart page: a changed channel list updates the options, keeps the selection by channel and falls back when it is gone', async () => {
+  const h = await uartHarness();
+  h.update();
+  h.choose('handset.usart3');
+  const before = h.nodes();
+  // One label changes: only that text is rewritten, the other options keep their nodes.
+  h.update(uartChannels().map((channel) => (channel.id === 'main.uart5' ? { ...channel, label: 'Main UART5 · renamed' } : channel)));
+  assert.equal(h.optionTexts()[3], 'main · Main UART5 · renamed');
+  const after = h.nodes();
+  for (let index = 0; index < 5; index++) {
+    assert.ok(after[2 * index] === before[2 * index], `option ${index} is the same element`);
+    assert.ok((after[2 * index + 1] === before[2 * index + 1]) === (index !== 3), `option ${index} ${index === 3 ? 'gets a new text' : 'keeps its text node'}`);
+  }
+  assert.equal(h.select.value, 'handset.usart3');
+  // A channel disappears: the options follow and the selection stays on its channel although its index moved.
+  h.update(uartChannels().filter((channel) => channel.id !== 'main.usart1'));
+  assert.deepEqual(h.optionIds(), ['main.uart4', 'main.usart2', 'main.uart5', 'handset.usart3']);
+  assert.equal(h.select.value, 'handset.usart3');
+  assert.match(h.pre.textContent, /text of handset\.usart3/);
+  // The selected channel disappears: the first one is selected and shown.
+  h.update(uartChannels().filter((channel) => channel.id !== 'handset.usart3'));
+  assert.equal(h.select.value, 'main.uart4');
+  assert.match(h.pre.textContent, /text of main\.uart4/);
+  // No channels, a lost connection and the way back.
+  h.update([]);
+  assert.deepEqual(h.optionTexts(), ['No channels']);
+  assert.equal(h.select.disabled, true);
+  assert.equal(h.pre.textContent, 'No live UART output available.');
+  h.view.setConnectionError('Test connection lost');
+  assert.deepEqual(h.optionTexts(), ['Disconnected']);
+  assert.equal(h.select.disabled, true);
+  h.update();
+  assert.deepEqual(h.optionIds(), ['main.uart4', 'main.usart1', 'main.usart2', 'main.uart5', 'handset.usart3']);
+  assert.equal(h.select.disabled, false);
+  assert.equal(h.select.value, 'main.uart4');
+});
+
+test('uart page: nothing renders in a loop, a state update and a user choice each render the console once', async () => {
+  const h = await uartHarness();
+  h.update();
+  assert.deepEqual(h.calls, { console: 1, uart: 1 });
+  h.update();
+  assert.deepEqual(h.calls, { console: 2, uart: 2 });
+  h.choose('main.usart1');
+  assert.deepEqual(h.calls, { console: 3, uart: 2 }, 'a change event renders the console, never the whole list');
+  h.select.dispatch('change');
+  h.document.getElementById('uart-view').value = 'hex';
+  h.document.getElementById('uart-view').dispatch('change');
+  assert.deepEqual(h.calls, { console: 5, uart: 2 });
+  assert.equal(h.pre.textContent, 'HEX OF main.usart1');
+  // Even where assigning a select's value fires a change event (a hostile environment), steady updates assign nothing,
+  // so they cannot start a render loop.
+  const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'value');
+  Object.defineProperty(h.select, 'value', {
+    configurable: true,
+    get() { return descriptor.get.call(this); },
+    set(value) { descriptor.set.call(this, value); this.dispatch('change'); },
+  });
+  const before = { ...h.calls };
+  for (let i = 0; i < 10; i++) h.update();
+  assert.deepEqual(h.calls, { console: before.console + 10, uart: before.uart + 10 });
+});
+
+test('uart page: the console text is written only when it changed, and never exceeds its bound', async () => {
+  const { UART_CONSOLE_MAX_CHARS } = await import('./emulator.js');
+  assert.ok(Number.isInteger(UART_CONSOLE_MAX_CHARS) && UART_CONSOLE_MAX_CHARS >= 4 * 16384, 'the bound covers the engine\'s 16 KiB tail even when every byte is shown as \\xNN');
+  const h = await uartHarness();
+  h.update();
+  h.choose('main.uart4');
+  const written = h.pre.children[0];
+  for (let i = 0; i < 20; i++) h.update();
+  assert.equal(h.pre.children[0], written, 'an unchanged tail does not replace the text node (which also kept a text selection alive)');
+  h.update(uartChannels().map((channel) => (channel.id === 'main.uart4' ? { ...channel, text: 'a newer tail\n' } : channel)));
+  assert.equal(h.pre.textContent, 'a newer tail\n');
+  // Whatever the engine sends, the page shows at most the newest UART_CONSOLE_MAX_CHARS characters.
+  const huge = `${'old\n'.repeat(500_000)}the newest line\n`;
+  h.update(uartChannels().map((channel) => (channel.id === 'main.uart4' ? { ...channel, text: huge, txBytes: huge.length, truncated: true } : channel)));
+  assert.equal(h.pre.textContent.length, UART_CONSOLE_MAX_CHARS);
+  assert.ok(h.pre.textContent.endsWith('the newest line\n'));
+  assert.match(h.status(), /Showing retained tail; earlier bytes omitted/);
+});
+
+test('uart page: while the console is closed the page neither reads nor writes its text, and opening it asks the worker for the bytes', async () => {
+  const h = await uartHarness({ open: false });
+  h.update();
+  assert.equal(h.pre.textContent, 'No transmitted bytes captured yet.', 'the placeholder of index.html is untouched');
+  assert.match(h.status(), /^12 transmitted bytes/, 'the status line is cheap and stays current');
+  h.sent.length = 0;
+  h.document.getElementById('advanced-panel').open = true;
+  h.document.getElementById('uart-panel').open = true;
+  h.document.getElementById('uart-panel').dispatch('toggle');
+  // (a real `toggle` event does not bubble; the fake one does, so Advanced reports as well.)
+  assert.ok(h.sent.length > 0 && h.sent.every((message) => message.type === 'ui' && message.payload.uartOpen === true), 'the worker is told the console is on screen');
+  h.update();
+  assert.equal(h.pre.textContent, 'text of main.uart4\n');
+});
+
+test('replay page: the LED colour selects are not written again while nothing changed', async () => {
+  const h = await replayHarness();
+  h.show([vibratorOrLed(pulses(0))]);
+  const color = h.row().color;
+  const writes = spyWrites(color, ['value', 'disabled']);
+  const attributes = [];
+  const setAttribute = color.setAttribute.bind(color);
+  color.setAttribute = (name, value) => { attributes.push(name); return setAttribute(name, value); };
+  for (let i = 0; i < 20; i++) h.show([vibratorOrLed(pulses(0))], 1 + i);
+  assert.deepEqual(writes, { value: 0, disabled: 0 });
+  assert.deepEqual(attributes, [], 'neither is its label rewritten');
+  assert.equal(color.value, 'white');
+  // A new colour from the engine still arrives.
+  h.show([{ ...vibratorOrLed(pulses(0)), color: 'red' }], 30);
+  assert.equal(color.value, 'red');
+});
+
 // ---- simulated conditions in the page (analysis workspace: test_scenario_ui.js) --------------------------------------
 
 const initialInputs = {
-  battery1Mv: 1500, battery2Mv: 1500,
+  battery1Mv: 4100, battery2Mv: 4100,
   oxygen1Mv: 60, oxygen2Mv: 61, oxygen3Mv: 59,
   pressure1Mbar: 1013.25, pressure2Mbar: 1013.25, temperature1C: 20, temperature2C: 20,
   acquisitionDelayUs: 0, noiseAmplitudeRaw: 0, noiseSeed: 1,
@@ -1229,6 +1425,7 @@ test('structure: every element the scripts look up exists in index.html, and the
   assert.doesNotMatch(html, /<details class="variations" open/, 'Sensor variations start closed');
   assert.match(html, /name="serialNumber"[^>]*max="999999999"/);
   assert.match(html, /<input type="checkbox" id="start-i2c-idle" checked>/, 'the I2C idle-high fixture is a start option, on by default');
+  assert.match(html, /<input type="checkbox" id="remember" checked>/, 'Remember these files starts ticked');
 });
 
 test('structure: the raw sensor fields keep the engine ranges and accept any decimal', () => {
@@ -1237,6 +1434,8 @@ test('structure: the raw sensor fields keep the engine ranges and accept any dec
   for (const name of ['pressure1Mbar', 'pressure2Mbar']) assert.match(field(name), /min="100" max="30000" step="any"/);
   for (const name of ['temperature1C', 'temperature2C']) assert.match(field(name), /min="-20" max="85" step="any"/);
   assert.match(field('battery1Mv'), /min="0" max="4200" step="1"/);
+  // A fresh profile starts with 4100 mV batteries (the engine's default; the page's field only shows it until the engine's value arrives).
+  for (const name of ['battery1Mv', 'battery2Mv']) assert.match(field(name), /value="4100"/, name);
 });
 
 test('keys: arrows and Enter drive the handset except where the key belongs to the control', () => {
@@ -1877,10 +2076,13 @@ const srec = (role, release) => `S0${role}:${release}`;
  * The real EntryView on the real index.html (fake DOM), a worker client that is the real Runtime on a fake engine
  * (so the bytes take exactly the path of a chosen file) and a fake fetch / fake timers.
  */
-async function mountEntry({ search = '', location, respond = () => assert.fail('fetch must not be called'), engine = new SrecFakeEngine(), timeoutMs, proxyUrl = PROXY } = {}) {
+async function mountEntry({ search = '', location, respond = () => assert.fail('fetch must not be called'), engine = new SrecFakeEngine(), timeoutMs, proxyUrl = PROXY, storageKind = 'memory', booted = () => {} } = {}) {
   installDom(html, { search, location });
   const { EntryView } = await import('./entry.js');
-  const runtime = new RuntimeHarness(engine);
+  // `opfs` stands for a browser with the origin-private file system (the only place firmware can be remembered).
+  const storage = new MemoryStorage();
+  storage.kind = storageKind;
+  const runtime = new RuntimeHarness(engine, storage);
   await runtime.request('init');
   const clock = fakeTimers();
   const calls = [];
@@ -1888,13 +2090,13 @@ async function mountEntry({ search = '', location, respond = () => assert.fail('
   const client = {
     request: (type, payload = {}, transfer = []) => runtime.request(type, transfer.length ? structuredClone(payload, { transfer }) : payload),
   };
-  const view = new EntryView(client, { booted() {} }, {
+  const view = new EntryView(client, { booted }, {
     fetch: async (url, init) => { calls.push({ url: String(url), init }); return respond(String(url), init); },
     timers: clock,
     timeoutMs,
     proxyUrl,
   });
-  view.show({ engine: 'fake', storage: { kind: 'memory', problems: [] }, remembered: null, profiles: {} });
+  view.show({ engine: 'fake', storage: { kind: storageKind, problems: [] }, remembered: null, profiles: {} });
   const { document } = globalThis;
   return {
     view, runtime, clock, calls, document, engine,
@@ -2024,6 +2226,56 @@ test('urls (page): the content decides the slot; a single address is enough; the
   assert.equal(m.calls.length, 1, 'the empty field was not fetched');
   assert.equal(m.el('remember').checked, false, 'loading from a URL does not tick the remember option');
   assert.match(m.el('boot-hint').textContent, /Still needed: the NEPTUN main controller 5\.8 firmware file\./);
+});
+
+test('entry: "Remember these files" is on by default, unticking it boots without remembering, Forget removes them, and without the origin-private file system it is off and explained', async () => {
+  // The markup starts the box ticked and no longer says "off by default".
+  assert.match(html, /<input type="checkbox" id="remember" checked><span>Remember these files in this browser/);
+  assert.doesNotMatch(/<input type="checkbox" id="remember"[^>]*><span>[^<]*/.exec(html)[0], /off by default/);
+  const answers = () => proxyFor({
+    [MAIN_FETCHED]: () => proxyBody(srec('main', 'TRITON-5.8-65.3')),
+    [HANDSET_FETCHED]: () => proxyBody(srec('handset', 'TRITON-5.8-65.3')),
+  });
+  const fill = async (m) => { m.type('main', MAIN_EXAMPLE); m.type('handset', HANDSET_EXAMPLE); await m.view.loadUrls(); };
+  const remembered = (m) => m.runtime.storage.list('firmware').then((files) => files.map((file) => file.name).sort());
+
+  // With the origin-private file system: ticked, enabled, no warning; booting stores the pair.
+  const booted = [];
+  const m = await mountEntry({ storageKind: 'opfs', respond: answers(), booted: (result) => booted.push(result) });
+  assert.equal(m.el('remember').checked, true, 'on by default');
+  assert.equal(m.el('remember').disabled, false);
+  assert.equal(m.el('remember-note').hidden, true);
+  await fill(m);
+  assert.equal(m.el('remember').checked, true, 'loading from URLs leaves it as it was');
+  await m.view.boot('stored');
+  assert.equal(booted.length, 1);
+  assert.deepEqual(await remembered(m), ['handset.srec', 'index.json', 'main.srec'], 'the verified pair is remembered without the user having ticked anything');
+  assert.deepEqual(m.runtime.messages.filter((message) => message.type === 'notice'), [], 'and nothing is warned about');
+  // Forget keeps working: it removes the files and unticks the box.
+  await m.view.forget();
+  assert.deepEqual(await remembered(m), []);
+  assert.equal(m.el('remember').checked, false);
+  await m.runtime.request('close-session');
+
+  // Unticked before booting: the session starts and nothing is stored.
+  const unticked = await mountEntry({ storageKind: 'opfs', respond: answers(), booted: () => {} });
+  await fill(unticked);
+  unticked.el('remember').checked = false;
+  await unticked.view.boot('stored');
+  assert.deepEqual(await remembered(unticked), []);
+  await unticked.runtime.request('close-session');
+
+  // Without the origin-private file system (IndexedDB or memory only): off, disabled and explained, and booting works as before.
+  const memory = await mountEntry({ storageKind: 'memory', respond: answers(), booted: () => {} });
+  assert.equal(memory.el('remember').checked, false);
+  assert.equal(memory.el('remember').disabled, true);
+  assert.equal(memory.el('remember-note').hidden, false);
+  assert.match(memory.el('remember-note').textContent, /origin-private file system/);
+  await fill(memory);
+  await memory.view.boot('stored');
+  assert.deepEqual(await remembered(memory), []);
+  assert.deepEqual(memory.runtime.messages.filter((message) => message.type === 'notice'), [], 'no "could not be remembered" warning: the option was never offered');
+  await memory.runtime.request('close-session');
 });
 
 test('urls (page): a mixed release pair is refused exactly like a dropped file, whether it comes from a URL or from a drop', async () => {

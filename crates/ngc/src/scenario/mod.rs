@@ -18,6 +18,8 @@
 //!   reproduction on a functional model, never a physical observation).
 
 use crate::firmware::Firmware;
+use crate::fixtures::Inputs;
+use crate::persistence::inputs_file_text;
 use crate::session::{Profile, Session, SessionConfig};
 use crate::system::{BuildOptions, Which};
 use emu_core::{Json, Width};
@@ -253,7 +255,13 @@ impl Recorder {
                     .with("main", crate::sha256::to_hex(&env.main.bin_sha256))
                     .with("handset", crate::sha256::to_hex(&env.handset.bin_sha256)),
             )
-            .with("platformOptions", Json::object().with("mainI2cIdleHigh", env.options.main_i2c_idle_high))
+            .with(
+                "platformOptions",
+                Json::object()
+                    .with("mainI2cIdleHigh", env.options.main_i2c_idle_high)
+                    // Pinned to the value of the Renode recordings (a fresh profile starts at 4100 mV; see `recorded_inputs`).
+                    .with("batteryMv", Json::from_items([crate::fixtures::RECORDED_BATTERY_MV; 2])),
+            )
             .with("checks", Json::Array(self.checks))
             .with("comparisons", Json::Array(self.comparisons))
             .with("steps", Json::Array(self.steps));
@@ -268,6 +276,17 @@ impl Recorder {
 
 // ---- a session with conveniences --------------------------------------------------------------------------------------
 
+/// Pins the inputs the Renode recordings were made with. A fresh profile starts with 4100 mV batteries, but every value
+/// the scenarios compare with (the battery lines of the UART console, the CAN traffic, the LCD frames) was recorded
+/// with the runner's defaults, 1500 mV ([`Inputs::recorded_evidence`]); a profile that already carries `inputs.json`
+/// (a reopened one) keeps its own values.
+pub(crate) fn recorded_inputs(mut profile: Profile) -> Profile {
+    if profile.inputs.is_none() {
+        profile.inputs = Some(inputs_file_text(&Inputs::recorded_evidence()));
+    }
+    profile
+}
+
 /// A [`Session`] plus the helpers every scenario uses: actions as JSON, side-effect-free RAM readbacks, evidence.
 pub(crate) struct Rig {
     pub session: Session,
@@ -275,7 +294,7 @@ pub(crate) struct Rig {
 
 impl Rig {
     pub fn new(env: &ScenarioEnv<'_>, config: SessionConfig, profile: Profile) -> Result<Rig, String> {
-        let session = Session::new_with(env.options, "", config, Some(env.main), env.handset, profile)?;
+        let session = Session::new_with(env.options, "", config, Some(env.main), env.handset, recorded_inputs(profile))?;
         Ok(Rig { session })
     }
 

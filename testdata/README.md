@@ -42,4 +42,7 @@ repository, so these files are fixtures, not something to regenerate.
 
 The scenario suite (`ngc-cli scenario`, `crates/ngc/src/scenario/`) embeds the values that the Renode runner of the
 analysis workspace recorded as constants with their provenance (`recorded by the Renode runner in the analysis
-workspace, <path>`; the paths name files of that workspace, which is not public).
+workspace, <path>`; the paths name files of that workspace, which is not public). Every recording was made with the
+runner's 1500 mV batteries, while a fresh profile of this engine starts at 4100 mV: the scenarios pin 1500 mV
+(`scenario::recorded_inputs`, reported as `platformOptions.batteryMv`), and so do the other tests that compare with a
+recorded value.

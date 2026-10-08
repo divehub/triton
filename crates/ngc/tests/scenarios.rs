@@ -81,6 +81,9 @@ fn run_scenario(name: &str) {
         }
         let fixture = report.document.get("platformOptions").and_then(|o| o.get("mainI2cIdleHigh"));
         assert_eq!(fixture, Some(&Json::Bool(platform == "default platform")), "{name}: {platform}");
+        // The recordings were made with 1500 mV batteries (a fresh profile starts at 4100 mV): the scenarios pin them.
+        let battery = report.document.get("platformOptions").and_then(|o| o.get("batteryMv"));
+        assert_eq!(battery, Some(&Json::from_items([1500.0f64, 1500.0])), "{name}: {platform}: the recorded battery voltage is pinned");
     }
 }
 

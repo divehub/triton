@@ -24,6 +24,9 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
     // ---- 4.5 s: the state of the Renode dual-handset-wake probe -------------------------------------------------
     let state = rig.advance(4.5)?;
     rec.step("4.5 s", &state, Json::object());
+    // The recordings used the runner's 1500 mV batteries; a fresh profile starts at 4100 mV, so every scenario pins them.
+    let batteries = Json::from_items(["battery1Mv", "battery2Mv"].iter().map(|key| state.get("inputs").and_then(|i| i.get(key)).cloned().unwrap_or(Json::Null)));
+    rec.expect("both batteries are pinned to the 1500 mV of the recordings (mV)", batteries, Json::from_items([fixtures::RECORDED_BATTERY_MV; 2]));
     rec.expect("handset released by the 1.05 s power-gate poll", state.get("handsetReleaseTime").and_then(Json::as_f64), Some(1.05));
     rec.check("handset supply enabled", state.get("handsetPowered") == Some(&Json::Bool(true)), state.get("handsetPowered").cloned().unwrap_or(Json::Null));
     rec.check("main batteries ready", state.get("mainBatteryReady") == Some(&Json::Bool(true)), state.get("mainBatteryReady").cloned().unwrap_or(Json::Null));
