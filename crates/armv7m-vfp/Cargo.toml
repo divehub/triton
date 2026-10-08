@@ -1,0 +1,14 @@
+[package]
+name = "armv7m-vfp"
+description = "FPv4-SP (Cortex-M4F) floating-point instruction decode/execute with bit-exact ARM semantics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+# WebAssembly determinism check: exports `selftest` for scripts/wasm_selftest.mjs.
+[[example]]
+name = "wasm_selftest"
+crate-type = ["cdylib"]

@@ -1,0 +1,12 @@
+[package]
+name = "ngc"
+description = "NGC main/handset boards, NGC-specific models, dual system and fixtures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+emu-core = { path = "../emu-core" }
+armv7m = { path = "../armv7m" }
+stm32 = { path = "../stm32" }

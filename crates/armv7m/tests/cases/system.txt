@@ -1,0 +1,26 @@
+# name | asm | init | expect
+mrs_primask_set | cpsid i ; mrs r0, primask | r0=5 | r0=1
+cpsie_clears_primask | cpsid i ; cpsie i ; mrs r0, primask | r0=5 | r0=0
+msr_primask | msr primask, r0 ; mrs r1, primask | r0=0xff | r1=1
+msr_basepri | msr basepri, r0 ; mrs r1, basepri | r0=0x80 | r1=0x80
+basepri_max_lowers | msr basepri, r0 ; msr basepri_max, r1 ; mrs r2, basepri | r0=0x80 r1=0x40 | r2=0x40
+basepri_max_ignores_higher_value | msr basepri, r0 ; msr basepri_max, r1 ; mrs r2, basepri | r0=0x40 r1=0x80 | r2=0x40
+basepri_max_sets_when_zero | msr basepri_max, r1 ; mrs r2, basepri | r1=0x90 | r2=0x90
+basepri_max_zero_value_ignored | msr basepri, r0 ; msr basepri_max, r1 ; mrs r2, basepri | r0=0x40 r1=0 | r2=0x40
+msr_faultmask | cpsid f ; mrs r0, faultmask | r0=5 | r0=1
+cpsie_f_clears_faultmask | cpsid f ; cpsie f ; mrs r0, faultmask | r0=5 | r0=0
+mrs_control_reset | mrs r0, control | r0=9 | r0=0
+spsel_switches_stack | msr psp, r0 ; movs r1, #2 ; msr control, r1 ; isb ; mov r3, sp ; mrs r4, msp | r0=0x20001000 sp=0x20002000 | r3=0x20001000 r4=0x20002000
+control_npriv_makes_unprivileged | movs r1, #1 ; msr control, r1 ; mrs r2, control | | r2=1
+unprivileged_msr_primask_ignored | movs r1, #1 ; msr control, r1 ; isb ; movs r0, #1 ; msr primask, r0 ; mrs r2, primask | | r2=0
+mrs_apsr | mrs r0, apsr | flags=10 q=1 ge=5 | r0=0xa8050000
+msr_apsr_nzcvq | msr apsr_nzcvq, r0 | r0=0xf8000000 | flags=15 q=1
+msr_apsr_g | msr apsr_g, r0 | r0=0x000a0000 flags=5 | ge=10 flags=5
+msr_apsr_nzcvqg | msr apsr_nzcvqg, r0 | r0=0xa00f0000 | flags=10 ge=15
+mrs_ipsr_thread_mode | mrs r0, ipsr | r0=5 | r0=0
+mrs_xpsr_has_thumb_bit | mrs r0, xpsr | | r0=0x01000000
+mrs_epsr | mrs r0, epsr | | r0=0x01000000
+mrs_iapsr | mrs r0, iapsr | flags=8 | r0=0x80000000
+bkpt_vectors_debugmonitor | bkpt #0x11 | steps=1 | pc=+0 cfsr=0
+svc_pends_svcall | svc #3 | steps=1 | pc=+2
+wfi_nop_when_pending_irq | nop | | pc=+2

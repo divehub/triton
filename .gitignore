@@ -1,0 +1,35 @@
+# Build output: cargo target directories (also the assembled Pages site and Vercel upload directory) and the
+# WebAssembly module that web/build.py stages for the page.
+/target/
+/web/pkg/
+
+# Firmware is never part of this repository. You supply the original S-record files yourself, either in
+# firmware/<release>/ or in a directory named by NGC_FIRMWARE_DIR; both stay out of Git. Nothing that looks like firmware
+# (or an extracted image of it) may be committed, wherever it is.
+/firmware
+*.srec
+*.s19
+*.s28
+*.s37
+*.mot
+*.hex
+*.bin
+*.elf
+*.apk
+*.aab
+
+# Locally provisioned tools (a Rust toolchain in tools/rust, see tools/README.md). Only the notes are versioned.
+/tools/*
+!/tools/README.md
+
+# Local state and scratch files.
+.vercel/
+node_modules/
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+*.ppm

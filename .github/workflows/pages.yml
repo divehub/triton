@@ -1,0 +1,85 @@
+# Builds the static emulator page and deploys it to GitHub Pages (https://triton.divehub.ai).
+#
+# What it runs: the tests that need no firmware (the firmware is never in the repository, so the tests that read it skip
+# themselves), then deploy/build_site.py, which builds the WebAssembly module and assembles an allowlisted site
+# directory (no tests, scripts, proxy sources or firmware). The firmware proxy is a separate Vercel project; its address
+# comes from the repository variable FIRMWARE_PROXY_URL (empty = "Load from URLs" is unavailable on the page).
+# See deploy/README.md.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a running deployment is allowed to finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 22 is what the web tests were written and run with.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The pinned toolchain of rust-toolchain.toml; ./cargo uses the cargo on PATH when tools/rust does not exist.
+      - name: Install Rust 1.98.1 with the wasm32 target
+        run: rustup toolchain install 1.98.1 --profile minimal --target wasm32-unknown-unknown
+
+      # The workspace has no third-party crates, so there is little to cache; this keeps what cargo can reuse.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: Rust tests (those that need firmware skip)
+        run: ./cargo test --workspace --release
+
+      - name: Page tests
+        run: node web/test-ui.mjs
+
+      - name: Firmware proxy tests
+        run: node deploy/test-proxy.mjs
+
+      - name: Assemble the Pages site
+        run: python3 deploy/build_site.py
+        env:
+          FIRMWARE_PROXY_URL: ${{ vars.FIRMWARE_PROXY_URL }}
+
+      - name: Assembly tests (Pages site and Vercel proxy)
+        run: |
+          python3 deploy/test_build_site.py
+          python3 deploy/test_build_proxy.py
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/pages-site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

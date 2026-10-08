@@ -1,0 +1,16 @@
+[package]
+name = "ngc-cli"
+description = "Native command-line runner, benchmark and validation harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ngc-cli"
+path = "src/main.rs"
+
+[dependencies]
+emu-core = { path = "../emu-core" }
+armv7m = { path = "../armv7m" }
+ngc = { path = "../ngc" }

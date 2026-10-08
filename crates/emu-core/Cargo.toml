@@ -1,0 +1,9 @@
+[package]
+name = "emu-core"
+description = "Exact virtual time, event scheduling and peripheral framework for the NGC emulator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]

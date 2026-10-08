@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:* http://localhost:*; worker-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>NGC system emulator · WebAssembly</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230c1117'/%3E%3Crect x='3' y='4' width='10' height='7' rx='1' fill='%2359d9ad'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div><h1 id="title">NGC system emulator</h1><p id="subtitle">TRITON or NEPTUN main 5.8 + handset 65.3 · WebAssembly functional model</p></div>
+      <div class="header-badges">
+        <span id="rt-badge" class="badge idle" hidden title="Virtual time per wall-clock time over the last two seconds"><span id="rt-text">—</span></span>
+        <span id="status" class="badge" role="status"><span class="dot" aria-hidden="true"></span><span id="status-text">Loading</span></span>
+      </div>
+    </header>
+
+    <section id="screen-loading" class="card">
+      <p id="loading-text">Loading the emulation engine…</p>
+    </section>
+
+    <!-- ===== Entry: ask for the two firmware files ===== -->
+    <section id="screen-entry" class="card entry" hidden aria-labelledby="entry-heading">
+      <h2 id="entry-heading">Start the emulator</h2>
+      <p class="lead">This page runs the unchanged <strong>main 5.8</strong> and <strong>handset 65.3</strong> firmware of a TRITON or NEPTUN release on a WebAssembly model of the two Cortex-M4F boards connected over CAN, with the handset display shown live. Engine: <code id="engine-label">…</code>.</p>
+      <ul class="facts">
+        <li>This is a <strong>functional model, not a claim of physical accuracy</strong>. It is a new engine ported from the behaviour of Renode 1.17.0; results from the Renode setup do not transfer automatically, and every capture is labeled with the engine that produced it.</li>
+        <li>Power, standby, reset, CAN wire timing, sensors and the display are simulated with explicit fixtures (see the notes under the controls). Buttons are simulated electrical pulses.</li>
+        <li>The firmware is <strong>not part of this page</strong>. Choose your two original S-record files, both from the same release (TRITON or NEPTUN), or load them from URLs; they are checked in your browser by SHA-256 and content, and never uploaded.</li>
+      </ul>
+
+      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose or drop the two firmware files">
+        <div><strong>Drop both .srec files here</strong>, or <button type="button" id="choose-files" class="link">choose files…</button></div>
+        <div class="small muted">Either order. The files are recognised by their content, not their names.</div>
+        <input id="file-input" type="file" accept=".srec,.s19,.s28,.s37,.mot,.txt,text/plain" multiple hidden>
+      </div>
+
+      <form id="url-form" class="url-loader" novalidate aria-labelledby="url-heading">
+        <h3 id="url-heading">Or load them from URLs</h3>
+        <p id="url-intro" class="small muted">Paste the address of each original S-record file: <code>https://api.multi3s.com/static/NAME.srec</code>, or a Wayback Machine capture of it, <code>https://web.archive.org/web/TIMESTAMP/https://api.multi3s.com/static/NAME.srec</code>. Either field may stay empty; the files are recognised by their content, so a file in the wrong field still lands in the right slot.</p>
+        <div id="url-fields" class="url-fields">
+          <label>Main controller 5.8 URL<input id="url-main" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://web.archive.org/web/…/https://api.multi3s.com/static/….srec" aria-describedby="url-main-info"></label>
+          <p id="url-main-info" class="small url-info" aria-live="polite"></p>
+          <progress id="url-main-progress" class="url-progress" max="1" aria-label="Main controller download progress" hidden></progress>
+          <label>Handset 65.3 URL<input id="url-handset" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://web.archive.org/web/…/https://api.multi3s.com/static/….srec" aria-describedby="url-handset-info"></label>
+          <p id="url-handset-info" class="small url-info" aria-live="polite"></p>
+          <progress id="url-handset-progress" class="url-progress" max="1" aria-label="Handset download progress" hidden></progress>
+        </div>
+        <div id="url-actions" class="actions-row">
+          <button type="submit" id="url-load" disabled>Load from URLs</button>
+          <button type="button" id="url-cancel" hidden>Cancel</button>
+        </div>
+        <p id="url-status" class="small" role="status" aria-live="polite"></p>
+        <p id="url-proxy-note" class="small muted"></p>
+      </form>
+
+      <div class="slots">
+        <article id="slot-main" class="slot" data-role="main" aria-live="polite">
+          <h3>Main controller 5.8</h3>
+          <p class="expected">ngc_main_5.8_TRITON.srec or ngc_main_5.8_NEPTUN.srec</p>
+          <div class="state" data-part="state">Waiting for the file.</div>
+        </article>
+        <article id="slot-handset" class="slot" data-role="handset" aria-live="polite">
+          <h3>Handset 65.3</h3>
+          <p class="expected">ngc_handset_65.3_TRITON.srec or ngc_handset_65.3_NEPTUN.srec</p>
+          <div class="state" data-part="state">Waiting for the file.</div>
+        </article>
+      </div>
+      <p id="release-line" class="release-line" aria-live="polite" hidden></p>
+      <ul id="rejected" class="rejected" aria-live="polite"></ul>
+
+      <div class="remember">
+        <div id="remembered-banner" class="banner" hidden>
+          <span id="remembered-text">Verified firmware files from an earlier visit are stored in this browser.</span>
+          <span class="actions-row"><button type="button" id="use-remembered">Use the remembered files</button><button type="button" id="forget-remembered" class="danger">Forget them</button></span>
+        </div>
+        <label class="check"><input type="checkbox" id="remember"><span>Remember these files in this browser (stored locally in the origin-private file system, never uploaded; off by default). Without this the page asks again on every visit.</span></label>
+        <p id="remember-note" class="small warn-text" hidden>Remembering files is unavailable here: this browser or mode does not provide the origin-private file system.</p>
+      </div>
+
+      <details id="start-options" class="start-options">
+        <summary>Start options</summary>
+        <div class="inputs">
+          <label>System<select id="start-mode"><option value="dual" selected>Main 5.8 + handset 65.3 over CAN</option><option value="handset">Handset only (no CAN peer)</option></select></label>
+          <label>Boot<select id="start-boot-mode"><option value="handset-wake" selected>Handset wake from standby (default fixture)</option><option value="cold">Cold boot (pauses at the firmware's standby request)</option></select></label>
+          <label>Board-ID ADC sample (0–4095)<input id="start-adc" type="number" min="0" max="4095" step="1" value="400"></label>
+          <label class="check"><input type="checkbox" id="start-i2c-idle" checked><span>Main I2C idle lines PB6/PB7/PB10/PB11 driven high before the firmware runs (an idle-line fixture standing for external pull-ups, not electrical I2C modelling; leaving PB6/PB7 low changes the start-up ordering of settings loading and HUD initialization)</span></label>
+          <label class="check"><input type="checkbox" id="start-simultaneous"><span>Start both CPUs together (bypass the inferred main PE3 handset supply gate)</span></label>
+          <label class="check"><input type="checkbox" id="start-paused"><span>Start paused</span></label>
+          <label class="check"><input type="checkbox" id="start-idle-ff" checked><span>Exact idle-loop fast-forward (changes host speed only; results are identical)</span></label>
+        </div>
+      </details>
+
+      <div id="profile-note" class="profile-note" hidden></div>
+      <div id="profile-problem" class="notice" role="alert" hidden></div>
+
+      <div class="entry-actions">
+        <button type="button" id="boot" class="primary" disabled>Boot emulator</button>
+        <span id="boot-hint" class="small muted">Provide both firmware files to continue.</span>
+      </div>
+    </section>
+
+    <!-- ===== Emulator ===== -->
+    <div id="screen-emulator" hidden>
+      <section class="status-strip" aria-label="Alert indicators: commanded outputs of the emulated firmware">
+        <div class="status-card"><span id="simple-handset-vibrator-light" class="output-light unknown vibrator" aria-hidden="true"></span><div><h2>Vibrator</h2><span id="simple-handset-vibrator-state">Unknown</span></div></div>
+        <div class="status-card"><span id="simple-main-hud-3-light" class="output-light unknown red" aria-hidden="true"></span><div><h2>Red LED</h2><span id="simple-main-hud-3-state">Unknown</span></div></div>
+        <div class="status-card"><span id="simple-main-hud-2-light" class="output-light unknown white" aria-hidden="true"></span><div><h2>White LED</h2><span id="simple-main-hud-2-state">Unknown</span></div></div>
+      </section>
+
+      <div class="workspace">
+        <section class="display-panel" aria-label="Handset LCD">
+          <div class="panel-label"><span>Handset display</span><span id="frame-size">320 × 240</span></div>
+          <div id="lcd" class="lcd integer">
+            <canvas id="frame" width="320" height="240" role="img" aria-label="Current LCD frame from the emulated handset" hidden></canvas>
+            <div id="placeholder" class="placeholder">Waiting for LCD output</div>
+          </div>
+          <div class="frame-note"><span id="frame-note">The display updates as the firmware writes pixels.</span><label title="Scale by whole device-pixel multiples when that fills at least 85% of the panel; otherwise fit the panel"><input type="checkbox" id="integer-scale" checked>Pixel-perfect scaling</label></div>
+        </section>
+        <aside class="controls" aria-label="Emulator controls">
+          <h2>Handset buttons</h2>
+          <div class="buttons">
+            <button type="button" data-action="up">↑ Up <small>↑ key</small></button>
+            <button type="button" data-action="down">↓ Down <small>↓ key</small></button>
+            <button type="button" data-action="confirm" class="confirm">Confirm <small>Enter</small></button>
+          </div>
+          <div class="divider"></div>
+          <h2>Execution</h2>
+          <div class="transport">
+            <button id="run-toggle" type="button" data-action="resume">Resume</button>
+            <button type="button" data-action="step">Step 0.1 s</button>
+            <button type="button" data-action="reset" class="wide">Restart boards</button>
+          </div>
+          <label class="speed-row">Speed
+            <select id="speed" title="Pacing against wall-clock time">
+              <option value="0.25">0.25× real time</option>
+              <option value="0.5">0.5× real time</option>
+              <option value="1" selected>1× real time</option>
+              <option value="2">2× real time</option>
+              <option value="4">4× real time</option>
+              <option value="max">Maximum (unpaced)</option>
+            </select>
+          </label>
+          <dl><div><dt>Virtual time</dt><dd id="virtual-time" class="mono">—</dd></div></dl>
+        </aside>
+      </div>
+
+      <!-- Basic view: simulated conditions (hidden in a handset-only run, which has no sensors) -->
+      <section id="basic-sensor-panel" class="basic-sensors" aria-labelledby="basic-heading" hidden>
+        <div class="section-heading">
+          <div><h2 id="basic-heading">Simulated conditions</h2><p>Changes apply immediately. Firmware readings may take a moment to settle.</p></div>
+          <span id="basic-input-status" role="status">Connecting</span>
+        </div>
+        <div class="sensor-cards">
+          <section class="sensor-card" aria-labelledby="oxygen-heading">
+            <h3 id="oxygen-heading">Oxygen cells</h3>
+            <label class="slider-label" for="oxygen-base">Base voltage <output id="oxygen-base-value">10.00 mV</output></label>
+            <input id="oxygen-base" type="range" min="0" max="100" step="0.01" value="10" aria-label="Oxygen base voltage (mV)">
+            <div class="range-limits"><span>0 mV</span><span>100 mV</span></div>
+            <p id="preview-oxygen" class="sensor-preview"></p>
+            <details class="variations"><summary>Sensor variations</summary><div class="variation-fields">
+              <label>Cell 1 offset (mV)<input id="oxygen-offset-1" type="number" step="any" value="0" required></label>
+              <label>Cell 2 offset (mV)<input id="oxygen-offset-2" type="number" step="any" value="0" required></label>
+              <label>Cell 3 offset (mV)<input id="oxygen-offset-3" type="number" step="any" value="0" required></label>
+            </div></details>
+          </section>
+          <section class="sensor-card" aria-labelledby="pressure-heading">
+            <h3 id="pressure-heading">Pressure / depth</h3>
+            <label class="slider-label" for="depth">Depth <output id="depth-value">0.00 m</output></label>
+            <input id="depth" type="range" min="0" max="110" step="0.01" value="0" aria-label="Depth (m)">
+            <div class="range-limits"><span>0 m</span><span>110 m</span></div>
+            <div class="pressure-settings">
+              <label>Surface pressure (mbar)<input id="surface-pressure" type="number" min="100" max="30000" step="0.01" value="1013.25" required></label>
+              <label>Water type<select id="water-type" aria-label="Water type"><option value="fresh">Fresh</option><option value="salt">Salt</option><option value="en13319" selected>EN13319</option></select></label>
+            </div>
+            <p id="preview-pressure" class="sensor-preview"></p>
+            <details class="variations"><summary>Sensor variations</summary><div class="variation-fields">
+              <label>Sensor 1 offset (mbar)<input id="pressure-offset-1" type="number" step="any" value="0" required></label>
+              <label>Sensor 2 offset (mbar)<input id="pressure-offset-2" type="number" step="any" value="0" required></label>
+            </div></details>
+          </section>
+          <section class="sensor-card" aria-labelledby="temperature-heading">
+            <h3 id="temperature-heading">Temperature</h3>
+            <label class="slider-label" for="temperature-base">Base temperature <output id="temperature-base-value">20.00 °C</output></label>
+            <input id="temperature-base" type="range" min="-4" max="40" step="0.01" value="20" aria-label="Base temperature (°C)">
+            <div class="range-limits"><span>−4 °C</span><span>40 °C</span></div>
+            <p id="preview-temperature" class="sensor-preview"></p>
+            <details class="variations"><summary>Sensor variations</summary><div class="variation-fields">
+              <label>Sensor 1 offset (°C)<input id="temperature-offset-1" type="number" step="any" value="0" required></label>
+              <label>Sensor 2 offset (°C)<input id="temperature-offset-2" type="number" step="any" value="0" required></label>
+            </div></details>
+          </section>
+        </div>
+        <p id="basic-input-error" class="notice" role="alert" hidden></p>
+      </section>
+
+      <!-- Advanced: raw inputs, outputs, diagnostics and this app's technical controls (closed initially) -->
+      <details id="advanced-panel" class="advanced-panel">
+        <summary>Advanced · raw inputs, outputs and diagnostics</summary>
+        <p class="advanced-intro">Inspect raw readings, command history and emulator diagnostics.</p>
+
+        <section id="sensor-panel" class="sensor-panel" hidden>
+          <h3>Raw sensor inputs</h3>
+          <p id="raw-input-note">Raw edits apply only when you click Apply inputs. Voltages feed the ADC; pressure and temperature feed two MS5837 models. Firmware filtering and stored calibration determine the displayed values. Battery and oxygen changes can take several seconds of virtual time to settle.</p>
+          <form id="sensor-form">
+            <div class="inputs">
+              <label>B1 battery (mV)<input name="battery1Mv" type="number" min="0" max="4200" step="1" value="1500" required></label>
+              <label>B2 battery (mV)<input name="battery2Mv" type="number" min="0" max="4200" step="1" value="1500" required></label>
+              <label>Oxygen cell 1 (mV)<input name="oxygen1Mv" type="number" min="0" max="250" step="any" value="10" required></label>
+              <label>Oxygen cell 2 (mV)<input name="oxygen2Mv" type="number" min="0" max="250" step="any" value="10" required></label>
+              <label>Oxygen cell 3 (mV)<input name="oxygen3Mv" type="number" min="0" max="250" step="any" value="10" required></label>
+              <label>Pressure 1 (absolute mbar)<input name="pressure1Mbar" type="number" min="100" max="30000" step="any" value="1013.25" required></label>
+              <label>Pressure 2 (absolute mbar)<input name="pressure2Mbar" type="number" min="100" max="30000" step="any" value="1013.25" required></label>
+              <label>Temperature 1 (°C)<input name="temperature1C" type="number" min="-20" max="85" step="any" value="20" required></label>
+              <label>Temperature 2 (°C)<input name="temperature2C" type="number" min="-20" max="85" step="any" value="20" required></label>
+              <label>ADC settling delay (µs)<input name="acquisitionDelayUs" type="number" min="0" max="10000000" step="1000" value="0" required></label>
+              <label>ADC noise (raw counts)<input name="noiseAmplitudeRaw" type="number" min="0" max="4095" step="1" value="0" required></label>
+              <label>Noise seed<input name="noiseSeed" type="number" min="1" max="4294967295" step="1" value="1" required></label>
+              <label>ADC acquisition enabled<input name="acquisitionEnabled" type="checkbox" checked></label>
+              <label>Pressure sensor maximum latency<input name="pressureMaximumTiming" type="checkbox"></label>
+            </div>
+            <button type="submit">Apply inputs</button>
+          </form>
+          <div class="divider"></div>
+          <div class="transport">
+            <button type="button" id="can-toggle">Disconnect CAN</button>
+            <button type="button" data-action="capture">Save evidence</button>
+            <button type="button" data-action="cold">Cold boot</button>
+            <button type="button" data-action="wake">Wake system</button>
+          </div>
+          <form id="can-form" class="inputs"><label>Drop CAN ID (decimal; -1 off)<input name="dropId" type="number" min="-1" max="2047" step="1" value="-1" required></label><button type="submit">Apply CAN loss</button></form>
+          <p id="can-summary" class="mono mt16"></p>
+          <p id="capture-path" class="mono"></p>
+          <div class="divider"></div>
+          <form id="serial-form" class="inputs">
+            <label>Emulated serial number (0 to 999 999 999)<input name="serialNumber" type="number" inputmode="numeric" min="0" max="999999999" step="1" value="0" required></label>
+            <button type="submit">Set serial and restart</button>
+          </form>
+          <p id="storage-summary" class="mono"></p>
+          <p class="mt12">Restart and cold boot preserve EEPROM and log storage. Default boot models a handset wake from standby; Cold boot pauses when firmware requests standby. Oxygen input assumes the recovered 10× analog gain. A dedicated wet-sensor input is unverified; pressure changes can exercise the firmware's dive detection.</p>
+        </section>
+
+        <section class="hardware-outputs" aria-labelledby="outputs-heading">
+          <h3 id="outputs-heading">Raw hardware outputs</h3>
+          <p class="output-note">HUD2 White · HUD3 Red · HUD1 unidentified. These are commanded drive values (physical light output and motor current are unverified). Indicators replay captured pulses for visibility; Drive values and history retain firmware timing, and replay duration is not firmware timing.</p>
+          <label class="replay-toggle"><input id="replay-pulses" type="checkbox" checked>Replay captured pulses</label>
+          <p id="outputs-status" class="output-state">Waiting for output status.</p>
+          <div id="output-list" class="output-list"></div>
+        </section>
+
+        <details id="uart-panel">
+          <summary>UART / TTL console · read only</summary>
+          <p>Captured UART transmit bytes from the emulated boards. Channel pins and console use may be unverified.</p>
+          <div class="console-controls">
+            <label>Channel<select id="uart-channel" disabled><option value="">Waiting for channels</option></select></label>
+            <label>View<select id="uart-view"><option value="text">Text</option><option value="hex">Hex</option></select></label>
+          </div>
+          <p id="uart-status" class="console-status">Waiting for UART status.</p>
+          <pre id="uart-output" class="console-output mono" tabindex="0" aria-label="Read-only UART output">No transmitted bytes captured yet.</pre>
+        </details>
+
+        <section class="adv-section" aria-labelledby="execution-heading">
+          <h3 id="execution-heading">Execution</h3>
+          <form id="advance-form" class="advance-row">
+            <label>Advance (virtual s)<input id="advance-seconds" type="number" min="0.01" max="20" step="any" value="1" required></label>
+            <button id="advance-button" type="submit">Advance</button>
+          </form>
+          <div id="advance-progress" class="progress" hidden><span></span></div>
+          <label class="speed-row">When this tab is in the background
+            <select id="background-policy">
+              <option value="run" selected>Keep running (the browser may slow it)</option>
+              <option value="pause">Suspend until it is visible again</option>
+            </select>
+          </label>
+          <dl>
+            <div><dt>Real-time factor</dt><dd id="rt-factor">—</dd></div>
+          </dl>
+        </section>
+
+        <details id="model-details">
+          <summary>Execution and model details</summary>
+          <dl>
+            <div><dt>Handset PC</dt><dd id="pc" class="mono">—</dd></div>
+            <div><dt>Main PC</dt><dd id="main-pc" class="mono">—</dd></div>
+            <div><dt>Main batteries ready</dt><dd id="battery-ready">—</dd></div>
+            <div><dt>Mode</dt><dd id="mode">—</dd></div>
+          </dl>
+          <p id="unavailable-info" class="small" hidden></p>
+          <p>The LCD shows firmware-written pixels. Buttons drive timed pin pulses through the firmware capture interrupt; peripheral timing is simulated. This engine is a new functional model in WebAssembly, ported from the behaviour of Renode 1.17.0; it does not inherit Renode's evidence and does not establish physical-device accuracy.</p>
+          <p id="lcd-summary">Waiting for emulator status.</p>
+        </details>
+
+        <section id="profile-panel" class="profile-panel" aria-labelledby="profile-heading">
+          <h3 id="profile-heading">Profile and evidence</h3>
+          <p>The profile is the emulated device's nonvolatile state of this firmware release: EEPROM (<code>eeprom.bin</code>), log flash (<code>nor.ngc</code>), the RTC checkpoint (<code>rtc-state.json</code>), the sensor inputs (<code>inputs.json</code>) and the LED colour labels (<code>led-colors.json</code>). It is kept in this browser (a separate profile for each release) and restored on the next start. The clock advances in virtual time only, so it stands still while the emulator is closed or paused. Save evidence downloads a zip with <code>state.json</code>, <code>lcd.png</code> and <code>can-trace.tsv</code> (CAN trace only in dual mode).</p>
+          <p id="profile-status" class="small muted mt10"></p>
+          <div class="actions-row">
+            <button type="button" id="evidence-save">Save evidence (zip)</button>
+            <button type="button" id="profile-export">Export profile (zip)</button>
+            <button type="button" id="profile-import">Import profile…</button>
+            <button type="button" id="profile-reset" class="danger">Reset profile…</button>
+            <input id="profile-file" type="file" accept=".zip,.bin,.ngc,.json,application/zip" multiple hidden>
+          </div>
+        </section>
+
+        <details id="firmware-details">
+          <summary>Loaded firmware and session</summary>
+          <p id="firmware-info">—</p>
+          <div id="session-info" class="small muted mt10"></div>
+          <div class="actions-row"><button type="button" id="change-firmware">Close session and change files…</button></div>
+        </details>
+      </details>
+    </div>
+
+    <div id="error" class="notice" role="alert" hidden></div>
+    <footer>Buttons use simulated electrical pulses; peripheral timing is simulated. The display follows the firmware's pixel writes (up to 60 frames per second); status updates 5 times per second; pulse replay is enabled by default. Engine: <span id="footer-engine">—</span>.</footer>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "clockPolicy": "virtual-time-only",
+  "precision": "whole-calendar-seconds",
+  "boards": {
+    "ngc-main": {
+      "timeRegister": 1193221,
+      "dateRegister": 2510855,
+      "prescalerRegister": 8323327,
+      "format12Hour": false,
+      "backupRegisters": [
+        0,
+        13040,
+        0,
+        0,
+        305441741,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "provenance": {
+        "source": "rtc-registers"
+      }
+    },
+    "ngc-handset": {
+      "timeRegister": 19,
+      "dateRegister": 2105601,
+      "prescalerRegister": 8323327,
+      "format12Hour": false,
+      "backupRegisters": [
+        0,
+        0,
+        0,
+        0,
+        1450761402,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "provenance": {
+        "source": "rtc-registers"
+      }
+    }
+  }
+}

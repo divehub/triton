@@ -1,0 +1,61 @@
+# name | asm | init | expect
+b_forward | b 1f ; nop ; nop ; 1: nop | steps=1 | pc=+6
+b_forward_wide | b.w 1f ; nop ; nop ; 1: nop | steps=1 | pc=+8
+b_backward | nop ; 1: nop ; b 1b | steps=3 | pc=+2
+beq_taken | beq 1f ; nop ; 1: nop | flags=4 steps=1 | pc=+4
+beq_not_taken | beq 1f ; nop ; 1: nop | flags=0 steps=1 | pc=+2
+beq_wide_taken | beq.w 1f ; nop ; 1: nop | flags=4 steps=1 | pc=+6
+beq_wide_not_taken | beq.w 1f ; nop ; 1: nop | flags=0 steps=1 | pc=+4
+cond_eq_true | beq 1f ; nop ; 1: nop | flags=4 steps=1 | pc=+4
+cond_eq_false | beq 1f ; nop ; 1: nop | flags=11 steps=1 | pc=+2
+cond_ne_true | bne 1f ; nop ; 1: nop | flags=0 steps=1 | pc=+4
+cond_ne_false | bne 1f ; nop ; 1: nop | flags=4 steps=1 | pc=+2
+cond_cs_true | bcs 1f ; nop ; 1: nop | flags=2 steps=1 | pc=+4
+cond_cs_false | bcs 1f ; nop ; 1: nop | flags=13 steps=1 | pc=+2
+cond_cc_true | bcc 1f ; nop ; 1: nop | flags=0 steps=1 | pc=+4
+cond_cc_false | bcc 1f ; nop ; 1: nop | flags=2 steps=1 | pc=+2
+cond_mi_true | bmi 1f ; nop ; 1: nop | flags=8 steps=1 | pc=+4
+cond_mi_false | bmi 1f ; nop ; 1: nop | flags=7 steps=1 | pc=+2
+cond_pl_true | bpl 1f ; nop ; 1: nop | flags=0 steps=1 | pc=+4
+cond_pl_false | bpl 1f ; nop ; 1: nop | flags=8 steps=1 | pc=+2
+cond_vs_true | bvs 1f ; nop ; 1: nop | flags=1 steps=1 | pc=+4
+cond_vs_false | bvs 1f ; nop ; 1: nop | flags=14 steps=1 | pc=+2
+cond_vc_true | bvc 1f ; nop ; 1: nop | flags=0 steps=1 | pc=+4
+cond_vc_false | bvc 1f ; nop ; 1: nop | flags=1 steps=1 | pc=+2
+cond_hi_true | bhi 1f ; nop ; 1: nop | flags=2 steps=1 | pc=+4
+cond_hi_false_z | bhi 1f ; nop ; 1: nop | flags=6 steps=1 | pc=+2
+cond_hi_false_nc | bhi 1f ; nop ; 1: nop | flags=0 steps=1 | pc=+2
+cond_ls_true_nc | bls 1f ; nop ; 1: nop | flags=0 steps=1 | pc=+4
+cond_ls_true_z | bls 1f ; nop ; 1: nop | flags=6 steps=1 | pc=+4
+cond_ls_false | bls 1f ; nop ; 1: nop | flags=2 steps=1 | pc=+2
+cond_ge_true_clear | bge 1f ; nop ; 1: nop | flags=0 steps=1 | pc=+4
+cond_ge_true_nv | bge 1f ; nop ; 1: nop | flags=9 steps=1 | pc=+4
+cond_ge_false | bge 1f ; nop ; 1: nop | flags=8 steps=1 | pc=+2
+cond_lt_true | blt 1f ; nop ; 1: nop | flags=8 steps=1 | pc=+4
+cond_lt_true_v | blt 1f ; nop ; 1: nop | flags=1 steps=1 | pc=+4
+cond_lt_false | blt 1f ; nop ; 1: nop | flags=0 steps=1 | pc=+2
+cond_gt_true | bgt 1f ; nop ; 1: nop | flags=0 steps=1 | pc=+4
+cond_gt_false_z | bgt 1f ; nop ; 1: nop | flags=4 steps=1 | pc=+2
+cond_gt_false_n | bgt 1f ; nop ; 1: nop | flags=8 steps=1 | pc=+2
+cond_le_true_z | ble 1f ; nop ; 1: nop | flags=4 steps=1 | pc=+4
+cond_le_true_n | ble 1f ; nop ; 1: nop | flags=8 steps=1 | pc=+4
+cond_le_false | ble 1f ; nop ; 1: nop | flags=0 steps=1 | pc=+2
+bl_sets_lr | bl 1f ; nop ; 1: nop | lr=0 steps=1 | lr=0x08004005 pc=+6
+bl_backward | nop ; 1: nop ; bl 1b ; nop | steps=3 | lr=0x08004009 pc=+2
+bx_lr | bx lr | lr=0x08004101 | pc=0x08004100
+bx_register | bx r5 | r5=0x08004201 | pc=0x08004200
+bx_even_address_invstate | bx r0 | r0=0x08004100 | pc=0x08004100 cfsr=0x20000 hfsr=0x40000000
+blx_register | blx r0 | r0=0x08004201 lr=0 | pc=0x08004200 lr=0x08004003
+cbz_taken | cbz r0, 1f ; nop ; nop ; 1: nop | r0=0 steps=1 | pc=+6
+cbz_not_taken | cbz r0, 1f ; nop ; nop ; 1: nop | r0=1 steps=1 | pc=+2
+cbnz_taken | cbnz r0, 1f ; nop ; nop ; 1: nop | r0=1 steps=1 | pc=+6
+cbnz_not_taken | cbnz r0, 1f ; nop ; nop ; 1: nop | r0=0 steps=1 | pc=+2
+countdown_loop | movs r0, #3 ; 1: subs r0, #1 ; bne 1b | steps=7 | r0=0 flags=6 pc=+6
+mov_to_pc | mov pc, r0 | r0=0x08004101 | pc=0x08004100
+add_to_pc | add pc, r0 | r0=2 | pc=+6
+ldr_pc_literal | ldr pc, [pc, #0] ; .word 0x08004301 | steps=1 | pc=0x08004300
+ldr_pc_register | ldr.w pc, [r1, r2, lsl #2] | r1=0x20000100 r2=2 w[0x20000108]=0x08004501 | pc=0x08004500
+mov_r_from_pc | mov r0, pc | | r0=0x08004004
+add_r_pc | add r0, pc | r0=0x10 | r0=0x08004014
+adr_ | adr r0, 1f ; nop ; 1: nop | steps=1 | r0=0x08004004
+adr_wide | adr.w r0, 1f ; nop ; nop ; 1: nop | steps=1 | r0=0x08004008

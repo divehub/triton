@@ -1,0 +1,78 @@
+# name | asm | init | expect          (memory: w=word h=halfword b=byte; SRAM1 starts at 0x20000000)
+# ---- loads ------------------------------------------------------------------------------------------
+ldr_imm | ldr r0, [r1, #4] | r1=0x20000100 w[0x20000104]=0xdeadbeef | r0=0xdeadbeef
+ldr_zero_offset | ldr r0, [r1] | r1=0x20000100 w[0x20000100]=0x01020304 | r0=0x01020304
+ldr_imm12 | ldr.w r0, [r1, #4000] | r1=0x20000000 w[0x20000fa0]=0xabcd1234 | r0=0xabcd1234
+ldrb_ | ldrb r0, [r1, #1] | r1=0x20000100 w[0x20000100]=0x11223344 | r0=0x33
+ldrh_ | ldrh r0, [r1, #2] | r1=0x20000100 w[0x20000100]=0x11223344 | r0=0x1122
+ldrsb_negative | ldrsb.w r0, [r1] | r1=0x20000100 b[0x20000100]=0x80 | r0=0xffffff80
+ldrsb_positive | ldrsb.w r0, [r1] | r1=0x20000100 b[0x20000100]=0x7f | r0=0x7f
+ldrsh_negative | ldrsh.w r0, [r1] | r1=0x20000100 h[0x20000100]=0x8001 | r0=0xffff8001
+ldrsb_reg | ldrsb r0, [r1, r2] | r1=0x20000100 r2=3 b[0x20000103]=0xfe | r0=0xfffffffe
+ldrsh_reg | ldrsh r0, [r1, r2] | r1=0x20000100 r2=2 h[0x20000102]=0xfffe | r0=0xfffffffe
+ldr_reg | ldr r0, [r1, r2] | r1=0x20000100 r2=8 w[0x20000108]=0xcafef00d | r0=0xcafef00d
+ldr_reg_lsl2 | ldr.w r0, [r1, r2, lsl #2] | r1=0x20000100 r2=2 w[0x20000108]=0x12345678 | r0=0x12345678
+ldrb_reg_lsl3 | ldrb.w r0, [r1, r2, lsl #3] | r1=0x20000100 r2=1 b[0x20000108]=0x5a | r0=0x5a
+ldr_negative_offset | ldr r0, [r1, #-4] | r1=0x20000104 w[0x20000100]=0x55 | r0=0x55
+ldr_pre_index | ldr r0, [r1, #4]! | r1=0x20000100 w[0x20000104]=0x77 | r0=0x77 r1=0x20000104
+ldr_post_index | ldr r0, [r1], #4 | r1=0x20000100 w[0x20000100]=0x88 | r0=0x88 r1=0x20000104
+ldr_post_index_negative | ldr r0, [r1], #-8 | r1=0x20000108 w[0x20000108]=0x99 | r0=0x99 r1=0x20000100
+ldrb_post_index | ldrb r0, [r1], #1 | r1=0x20000100 b[0x20000100]=0xab | r0=0xab r1=0x20000101
+ldrh_pre_index_negative | ldrh r0, [r1, #-2]! | r1=0x20000102 h[0x20000100]=0xbeef | r0=0xbeef r1=0x20000100
+ldr_sp_relative | ldr r0, [sp, #8] | sp=0x20000200 w[0x20000208]=0x42 | r0=0x42
+ldr_unaligned | ldr r0, [r1] | r1=0x20000101 w[0x20000100]=0x44332211 w[0x20000104]=0x88776655 | r0=0x55443322
+ldrh_unaligned | ldrh r0, [r1] | r1=0x20000101 w[0x20000100]=0x44332211 | r0=0x3322
+ldr_literal | ldr r0, [pc, #0] ; nop ; .word 0xcafebabe | | r0=0xcafebabe
+ldr_literal_wide | ldr.w r0, [pc, #4] ; nop ; nop ; .word 0x11111111 | steps=1 | r0=0x11111111
+ldr_literal_aligns_pc | nop ; ldr r0, [pc, #4] ; nop ; .balign 4 ; .word 0xaaaa5555 | steps=2 | r0=0xaaaa5555
+ldr_literal_negative | b 1f ; nop ; .word 0x13572468 ; 1: ldr.w r0, [pc, #-8] | steps=2 | r0=0x13572468
+ldrb_literal | ldrb.w r0, [pc, #4] ; nop ; nop ; .byte 0x9c | steps=1 | r0=0x9c
+ldrsb_literal | ldrsb.w r0, [pc, #4] ; nop ; nop ; .byte 0x9c | steps=1 | r0=0xffffff9c
+ldrd_ | ldrd r0, r1, [r2, #8] | r2=0x20000100 w[0x20000108]=0x11 w[0x2000010c]=0x22 | r0=0x11 r1=0x22
+ldrd_pre_index | ldrd r0, r1, [r2, #8]! | r2=0x20000100 w[0x20000108]=0x11 w[0x2000010c]=0x22 | r0=0x11 r1=0x22 r2=0x20000108
+ldrd_post_index | ldrd r0, r1, [r2], #8 | r2=0x20000100 w[0x20000100]=0x33 w[0x20000104]=0x44 | r0=0x33 r1=0x44 r2=0x20000108
+ldrd_literal | ldrd r0, r1, [pc, #0] ; .word 0x55 ; .word 0x66 | steps=1 | r0=0x55 r1=0x66
+ldrd_unaligned_faults | ldrd r0, r1, [r2] | r2=0x20000102 r0=0x77 | r0=0x77 cfsr=0x01000000
+ldm_unaligned_faults | ldmia r2, {r0, r1} | r2=0x20000102 r0=0x77 | r0=0x77 cfsr=0x01000000
+# ---- stores ---------------------------------------------------------------------------------------------
+str_imm | str r0, [r1, #4] | r0=0xdeadbeef r1=0x20000100 | w[0x20000104]=0xdeadbeef
+strb_ | strb r0, [r1, #1] | r0=0xaabbccdd r1=0x20000100 w[0x20000100]=0x11223344 | w[0x20000100]=0x1122dd44
+strh_ | strh r0, [r1, #2] | r0=0xaabbccdd r1=0x20000100 w[0x20000100]=0x11223344 | w[0x20000100]=0xccdd3344
+str_pre_index | str r0, [r1, #-4]! | r0=0x1234 r1=0x20000104 | w[0x20000100]=0x1234 r1=0x20000100
+str_post_index | str r0, [r1], #4 | r0=0x1234 r1=0x20000100 | w[0x20000100]=0x1234 r1=0x20000104
+str_reg_lsl | str.w r0, [r1, r2, lsl #3] | r0=0x77 r1=0x20000100 r2=1 | w[0x20000108]=0x77
+str_sp_relative | str r0, [sp, #4] | r0=0x99 sp=0x20000200 | w[0x20000204]=0x99
+strh_reg | strh r0, [r1, r2] | r0=0xabcd r1=0x20000100 r2=6 | h[0x20000106]=0xabcd
+str_unaligned | str r0, [r1] | r0=0xaabbccdd r1=0x20000101 | b[0x20000101]=0xdd b[0x20000102]=0xcc b[0x20000103]=0xbb b[0x20000104]=0xaa
+strd_ | strd r0, r1, [r2, #-8] | r0=1 r1=2 r2=0x20000108 | w[0x20000100]=1 w[0x20000104]=2
+strd_pre_index | strd r0, r1, [r2, #8]! | r0=3 r1=4 r2=0x20000100 | w[0x20000108]=3 w[0x2000010c]=4 r2=0x20000108
+strd_post_index | strd r0, r1, [r2], #8 | r0=5 r1=6 r2=0x20000100 | w[0x20000100]=5 w[0x20000104]=6 r2=0x20000108
+# ---- load/store multiple, push/pop ---------------------------------------------------------------------------
+ldmia_writeback | ldmia r4!, {r0, r1, r2} | r4=0x20000100 w[0x20000100]=1 w[0x20000104]=2 w[0x20000108]=3 | r0=1 r1=2 r2=3 r4=0x2000010c
+ldmia_no_writeback | ldmia r4, {r0, r1} | r4=0x20000100 w[0x20000100]=1 w[0x20000104]=2 | r0=1 r1=2 r4=0x20000100
+ldmia_base_in_list | ldmia r0, {r0, r1} | r0=0x20000100 w[0x20000100]=0x55 w[0x20000104]=0x66 | r0=0x55 r1=0x66
+stmia_writeback | stmia r4!, {r0, r1} | r0=1 r1=2 r4=0x20000100 | w[0x20000100]=1 w[0x20000104]=2 r4=0x20000108
+stmia_w_high_regs | stmia.w r4!, {r8, r9, r12} | r8=8 r9=9 r12=12 r4=0x20000100 | w[0x20000100]=8 w[0x20000104]=9 w[0x20000108]=12 r4=0x2000010c
+stmdb_writeback | stmdb r4!, {r0, r1, r2} | r0=1 r1=2 r2=3 r4=0x2000010c | w[0x20000100]=1 w[0x20000104]=2 w[0x20000108]=3 r4=0x20000100
+ldmdb_writeback | ldmdb r4!, {r0, r1} | r4=0x20000108 w[0x20000100]=7 w[0x20000104]=8 | r0=7 r1=8 r4=0x20000100
+ldmia_w_pc | ldmia.w r4!, {r0, pc} | r4=0x20000100 w[0x20000100]=5 w[0x20000104]=0x08004301 | r0=5 pc=0x08004300 r4=0x20000108
+push_pop_roundtrip | push {r0, r1, lr} ; pop {r2, r3, r4} | r0=1 r1=2 lr=3 sp=0x20000200 | r2=1 r3=2 r4=3 sp=0x20000200
+push_layout | push {r4, r5, lr} | r4=0x44 r5=0x55 lr=0x66 sp=0x20000200 | sp=0x200001f4 w[0x200001f4]=0x44 w[0x200001f8]=0x55 w[0x200001fc]=0x66
+push_w_high | push.w {r4, r8, lr} | r4=1 r8=2 lr=3 sp=0x20000200 | sp=0x200001f4 w[0x200001f4]=1 w[0x200001f8]=2 w[0x200001fc]=3
+pop_pc | pop {r4, pc} | sp=0x20000200 w[0x20000200]=0x44 w[0x20000204]=0x08004101 | r4=0x44 pc=0x08004100 sp=0x20000208
+pop_pc_wide | pop.w {r4, r5, r6, pc} | sp=0x20000200 w[0x2000020c]=0x08004201 | pc=0x08004200 sp=0x20000210
+# ---- exclusive access -----------------------------------------------------------------------------------------------
+ldrex_strex_success | ldrex r0, [r1] ; strex r2, r3, [r1] | r1=0x20000100 r3=0x77 w[0x20000100]=0x55 r2=0xff | r0=0x55 r2=0 w[0x20000100]=0x77
+strex_without_ldrex | strex r2, r3, [r1] | r1=0x20000100 r3=0x77 w[0x20000100]=0x55 r2=0xff | r2=1 w[0x20000100]=0x55
+strex_after_clrex | ldrex r0, [r1] ; clrex ; strex r2, r3, [r1] | r1=0x20000100 r3=0x77 w[0x20000100]=0x55 | r2=1 w[0x20000100]=0x55
+strex_other_address | ldrex r0, [r1] ; strex r2, r3, [r4] | r1=0x20000100 r4=0x20000104 r3=0x77 | r2=1 w[0x20000104]=0
+ldrexb_strexb | ldrexb r0, [r1] ; strexb r2, r3, [r1] | r1=0x20000100 r3=0x1aa b[0x20000100]=0x11 r2=9 | r0=0x11 r2=0 b[0x20000100]=0xaa
+ldrexh_strexh | ldrexh r0, [r1] ; strexh r2, r3, [r1] | r1=0x20000100 r3=0x1bbcc h[0x20000100]=0x1122 | r0=0x1122 r2=0 h[0x20000100]=0xbbcc
+ldrex_offset | ldrex r0, [r1, #8] ; strex r2, r3, [r1, #8] | r1=0x20000100 r3=5 w[0x20000108]=9 | r0=9 r2=0 w[0x20000108]=5
+ldrex_unaligned_faults | ldrex r0, [r1] | r1=0x20000102 r0=7 | r0=7 cfsr=0x01000000
+# ---- table branches ----------------------------------------------------------------------------------------------------
+tbb_index1 | tbb [pc, r0] ; .byte 1, 2, 3, 4 | r0=1 | pc=+8
+tbb_index3 | tbb [pc, r0] ; .byte 1, 2, 3, 4 | r0=3 | pc=+12
+tbh_index2 | tbh [pc, r0, lsl #1] ; .hword 1, 3, 5, 7 | r0=2 | pc=+14
+tbb_register_base | tbb [r1, r0] | r1=0x20000100 r0=2 b[0x20000102]=10 | pc=+24
+tbh_register_base | tbh [r1, r0, lsl #1] | r1=0x20000100 r0=2 h[0x20000104]=0x20 | pc=+68

@@ -1,0 +1,11 @@
+[package]
+name = "armv7m"
+description = "Cortex-M4F (ARMv7E-M, FPv4-SP) interpreter core with system control space"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+emu-core = { path = "../emu-core" }
+armv7m-vfp = { path = "../armv7m-vfp" }

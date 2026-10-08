@@ -1,0 +1,1016 @@
+{
+ "version": 1,
+ "engine": "renode-1.17.0",
+ "renodeBuild": "1.17.0+20260906gitf1dd1b4af",
+ "platform": {
+  "repl": "reference/micro/micro.repl",
+  "cpu": "Cortex-M4 100 MIPS, quantum 100 us",
+  "bootState": {
+   "vtor": "0x08000000",
+   "sp": "0x20018000",
+   "pc": "labels.reset"
+  }
+ },
+ "runner": "SetGlobalAdvanceImmediately true; RunFor 1 ms steps; no WFI idle except the wfi-* programs",
+ "programs": {
+  "level-irq-reentry": {
+   "description": "UG sets the TIM6 update flag (level-high line); the ISR clears SR only on its 5th entry. Measure how many back-to-back ISR entries occur and whether thread instructions run in between.",
+   "params": {
+    "clearAfter": 5
+   },
+   "imageHex": "00800120010200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200081b0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200082f0200080b4c0c4d0121890529600121e160616100bf00bf00bf00bffae7074a136801331360052b02d10548002101617047fee70010004004e100e00000002000100040",
+   "imageSha256": "eeb7078c9362e28164bb7d2bca508b37c5b98f6760cd2134ecdc5bdc7c6ea8c2",
+   "labels": {
+    "reset": "0x8000200",
+    "ug": "0x800020e",
+    "spin": "0x8000210",
+    "tim6_isr": "0x800021a",
+    "tim6_out": "0x800022c",
+    "unhandled": "0x800022e"
+   },
+   "runVirtualNs": 1000000,
+   "executedInstructions": 100000,
+   "isrCounterWord": 5,
+   "traceInstructions": 100000,
+   "traceSha256": "30bdfb333247fa2a1bb03f5f970f47c0313bb35a471bb00e095276a90575dbc9",
+   "traceFormat": "uint32 little-endian PC per executed instruction (Renode ExecutionTracer PC, Thumb bit clear)",
+   "expected": {
+    "ugWriteIndex": 7,
+    "isrEntries": 5,
+    "isrEntryIndices": [
+     13,
+     20,
+     27,
+     34,
+     41
+    ],
+    "isrMinusUg": 6,
+    "spacingBetweenEntries": [
+     7,
+     7,
+     7,
+     7
+    ],
+    "threadInstructionsBetweenEntries": [
+     0,
+     0,
+     0,
+     0
+    ],
+    "firstInstructionsAfterLastEntry": [
+     "0x800021a",
+     "0x800021c",
+     "0x800021e",
+     "0x8000220",
+     "0x8000222",
+     "0x8000224",
+     "0x8000226",
+     "0x8000228",
+     "0x800022a",
+     "0x800022c",
+     "0x8000210",
+     "0x8000212",
+     "0x8000214",
+     "0x8000216"
+    ]
+   }
+  },
+  "pendsv-tb-end": {
+   "description": "ICSR.PENDSVSET store followed by k NOPs and a taken branch. Measure PendSV ISR entry index minus store index (translation-block end latency); plus a PRIMASK cpsid/cpsie sequence.",
+   "params": {
+    "nops": [
+     0,
+     1,
+     2,
+     3,
+     6,
+     12,
+     25
+    ]
+   },
+   "imageHex": "00800120010200082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300081f03000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300082903000829030008290300084a4d012424072c60ffe700bf00bf00bf00bf00bf00bf00bf00bf2c6000bfffe700bf00bf00bf00bf00bf00bf00bf00bf2c6000bf00bfffe700bf00bf00bf00bf00bf00bf00bf00bf2c6000bf00bf00bfffe700bf00bf00bf00bf00bf00bf00bf00bf2c6000bf00bf00bf00bf00bf00bfffe700bf00bf00bf00bf00bf00bf00bf00bf2c6000bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bfffe700bf00bf00bf00bf00bf00bf00bf00bf2c6000bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bf00bfffe700bf00bf00bf00bf00bf00bf00bf00bf72b62c6000bf00bf00bf62b600bf00bf00bf00bf00bfffe700bf00bf00bf00bf00bf00bf00bf00bffee7044a1368013313607047fee700bf04ed00e000000020",
+   "imageSha256": "69c49ef8b82d3d269e13f93165e6b65ee77f24837e715097e4bd05a97f8ff46a",
+   "labels": {
+    "reset": "0x8000200",
+    "pend0": "0x8000206",
+    "tbend0": "0x8000208",
+    "next0": "0x800020a",
+    "pend1": "0x800021a",
+    "tbend1": "0x800021e",
+    "next1": "0x8000220",
+    "pend2": "0x8000230",
+    "tbend2": "0x8000236",
+    "next2": "0x8000238",
+    "pend3": "0x8000248",
+    "tbend3": "0x8000250",
+    "next3": "0x8000252",
+    "pend4": "0x8000262",
+    "tbend4": "0x8000270",
+    "next4": "0x8000272",
+    "pend5": "0x8000282",
+    "tbend5": "0x800029c",
+    "next5": "0x800029e",
+    "pend6": "0x80002ae",
+    "tbend6": "0x80002e2",
+    "next6": "0x80002e4",
+    "pm_cpsid": "0x80002f4",
+    "pm_pend": "0x80002f6",
+    "pm_cpsie": "0x80002fe",
+    "pm_tbend": "0x800030a",
+    "pm_next": "0x800030c",
+    "done": "0x800031c",
+    "pendsv_isr": "0x800031e",
+    "unhandled": "0x8000328"
+   },
+   "runVirtualNs": 1000000,
+   "executedInstructions": 183,
+   "isrCounterWord": 8,
+   "traceInstructions": 183,
+   "traceSha256": "b12f7afa041b1e629b29623a276689f5730caec8abff670028b66a8b727a94b3",
+   "traceFormat": "uint32 little-endian PC per executed instruction (Renode ExecutionTracer PC, Thumb bit clear)",
+   "expected": {
+    "trials": [
+     {
+      "nops": 0,
+      "pendWriteIndex": 3,
+      "isrEntryIndex": 5,
+      "isrMinusWrite": 2,
+      "tbEndRuleExpects": 2,
+      "nextInstructionRuleExpects": 1
+     },
+     {
+      "nops": 1,
+      "pendWriteIndex": 18,
+      "isrEntryIndex": 21,
+      "isrMinusWrite": 3,
+      "tbEndRuleExpects": 3,
+      "nextInstructionRuleExpects": 1
+     },
+     {
+      "nops": 2,
+      "pendWriteIndex": 34,
+      "isrEntryIndex": 38,
+      "isrMinusWrite": 4,
+      "tbEndRuleExpects": 4,
+      "nextInstructionRuleExpects": 1
+     },
+     {
+      "nops": 3,
+      "pendWriteIndex": 51,
+      "isrEntryIndex": 56,
+      "isrMinusWrite": 5,
+      "tbEndRuleExpects": 5,
+      "nextInstructionRuleExpects": 1
+     },
+     {
+      "nops": 6,
+      "pendWriteIndex": 69,
+      "isrEntryIndex": 77,
+      "isrMinusWrite": 8,
+      "tbEndRuleExpects": 8,
+      "nextInstructionRuleExpects": 1
+     },
+     {
+      "nops": 12,
+      "pendWriteIndex": 90,
+      "isrEntryIndex": 104,
+      "isrMinusWrite": 14,
+      "tbEndRuleExpects": 14,
+      "nextInstructionRuleExpects": 1
+     },
+     {
+      "nops": 25,
+      "pendWriteIndex": 117,
+      "isrEntryIndex": 144,
+      "isrMinusWrite": 27,
+      "tbEndRuleExpects": 27,
+      "nextInstructionRuleExpects": 1
+     }
+    ],
+    "primaskSequence": {
+     "pendWriteIndex": 158,
+     "cpsieIndex": 162,
+     "isrEntryIndex": 163,
+     "isrMinusCpsie": 1,
+     "pcsBetweenCpsieAndIsr": [
+      "0x80002fe",
+      "0x800031e"
+     ]
+    }
+   }
+  },
+  "systick-reload79999": {
+   "description": "SysTick period/phase: SYST_RVR=RELOAD, CVR write, CSR enable; idle loop of 5 instructions (4 NOP + B). Measure SysTick ISR entry spacing in executed instructions.",
+   "params": {
+    "reload": 79999
+   },
+   "imageHex": "0080012001020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200081902000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008230200082302000823020008084d094969610021a9610721296100bf00bf00bf00bffae7044a1368013313607047fee700e000e07f38010000000020",
+   "imageSha256": "a55c469de43af949bb2055735625e6324772871b1f47e50689d555c7e051c873",
+   "labels": {
+    "reset": "0x8000200",
+    "enable": "0x800020c",
+    "idle": "0x800020e",
+    "systick_isr": "0x8000218",
+    "unhandled": "0x8000222"
+   },
+   "runVirtualNs": 40000000,
+   "executedInstructions": 4000000,
+   "isrCounterWord": 40,
+   "traceInstructions": 4000000,
+   "traceSha256": "ab6191e3aaedbee0ed713f05b9dc9f102d61e94b81b58dfd9d5911af48cae356",
+   "traceFormat": "uint32 little-endian PC per executed instruction (Renode ExecutionTracer PC, Thumb bit clear)",
+   "expected": {
+    "enableWriteIndex": 6,
+    "isrEntries": 40,
+    "firstIsrEntryIndex": 99999,
+    "firstEntryMinusEnable": 99993,
+    "deltaHistogram": [
+     [
+      99998,
+      8
+     ],
+     [
+      99999,
+      31
+     ]
+    ],
+    "positionsOfSmallerDelta": [
+     3,
+     8,
+     13,
+     18,
+     23,
+     28,
+     33,
+     38
+    ],
+    "periodExactNs": 999987.5,
+    "periodCeilNs": 999988,
+    "modelCeilNs": {
+     "matchingPrefix": 40,
+     "of": 40,
+     "t0Ns": 999987.0
+    },
+    "modelExactRational": {
+     "matchingPrefix": 8,
+     "of": 40,
+     "t0Ns": 999988.0
+    },
+    "entryIndices": [
+     99999,
+     199998,
+     299997,
+     399996,
+     499994,
+     599993,
+     699992,
+     799991,
+     899990,
+     999988,
+     1099987,
+     1199986,
+     1299985,
+     1399984,
+     1499982,
+     1599981,
+     1699980,
+     1799979,
+     1899978,
+     1999976,
+     2099975,
+     2199974,
+     2299973,
+     2399972,
+     2499970,
+     2599969,
+     2699968,
+     2799967,
+     2899966,
+     2999964,
+     3099963,
+     3199962,
+     3299961,
+     3399960,
+     3499958,
+     3599957,
+     3699956,
+     3799955,
+     3899954,
+     3999952
+    ]
+   }
+  },
+  "tim6-ceil-arr1001-psc0": {
+   "description": "TIM6 free-running at 80 MHz/(PSC+1), period ARR ticks; ISR clears SR and counts. Measure ISR entry spacing in executed instructions (ceil-ns period rule).",
+   "params": {
+    "psc": 0,
+    "arr": 1001
+   },
+   "imageHex": "00800120010200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008230200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200080c4c0d4d0121890529600c49e1620c49a1620121e160216000bf00bf00bf00bffae7084800210161074a1368013313607047fee70010004004e100e0e9030000000000000010004000000020",
+   "imageSha256": "1363bb0e1c4fa52b365aee7c480ca76dfeb70c0b202f25913621a8f3c13ce76d",
+   "labels": {
+    "reset": "0x8000200",
+    "enable": "0x8000216",
+    "idle": "0x8000218",
+    "tim6_isr": "0x8000222",
+    "tim6_isr_sr": "0x8000226",
+    "unhandled": "0x8000232"
+   },
+   "runVirtualNs": 6000000,
+   "executedInstructions": 600000,
+   "isrCounterWord": 479,
+   "traceInstructions": 600000,
+   "traceSha256": "1ad01fd45a004759ee81622677be4533d7c9b0695532784d9198bbbc0e5fcb6e",
+   "traceFormat": "uint32 little-endian PC per executed instruction (Renode ExecutionTracer PC, Thumb bit clear)",
+   "expected": {
+    "enableWriteIndex": 11,
+    "isrEntries": 479,
+    "firstIsrEntryIndex": 1252,
+    "firstEntryMinusEnable": 1241,
+    "deltaHistogram": [
+     [
+      1251,
+      335
+     ],
+     [
+      1252,
+      143
+     ]
+    ],
+    "positionsOfSmallerDelta": [
+     0,
+     1,
+     3,
+     4,
+     6,
+     7,
+     8,
+     10,
+     11,
+     13,
+     14,
+     16
+    ],
+    "periodExactNs": 12512.5,
+    "periodCeilNs": 12513,
+    "modelCeilNs": {
+     "matchingPrefix": 479,
+     "of": 479,
+     "t0Ns": 12513.0
+    },
+    "modelExactRational": {
+     "matchingPrefix": 6,
+     "of": 479,
+     "t0Ns": 12513.0
+    },
+    "entryIndices": [
+     1252,
+     2503,
+     3754,
+     5006,
+     6257,
+     7508,
+     8760,
+     10011,
+     11262,
+     12513,
+     13765,
+     15016,
+     16267,
+     17519,
+     18770,
+     20021,
+     21273,
+     22524,
+     23775,
+     25026,
+     26278,
+     27529,
+     28780,
+     30032,
+     31283,
+     32534,
+     33786,
+     35037,
+     36288,
+     37539,
+     38791,
+     40042,
+     41293,
+     42545,
+     43796,
+     45047,
+     46299,
+     47550,
+     48801,
+     50052,
+     51304,
+     52555,
+     53806,
+     55058,
+     56309,
+     57560,
+     58812,
+     60063,
+     61314,
+     62565,
+     63817,
+     65068,
+     66319,
+     67571,
+     68822,
+     70073,
+     71325,
+     72576,
+     73827,
+     75078
+    ]
+   }
+  },
+  "tim6-ceil-arr1001-psc2": {
+   "description": "TIM6 free-running at 80 MHz/(PSC+1), period ARR ticks; ISR clears SR and counts. Measure ISR entry spacing in executed instructions (ceil-ns period rule).",
+   "params": {
+    "psc": 2,
+    "arr": 1001
+   },
+   "imageHex": "00800120010200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008230200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200083302000833020008330200080c4c0d4d0121890529600c49e1620c49a1620121e160216000bf00bf00bf00bffae7084800210161074a1368013313607047fee70010004004e100e0e9030000020000000010004000000020",
+   "imageSha256": "6069680b6ba5d21e88cf79aa5ed25c1868dff91833af33bab782ccd74f4eb1a3",
+   "labels": {
+    "reset": "0x8000200",
+    "enable": "0x8000216",
+    "idle": "0x8000218",
+    "tim6_isr": "0x8000222",
+    "tim6_isr_sr": "0x8000226",
+    "unhandled": "0x8000232"
+   },
+   "runVirtualNs": 16000000,
+   "executedInstructions": 1600000,
+   "isrCounterWord": 426,
+   "traceInstructions": 1600000,
+   "traceSha256": "2acccf92e2b26ddf3454b1fea6b0a00936de8ee9bbb95b1ebb7c09a4cf5ba03a",
+   "traceFormat": "uint32 little-endian PC per executed instruction (Renode ExecutionTracer PC, Thumb bit clear)",
+   "expected": {
+    "enableWriteIndex": 11,
+    "isrEntries": 426,
+    "firstIsrEntryIndex": 3754,
+    "firstEntryMinusEnable": 3743,
+    "deltaHistogram": [
+     [
+      3753,
+      85
+     ],
+     [
+      3754,
+      340
+     ]
+    ],
+    "positionsOfSmallerDelta": [
+     3,
+     8,
+     13,
+     18,
+     23,
+     28,
+     33,
+     38,
+     43,
+     48,
+     53,
+     58
+    ],
+    "periodExactNs": 37537.5,
+    "periodCeilNs": 37538,
+    "modelCeilNs": {
+     "matchingPrefix": 426,
+     "of": 426,
+     "t0Ns": 37537.0
+    },
+    "modelExactRational": {
+     "matchingPrefix": 8,
+     "of": 426,
+     "t0Ns": 37538.0
+    },
+    "entryIndices": [
+     3754,
+     7508,
+     11262,
+     15016,
+     18769,
+     22523,
+     26277,
+     30031,
+     33785,
+     37538,
+     41292,
+     45046,
+     48800,
+     52554,
+     56307,
+     60061,
+     63815,
+     67569,
+     71323,
+     75076,
+     78830,
+     82584,
+     86338,
+     90092,
+     93845,
+     97599,
+     101353,
+     105107,
+     108861,
+     112614,
+     116368,
+     120122,
+     123876,
+     127630,
+     131383,
+     135137,
+     138891,
+     142645,
+     146399,
+     150152,
+     153906,
+     157660,
+     161414,
+     165168,
+     168921,
+     172675,
+     176429,
+     180183,
+     183937,
+     187690,
+     191444,
+     195198,
+     198952,
+     202706,
+     206459,
+     210213,
+     213967,
+     217721,
+     221475,
+     225228
+    ]
+   }
+  },
+  "timer-enable-lag": {
+   "description": "TIM6 (ARR=999, PSC=79: one tick = 999 us) enabled by a CR1 write after D delay iterations with no timer access; the ISR clears SR, disables the timer and counts. Measure the first ISR entry relative to the CR1 write index.",
+   "params": {
+    "delays": [
+     0,
+     20,
+     100,
+     400,
+     1500,
+     3000,
+     4500,
+     7000
+    ],
+    "periodInstructions": 99900
+   },
+   "imageHex": "0080012001020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008a3020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b5020008b50200082d4c2e4d0121890529602d49e1624f21a1620121e160012121602a4e31680129fcd1294f013ffdd101212160274e31680229fcd1264f013ffdd101212160254e31680329fcd1244f013ffdd101212160224e31680429fcd1214f013ffdd101212160204e31680529fcd11f4f013ffdd1012121601d4e31680629fcd11c4f013ffdd1012121601b4e31680729fcd11a4f013ffdd101212160184e31680829fcd1fee71748002101610160164a1368013313607047fee700bf0010004004e100e0e703000000000020140000000000002064000000000000209001000000000020dc05000000000020b80b0000000000209411000000000020581b0000000000200010004000000020",
+   "imageSha256": "a6798f66b98b70221bfe01b32d1f373c8689ab6e5911955ccc41c9d395bd7b73",
+   "labels": {
+    "reset": "0x8000200",
+    "cfg_arr": "0x800020c",
+    "cfg_psc": "0x8000210",
+    "cfg_dier": "0x8000214",
+    "cen0": "0x8000218",
+    "wait0": "0x800021c",
+    "delay1": "0x8000224",
+    "cen1": "0x800022a",
+    "wait1": "0x800022e",
+    "delay2": "0x8000236",
+    "cen2": "0x800023c",
+    "wait2": "0x8000240",
+    "delay3": "0x8000248",
+    "cen3": "0x800024e",
+    "wait3": "0x8000252",
+    "delay4": "0x800025a",
+    "cen4": "0x8000260",
+    "wait4": "0x8000264",
+    "delay5": "0x800026c",
+    "cen5": "0x8000272",
+    "wait5": "0x8000276",
+    "delay6": "0x800027e",
+    "cen6": "0x8000284",
+    "wait6": "0x8000288",
+    "delay7": "0x8000290",
+    "cen7": "0x8000296",
+    "wait7": "0x800029a",
+    "done": "0x80002a0",
+    "tim6_isr": "0x80002a2",
+    "tim6_isr_sr": "0x80002a6",
+    "tim6_isr_cr1": "0x80002a8",
+    "unhandled": "0x80002b4"
+   },
+   "runVirtualNs": 12000000,
+   "executedInstructions": 809915,
+   "isrCounterWord": 8,
+   "traceInstructions": 809915,
+   "traceSha256": "168b43d072d208f6d262481c9e7b889e18a38f91913da6b619396e4434971471",
+   "traceFormat": "uint32 little-endian PC per executed instruction (Renode ExecutionTracer PC, Thumb bit clear)",
+   "expected": {
+    "trials": [
+     {
+      "delayIterations": 0,
+      "cenWriteIndex": 12,
+      "lastTimerWriteIndex": 10,
+      "lastTimerWriteTbEnd": 16,
+      "quantumStart": 0,
+      "modelChunkStart": 0,
+      "modelLagInstructions": 12,
+      "isrEntryIndex": 99900,
+      "isrMinusCen": 99888,
+      "exactModelIsrMinusCen": 99900,
+      "measuredEarlyByInstructions": 12,
+      "residualVsLagModel": 0
+     },
+     {
+      "delayIterations": 20,
+      "cenWriteIndex": 99956,
+      "lastTimerWriteIndex": 99903,
+      "lastTimerWriteTbEnd": 99908,
+      "quantumStart": 90000,
+      "modelChunkStart": 99909,
+      "modelLagInstructions": 47,
+      "isrEntryIndex": 199809,
+      "isrMinusCen": 99853,
+      "exactModelIsrMinusCen": 99900,
+      "measuredEarlyByInstructions": 47,
+      "residualVsLagModel": 0
+     },
+     {
+      "delayIterations": 100,
+      "cenWriteIndex": 200024,
+      "lastTimerWriteIndex": 199812,
+      "lastTimerWriteTbEnd": 199817,
+      "quantumStart": 200000,
+      "modelChunkStart": 200000,
+      "modelLagInstructions": 24,
+      "isrEntryIndex": 299900,
+      "isrMinusCen": 99876,
+      "exactModelIsrMinusCen": 99900,
+      "measuredEarlyByInstructions": 24,
+      "residualVsLagModel": 0
+     },
+     {
+      "delayIterations": 400,
+      "cenWriteIndex": 300716,
+      "lastTimerWriteIndex": 299903,
+      "lastTimerWriteTbEnd": 299908,
+      "quantumStart": 300000,
+      "modelChunkStart": 300000,
+      "modelLagInstructions": 716,
+      "isrEntryIndex": 399900,
+      "isrMinusCen": 99184,
+      "exactModelIsrMinusCen": 99900,
+      "measuredEarlyByInstructions": 716,
+      "residualVsLagModel": 0
+     },
+     {
+      "delayIterations": 1500,
+      "cenWriteIndex": 402915,
+      "lastTimerWriteIndex": 399903,
+      "lastTimerWriteTbEnd": 399908,
+      "quantumStart": 400000,
+      "modelChunkStart": 400000,
+      "modelLagInstructions": 2915,
+      "isrEntryIndex": 499900,
+      "isrMinusCen": 96985,
+      "exactModelIsrMinusCen": 99900,
+      "measuredEarlyByInstructions": 2915,
+      "residualVsLagModel": 0
+     },
+     {
+      "delayIterations": 3000,
+      "cenWriteIndex": 505915,
+      "lastTimerWriteIndex": 499903,
+      "lastTimerWriteTbEnd": 499908,
+      "quantumStart": 500000,
+      "modelChunkStart": 500000,
+      "modelLagInstructions": 5915,
+      "isrEntryIndex": 599900,
+      "isrMinusCen": 93985,
+      "exactModelIsrMinusCen": 99900,
+      "measuredEarlyByInstructions": 5915,
+      "residualVsLagModel": 0
+     },
+     {
+      "delayIterations": 4500,
+      "cenWriteIndex": 608915,
+      "lastTimerWriteIndex": 599903,
+      "lastTimerWriteTbEnd": 599908,
+      "quantumStart": 600000,
+      "modelChunkStart": 600000,
+      "modelLagInstructions": 8915,
+      "isrEntryIndex": 699900,
+      "isrMinusCen": 90985,
+      "exactModelIsrMinusCen": 99900,
+      "measuredEarlyByInstructions": 8915,
+      "residualVsLagModel": 0
+     },
+     {
+      "delayIterations": 7000,
+      "cenWriteIndex": 713915,
+      "lastTimerWriteIndex": 699903,
+      "lastTimerWriteTbEnd": 699908,
+      "quantumStart": 710000,
+      "modelChunkStart": 710000,
+      "modelLagInstructions": 3915,
+      "isrEntryIndex": 809900,
+      "isrMinusCen": 95985,
+      "exactModelIsrMinusCen": 99900,
+      "measuredEarlyByInstructions": 3915,
+      "residualVsLagModel": 0
+     }
+    ]
+   }
+  },
+  "unaligned-mmio": {
+   "description": "32-bit STR/LDR at TIM6+0x2A (unaligned, straddling PSC 0x28 and ARR 0x2C): which bus accesses result, and what do PSC/ARR contain afterwards. TIM6 access log lines are recorded.",
+   "params": {
+    "logPeripheral": "timer6",
+    "readWords": {
+     "loadResult": "0x20000004",
+     "psc": "0x20000008",
+     "arr": "0x2000000c"
+    }
+   },
+   "imageHex": "0080012001020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008190200081902000819020008064807498162826a064b5a60064ca56a9d60e56add60fee7fee700bf02100040ddccbbaa0000002000100040",
+   "imageSha256": "4caad48e72064c52daaa48dcedb0e51ec750859a8d44743adaf3261da0bd74ff",
+   "labels": {
+    "reset": "0x8000200",
+    "ustore": "0x8000204",
+    "uload": "0x8000206",
+    "done": "0x8000216",
+    "unhandled": "0x8000218"
+   },
+   "runVirtualNs": 1000000,
+   "executedInstructions": 12,
+   "isrCounterWord": 0,
+   "traceInstructions": 12,
+   "traceSha256": "fa4bdf36c0d7841387bb5809a35b826cdf40a187d62f0aa09308d4df034f8aad",
+   "traceFormat": "uint32 little-endian PC per executed instruction (Renode ExecutionTracer PC, Thumb bit clear)",
+   "expected": {
+    "words": {
+     "loadResult": "0xaabb0000",
+     "psc": "0x0",
+     "arr": "0xaabb"
+    },
+    "accessLog": [
+     "[INFO] timer6: [cpu: 0x8000204] WriteByte to 0x2D (AutoReload+0x1), value 0xAA",
+     "[INFO] timer6: [cpu: 0x8000204] WriteByte to 0x2C (AutoReload), value 0xBB",
+     "[INFO] timer6: [cpu: 0x8000204] WriteByte to 0x2B (Prescaler+0x3), value 0xCC",
+     "[INFO] timer6: [cpu: 0x8000204] WriteByte to 0x2A (Prescaler+0x2), value 0xDD",
+     "[INFO] timer6: [cpu: 0x8000206] ReadUInt32 from 0x28 (Prescaler), returned 0x0",
+     "[INFO] timer6: [cpu: 0x8000206] ReadUInt32 from 0x2C (AutoReload), returned 0xAABB",
+     "[INFO] timer6: [cpu: 0x800020E] ReadUInt32 from 0x28 (Prescaler), returned 0x0",
+     "[INFO] timer6: [cpu: 0x8000212] ReadUInt32 from 0x2C (AutoReload), returned 0xAABB"
+    ],
+    "storeIndex": 2,
+    "loadIndex": 3
+   }
+  },
+  "wfi-primask": {
+   "description": "SysTick enabled (RELOAD 79999, TICKINT) while the CPU loops 'wfi; b idle'; PRIMASK=1 so the tick stays pending (WFI must still wake).",
+   "params": {
+    "masked": true,
+    "cyccnt": false
+   },
+   "imageHex": "00800120010200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f020008150200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f0200081f02000872b6074d074969610021a9610721296130bffde7044a1368013313607047fee700e000e07f38010000000020",
+   "imageSha256": "5f5e8fcb791ff16a0b2eacc1934689450bd23bf0ee4fdcfc1cb0f41bae9cb2ab",
+   "labels": {
+    "reset": "0x8000200",
+    "enable": "0x800020e",
+    "idle": "0x8000210",
+    "wfi_at": "0x8000210",
+    "systick_isr": "0x8000214",
+    "unhandled": "0x800021e"
+   },
+   "runVirtualNs": 3000000,
+   "executedInstructions": 53,
+   "isrCounterWord": 0,
+   "traceInstructions": 53,
+   "traceSha256": "3679f78a0b1306dbaaa8f31befeb9e57c5a14124240d542b27958d706d30d978",
+   "traceFormat": "uint32 little-endian PC per executed instruction (Renode ExecutionTracer PC, Thumb bit clear)",
+   "expected": {
+    "executedInstructions": 53,
+    "isrEntries": 0,
+    "wfiExecutions": 23,
+    "spacingBetweenIsrEntries": [],
+    "firstIsrEntryIndex": null,
+    "firstPcs": [
+     "0x8000200",
+     "0x8000202",
+     "0x8000204",
+     "0x8000206",
+     "0x8000208",
+     "0x800020a",
+     "0x800020c",
+     "0x800020e",
+     "0x8000210",
+     "0x8000212",
+     "0x8000210",
+     "0x8000212",
+     "0x8000210",
+     "0x8000212",
+     "0x8000210",
+     "0x8000212",
+     "0x8000210",
+     "0x8000212",
+     "0x8000210",
+     "0x8000212",
+     "0x8000210",
+     "0x8000212",
+     "0x8000210",
+     "0x8000212"
+    ]
+   }
+  },
+  "wfi-systick": {
+   "description": "SysTick enabled (RELOAD 79999, TICKINT) while the CPU loops 'wfi; b idle'; measures instructions per tick.",
+   "params": {
+    "masked": false,
+    "cyccnt": false
+   },
+   "imageHex": "00800120010200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d020008130200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d0200081d020008074d084969610021a9610721296130bffde7054a1368013313607047fee700bf00e000e07f38010000000020",
+   "imageSha256": "849b860692fce750da113dd055688bd3d89faa9df3691c60d39ca73b72d3c8ea",
+   "labels": {
+    "reset": "0x8000200",
+    "enable": "0x800020c",
+    "idle": "0x800020e",
+    "wfi_at": "0x800020e",
+    "systick_isr": "0x8000212",
+    "unhandled": "0x800021c"
+   },
+   "runVirtualNs": 20000000,
+   "executedInstructions": 148,
+   "isrCounterWord": 20,
+   "traceInstructions": 148,
+   "traceSha256": "d60791b3563c87a44cbbb40ee54ae872e5ee95d5474c0effbd34f25bc824069d",
+   "traceFormat": "uint32 little-endian PC per executed instruction (Renode ExecutionTracer PC, Thumb bit clear)",
+   "expected": {
+    "executedInstructions": 148,
+    "isrEntries": 20,
+    "wfiExecutions": 21,
+    "spacingBetweenIsrEntries": [
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7
+    ],
+    "firstIsrEntryIndex": 8,
+    "firstPcs": [
+     "0x8000200",
+     "0x8000202",
+     "0x8000204",
+     "0x8000206",
+     "0x8000208",
+     "0x800020a",
+     "0x800020c",
+     "0x800020e",
+     "0x8000212",
+     "0x8000214",
+     "0x8000216",
+     "0x8000218",
+     "0x800021a",
+     "0x8000210",
+     "0x800020e",
+     "0x8000212",
+     "0x8000214",
+     "0x8000216",
+     "0x8000218",
+     "0x800021a",
+     "0x8000210",
+     "0x800020e",
+     "0x8000212",
+     "0x8000214"
+    ]
+   }
+  },
+  "wfi-systick-cyccnt": {
+   "description": "SysTick enabled (RELOAD 79999, TICKINT) while the CPU loops 'wfi; b idle'; ISR logs DWT CYCCNT.",
+   "params": {
+    "masked": false,
+    "cyccnt": true
+   },
+   "imageHex": "0080012001020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200081f020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200083502000835020008350200080d48012101600d4a0d4951600d4d0e4969610021a9610721296130bffde70b4801680b4a53681960043353601368013313607047fee700bf001000e0000000201000002000e000e07f380100041000e000000020",
+   "imageSha256": "661ecd068eb851c8c2a22f4134b0794a1a732cbd538a81d17eaca98b66294e19",
+   "labels": {
+    "reset": "0x8000200",
+    "enable": "0x8000218",
+    "idle": "0x800021a",
+    "wfi_at": "0x800021a",
+    "systick_isr": "0x800021e",
+    "unhandled": "0x8000234"
+   },
+   "runVirtualNs": 12000000,
+   "executedInstructions": 170,
+   "isrCounterWord": 12,
+   "traceInstructions": 170,
+   "traceSha256": "ec97b2ea42972e1259254e1cb81ba909bd8ef1d70f1ffa4c3c093ba117f91013",
+   "traceFormat": "uint32 little-endian PC per executed instruction (Renode ExecutionTracer PC, Thumb bit clear)",
+   "expected": {
+    "executedInstructions": 170,
+    "isrEntries": 12,
+    "wfiExecutions": 13,
+    "spacingBetweenIsrEntries": [
+     13,
+     13,
+     13,
+     13,
+     13,
+     13,
+     13,
+     13,
+     13,
+     13,
+     13
+    ],
+    "firstIsrEntryIndex": 14,
+    "firstPcs": [
+     "0x8000200",
+     "0x8000202",
+     "0x8000204",
+     "0x8000206",
+     "0x8000208",
+     "0x800020a",
+     "0x800020c",
+     "0x800020e",
+     "0x8000210",
+     "0x8000212",
+     "0x8000214",
+     "0x8000216",
+     "0x8000218",
+     "0x800021a",
+     "0x800021e",
+     "0x8000220",
+     "0x8000222",
+     "0x8000224",
+     "0x8000226",
+     "0x8000228",
+     "0x800022a",
+     "0x800022c",
+     "0x800022e",
+     "0x8000230"
+    ],
+    "cyccntSamples": [
+     80000,
+     159999,
+     239998,
+     319997,
+     399996,
+     479995,
+     559994,
+     639993,
+     719992,
+     799991,
+     879990,
+     959989
+    ],
+    "cyccntDeltas": [
+     79999,
+     79999,
+     79999,
+     79999,
+     79999,
+     79999,
+     79999,
+     79999,
+     79999,
+     79999,
+     79999
+    ],
+    "deltaNs": [
+     999987.5,
+     999987.5,
+     999987.5,
+     999987.5,
+     999987.5,
+     999987.5,
+     999987.5,
+     999987.5,
+     999987.5,
+     999987.5,
+     999987.5
+    ],
+    "deltaHistogram": [
+     [
+      79999,
+      11
+     ]
+    ]
+   }
+  }
+ }
+}

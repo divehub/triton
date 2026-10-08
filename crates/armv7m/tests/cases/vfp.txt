@@ -1,0 +1,25 @@
+# name | asm | init | expect     (floating point: 1.0=0x3f800000 2.0=0x40000000 3.0=0x40400000)
+vfp_nocp_when_cpacr_zero | vadd.f32 s2, s0, s1 | cpacr=0 s2=0x11111111 | s2=0x11111111 cfsr=0x80000 hfsr=0x40000000 pc=+0
+vfp_nocp_cp10_privileged_only_unprivileged | vadd.f32 s2, s0, s1 | cpacr=0x500000 control=1 | cfsr=0x80000 pc=+0
+vfp_cp10_privileged_only_ok | vadd.f32 s2, s0, s1 | cpacr=0x500000 s0=0x3f800000 s1=0x40000000 | s2=0x40400000 control=4
+vfp_add_sets_fpca | vadd.f32 s2, s0, s1 | cpacr=0xf00000 s0=0x3f800000 s1=0x40000000 | s2=0x40400000 control=4
+vfp_no_aspen_leaves_fpca_clear | vadd.f32 s2, s0, s1 | cpacr=0xf00000 fpccr=0 s0=0x3f800000 s1=0x40000000 | s2=0x40400000 control=0
+vfp_first_use_loads_fpscr_from_fpdscr | vmrs r0, fpscr | cpacr=0xf00000 fpdscr=0x03000000 fpscr=0xffffffff | r0=0x03000000 control=4
+vfp_second_use_keeps_fpscr | vmsr fpscr, r1 ; vmrs r0, fpscr | cpacr=0xf00000 r1=0x01000000 | r0=0x01000000
+vfp_fpscr_write_mask | vmsr fpscr, r1 ; vmrs r0, fpscr | cpacr=0xf00000 r1=0xffffffff | r0=0xf7c0009f
+vfp_vcmp_less_flags | vcmp.f32 s0, s1 ; vmrs APSR_nzcv, fpscr | cpacr=0xf00000 s0=0x3f800000 s1=0x40000000 | flags=8
+vfp_vcmp_equal_flags | vcmp.f32 s0, s1 ; vmrs APSR_nzcv, fpscr | cpacr=0xf00000 s0=0x3f800000 s1=0x3f800000 | flags=6
+vfp_vcmp_greater_flags | vcmp.f32 s0, s1 ; vmrs APSR_nzcv, fpscr | cpacr=0xf00000 s0=0x40000000 s1=0x3f800000 | flags=2
+vfp_vcmp_unordered_flags | vcmp.f32 s0, s1 ; vmrs APSR_nzcv, fpscr | cpacr=0xf00000 s0=0x7fc00000 s1=0x3f800000 | flags=3
+vfp_vldr_vstr | vldr s0, [r0] ; vstr s0, [r1] | cpacr=0xf00000 r0=0x20000100 r1=0x20000104 w[0x20000100]=0x3fc00000 | w[0x20000104]=0x3fc00000 s0=0x3fc00000
+vfp_vldr_unaligned_faults | vldr s0, [r0] | cpacr=0xf00000 r0=0x20000102 | cfsr=0x1000000 pc=+0
+vfp_vmov_core_register | vmov s3, r2 ; vmov r5, s3 | cpacr=0xf00000 r2=0xdeadbeef | s3=0xdeadbeef r5=0xdeadbeef
+vfp_vpush_vpop | vpush {s0-s3} ; vpop {s4-s7} | cpacr=0xf00000 s0=1 s1=2 s2=3 s3=4 sp=0x20000200 | s4=1 s5=2 s6=3 s7=4 sp=0x20000200
+vfp_vpush_layout | vpush {s0-s1} | cpacr=0xf00000 s0=0xaaaa s1=0xbbbb sp=0x20000200 | sp=0x200001f8 w[0x200001f8]=0xaaaa w[0x200001fc]=0xbbbb
+vfp_vmov_immediate | vmov.f32 s0, #1.5 | cpacr=0xf00000 | s0=0x3fc00000
+vfp_vmul_vsub | vmul.f32 s2, s0, s1 ; vsub.f32 s3, s2, s0 | cpacr=0xf00000 s0=0x40000000 s1=0x40400000 | s2=0x40c00000 s3=0x40800000
+vfp_vcvt_s32_f32 | vcvt.s32.f32 s1, s0 | cpacr=0xf00000 s0=0xc0200000 | s1=0xfffffffe
+vfp_in_it_skipped | it ne ; vaddne.f32 s2, s0, s1 | cpacr=0xf00000 flags=4 s0=0x3f800000 s1=0x40000000 s2=0x11111111 | s2=0x11111111 control=0
+vfp_in_it_executed | it eq ; vaddeq.f32 s2, s0, s1 | cpacr=0xf00000 flags=4 s0=0x3f800000 s1=0x40000000 | s2=0x40400000 control=4
+vfp_double_arith_undefined | .inst.w 0xee310b02 | cpacr=0xf00000 steps=1 | cfsr=0x10000 pc=+0
+vfp_non_vfp_coprocessor_nocp | .inst.w 0xee010f10 | cpacr=0xf00000 steps=1 | cfsr=0x80000 pc=+0

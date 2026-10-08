@@ -1,0 +1,12 @@
+# Text files are stored with LF line endings and checked out as the platform wants them, except the shell wrapper and the
+# scripts that are executed directly, which must keep LF.
+* text=auto
+/cargo text eol=lf
+*.sh text eol=lf
+
+# Preserve upstream license bytes; Git must not normalize their line endings.
+/licenses/*.txt -text -whitespace
+
+# Binary assets, if any ever appear (there is no firmware in this repository, and none may be added).
+*.wasm binary
+*.png binary

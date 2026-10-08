@@ -1,0 +1,207 @@
+# name | asm | init | expect          (flags: N=8 Z=4 C=2 V=1)
+# ---- add / subtract / compare -------------------------------------------------------------
+adds_zero_carry | adds r0, r1, r2 | r1=0xffffffff r2=1 | r0=0 flags=6
+adds_overflow | adds r0, r1, r2 | r1=0x7fffffff r2=1 | r0=0x80000000 flags=9
+adds_overflow_carry | adds r0, r1, r2 | r1=0x80000000 r2=0x80000000 | r0=0 flags=7
+adds_plain | adds r0, r1, r2 | r1=1 r2=2 | r0=3 flags=0
+adds_imm3 | adds r0, r1, #7 | r1=0xfffffff9 | r0=0 flags=6
+adds_imm8 | adds r3, #255 | r3=1 | r3=0x100 flags=0
+add_w_no_flags | add.w r0, r1, r2 | r1=0xffffffff r2=1 flags=0 | r0=0 flags=0
+add_hi_regs_no_flags | add r8, r9 | r8=1 r9=2 flags=15 | r8=3 flags=15
+subs_borrow | subs r0, r1, r2 | r1=3 r2=5 | r0=0xfffffffe flags=8
+subs_no_borrow | subs r0, r1, r2 | r1=5 r2=3 | r0=2 flags=2
+subs_equal | subs r0, r1, r2 | r1=7 r2=7 | r0=0 flags=6
+subs_overflow | subs r0, r1, r2 | r1=0x80000000 r2=1 | r0=0x7fffffff flags=3
+subs_overflow_neg_operand | subs r0, r1, r2 | r1=0x7fffffff r2=0xffffffff | r0=0x80000000 flags=9
+cmp_equal | cmp r1, r2 | r1=2 r2=2 r0=0x55 | r0=0x55 flags=6
+cmp_less_imm | cmp r1, #5 | r1=3 | flags=8
+cmp_w_modimm | cmp.w r0, #0xff000000 | r0=0xff000000 | flags=6
+cmp_hi_reg | cmp r8, r1 | r8=5 r1=3 | flags=2
+cmn_zero | cmn r1, r2 | r1=0xffffffff r2=1 | flags=6
+adcs_carry_in | adcs.w r0, r1, r2 | r1=0xffffffff r2=0 flags=2 | r0=0 flags=6
+adcs_no_carry_in | adcs.w r0, r1, r2 | r1=0xffffffff r2=0 flags=0 | r0=0xffffffff flags=8
+adcs_16bit | adcs r1, r2 | r1=1 r2=2 flags=2 | r1=4 flags=0
+adc_w_noflags | adc.w r0, r1, r2 | r1=1 r2=2 flags=2 | r0=4 flags=2
+sbcs_borrow_in | sbcs.w r0, r1, r2 | r1=5 r2=3 flags=0 | r0=1 flags=2
+sbcs_no_borrow | sbcs.w r0, r1, r2 | r1=5 r2=3 flags=2 | r0=2 flags=2
+sbcs_chain | sbcs.w r0, r1, r2 | r1=0 r2=0 flags=0 | r0=0xffffffff flags=8
+rsbs_neg | rsbs r0, r1, #0 | r1=1 | r0=0xffffffff flags=8
+rsbs_zero | rsbs r0, r1, #0 | r1=0 | r0=0 flags=6
+rsbs_intmin | rsbs r0, r1, #0 | r1=0x80000000 | r0=0x80000000 flags=9
+rsb_w_reg | rsb.w r0, r1, r2 | r1=3 r2=10 | r0=7
+sub_sp_imm | sub sp, sp, #16 | sp=0x20001000 | sp=0x20000ff0
+add_sp_imm | add sp, sp, #508 | sp=0x20001000 | sp=0x200011fc
+add_r_sp_imm | add r0, sp, #8 | sp=0x20001000 | r0=0x20001008
+add_w_sp_unaligned_result | add.w sp, sp, #3 | sp=0x20001000 | sp=0x20001000
+addw_imm12 | addw r0, r1, #0xfff | r1=1 | r0=0x1000
+subw_imm12 | subw r0, r1, #1 | r1=0 | r0=0xffffffff
+adds_w_modimm | adds.w r0, r1, #0xff000000 | r1=0x01000000 | r0=0 flags=6
+add_w_modimm | add.w r0, r1, #0xff000000 | r1=0x02000000 flags=0 | r0=0x01000000 flags=0
+subs_w_modimm | subs.w r0, r1, #0x100 | r1=0x100 | r0=0 flags=6
+add_w_shifted | add.w r0, r1, r2, lsl #3 | r1=1 r2=2 | r0=17
+sub_w_shifted | sub.w r0, r1, r2, lsr #1 | r1=10 r2=6 | r0=7
+add_w_rrx | add.w r0, r1, r2, rrx | r1=1 r2=4 flags=2 | r0=0x80000003
+# ---- logical ---------------------------------------------------------------------------------------
+ands_keeps_carry1 | ands r0, r1 | r0=0xf0 r1=0x0f flags=2 | r0=0 flags=6
+ands_keeps_carry0 | ands r0, r1 | r0=0xf0 r1=0x0f flags=0 | r0=0 flags=4
+eors_ | eors r0, r1 | r0=0xff r1=0xff00ff | r0=0xff0000 flags=0
+orrs_negative | orrs r0, r1 | r0=0x80000000 r1=1 | r0=0x80000001 flags=8
+bics_ | bics r0, r1 | r0=0xff r1=0x0f | r0=0xf0 flags=0
+mvns_ | mvns r0, r1 | r1=0 | r0=0xffffffff flags=8
+tst_zero_keeps_c | tst r0, r1 | r0=0xf0 r1=0x0f flags=2 | flags=6
+orn_w | orn.w r0, r1, r2 | r1=0 r2=0xffff0000 | r0=0xffff
+ands_w_shift_carry | ands.w r0, r1, r2, lsl #1 | r1=0xffffffff r2=0x80000000 flags=0 | r0=0 flags=6
+eors_w_ror_carry | eors.w r0, r1, r2, ror #4 | r1=0 r2=0xf flags=0 | r0=0xf0000000 flags=10
+teq_equal | teq.w r0, r1 | r0=5 r1=5 flags=2 | flags=6
+bic_w_shift | bic.w r0, r1, r2, lsl #4 | r1=0xffffffff r2=0xf | r0=0xffffff0f
+mov_w_reg | mov.w r0, r1 | r1=0x1234 | r0=0x1234
+movs_w_keeps_c | movs.w r0, r1 | r1=0x80000000 flags=2 | r0=0x80000000 flags=10
+mvns_w_shift | mvns.w r0, r1, lsl #31 | r1=1 flags=0 | r0=0x7fffffff flags=0
+mvn_w_asr | mvn.w r0, r1, asr #4 | r1=0xf0 | r0=0xfffffff0
+# ---- modified immediates: carry rules ------------------------------------------------------------------
+movs_modimm_rotated | movs.w r0, #0xff000000 | flags=0 | r0=0xff000000 flags=10
+movs_modimm_plain_keeps_c1 | movs.w r0, #0x00ff00ff | flags=2 | r0=0xff00ff flags=2
+movs_modimm_plain_keeps_c0 | movs.w r0, #0x00ff00ff | flags=0 | r0=0xff00ff flags=0
+movs_imm8_keeps_c | movs r0, #200 | flags=2 | r0=200 flags=2
+ands_modimm_rotated | ands.w r0, r1, #0x80000000 | r1=0xffffffff flags=0 | r0=0x80000000 flags=10
+mvns_modimm_zero | mvns.w r0, #0 | flags=0 | r0=0xffffffff flags=8
+tst_modimm_rotated | tst.w r0, #0x80000000 | r0=0x7fffffff flags=0 | flags=6
+teq_modimm_plain | teq.w r0, #0xab00ab00 | r0=0xab00ab00 flags=2 | flags=6
+orr_modimm_pattern | orr.w r0, r1, #0xab00ab00 | r1=0x00cd00cd | r0=0xabcdabcd
+and_modimm_ffff | and.w r0, r1, #0xffffff | r1=0xabcdef01 | r0=0xcdef01
+orns_modimm | orns.w r0, r1, #0xff | r1=0 flags=0 | r0=0xffffff00 flags=8
+movw_ | movw r0, #0x1234 | r0=0xffffffff | r0=0x1234
+movt_ | movt r0, #0xabcd | r0=0x1234 | r0=0xabcd1234
+# ---- shifts by immediate ------------------------------------------------------------------------------------
+lsls_imm_carry | lsls r0, r1, #1 | r1=0x80000001 | r0=2 flags=2
+lsls_imm_negative | lsls r0, r1, #1 | r1=0x40000000 | r0=0x80000000 flags=8
+movs_reg_keeps_c | movs r0, r1 | r1=0 flags=2 | r0=0 flags=6
+lsrs_imm_1 | lsrs r0, r1, #1 | r1=1 | r0=0 flags=6
+lsrs_imm_32 | lsrs r0, r1, #32 | r1=0x80000000 | r0=0 flags=6
+asrs_imm_32 | asrs r0, r1, #32 | r1=0x80000000 | r0=0xffffffff flags=10
+asrs_imm_1 | asrs r0, r1, #1 | r1=0x80000001 | r0=0xc0000000 flags=10
+lsl_w_imm_31 | lsls.w r0, r1, #31 | r1=3 | r0=0x80000000 flags=10
+rors_w_imm | rors.w r0, r1, #4 | r1=0xf | r0=0xf0000000 flags=10
+rrxs_carry_in | rrxs r0, r1 | r1=3 flags=2 | r0=0x80000001 flags=10
+rrx_no_flags | rrx r0, r1 | r1=3 flags=2 | r0=0x80000001 flags=2
+# ---- shifts by register (edge amounts) -------------------------------------------------------------------------
+lsls_reg_0 | lsls r0, r1 | r0=1 r1=0 flags=2 | r0=1 flags=2
+lsls_reg_32 | lsls r0, r1 | r0=1 r1=32 flags=0 | r0=0 flags=6
+lsls_reg_33 | lsls r0, r1 | r0=3 r1=33 flags=2 | r0=0 flags=4
+lsls_reg_only_low_byte | lsls r0, r1 | r0=1 r1=0x100 flags=2 | r0=1 flags=2
+lsrs_reg_32 | lsrs r0, r1 | r0=0x80000000 r1=32 | r0=0 flags=6
+lsrs_reg_33 | lsrs r0, r1 | r0=0x80000000 r1=33 | r0=0 flags=4
+asrs_reg_big_neg | asrs r0, r1 | r0=0x80000000 r1=100 | r0=0xffffffff flags=10
+asrs_reg_big_pos | asrs r0, r1 | r0=0x7fffffff r1=100 | r0=0 flags=4
+rors_reg_32 | rors r0, r1 | r0=0x80000001 r1=32 flags=0 | r0=0x80000001 flags=10
+rors_reg_33 | rors r0, r1 | r0=0x80000001 r1=33 | r0=0xc0000000 flags=10
+rors_reg_0_keeps_c | rors r0, r1 | r0=0x80000001 r1=0 flags=0 | r0=0x80000001 flags=8
+lsl_w_reg | lsl.w r0, r1, r2 | r1=1 r2=4 flags=0 | r0=0x10 flags=0
+lsls_w_reg_carry | lsls.w r0, r1, r2 | r1=0x80000000 r2=1 | r0=0 flags=6
+asr_w_reg | asr.w r0, r1, r2 | r1=0xfffffff0 r2=4 | r0=0xffffffff
+ror_w_reg | ror.w r0, r1, r2 | r1=0x12345678 r2=8 | r0=0x78123456
+# ---- multiply and divide --------------------------------------------------------------------------------------------
+muls_wraps | muls r0, r1, r0 | r0=0x10000 r1=0x10000 flags=2 | r0=0 flags=6
+muls_negative | muls r0, r1, r0 | r0=0xffffffff r1=2 flags=0 | r0=0xfffffffe flags=8
+mul_w | mul r0, r1, r2 | r1=3 r2=5 flags=15 | r0=15 flags=15
+mla_ | mla r0, r1, r2, r3 | r1=3 r2=4 r3=5 | r0=17
+mls_ | mls r0, r1, r2, r3 | r1=3 r2=4 r3=5 | r0=0xfffffff9
+umull_ | umull r0, r1, r2, r3 | r2=0xffffffff r3=0xffffffff | r0=1 r1=0xfffffffe
+smull_minus1_squared | smull r0, r1, r2, r3 | r2=0xffffffff r3=0xffffffff | r0=1 r1=0
+smull_big | smull r0, r1, r2, r3 | r2=0x80000000 r3=0x80000000 | r0=0 r1=0x40000000
+smull_mixed | smull r0, r1, r2, r3 | r2=0xfffffffe r3=3 | r0=0xfffffffa r1=0xffffffff
+umlal_ | umlal r0, r1, r2, r3 | r0=1 r1=1 r2=2 r3=3 | r0=7 r1=1
+smlal_ | smlal r0, r1, r2, r3 | r0=0xffffffff r1=0xffffffff r2=2 r3=3 | r0=5 r1=0
+umaal_ | umaal r0, r1, r2, r3 | r0=5 r1=7 r2=0xffffffff r3=2 | r0=0xa r1=2
+sdiv_negative_truncates | sdiv r0, r1, r2 | r1=0xfffffff9 r2=2 | r0=0xfffffffd
+sdiv_by_zero | sdiv r0, r1, r2 | r1=7 r2=0 r0=0x55 | r0=0
+sdiv_intmin_by_minus1 | sdiv r0, r1, r2 | r1=0x80000000 r2=0xffffffff | r0=0x80000000
+udiv_ | udiv r0, r1, r2 | r1=7 r2=2 | r0=3
+udiv_by_zero | udiv r0, r1, r2 | r1=7 r2=0 r0=0x55 | r0=0
+udiv_big | udiv r0, r1, r2 | r1=0xffffffff r2=2 | r0=0x7fffffff
+# ---- extend ----------------------------------------------------------------------------------------------------------------
+sxtb_ | sxtb r0, r1 | r1=0x80 | r0=0xffffff80
+uxtb_ | uxtb r0, r1 | r1=0x1ff | r0=0xff
+sxth_ | sxth r0, r1 | r1=0x8000 | r0=0xffff8000
+uxth_ | uxth r0, r1 | r1=0x12345 | r0=0x2345
+sxtb_ror8 | sxtb.w r0, r1, ror #8 | r1=0x8000 | r0=0xffffff80
+uxth_ror16 | uxth.w r0, r1, ror #16 | r1=0x12345678 | r0=0x1234
+sxtab_ | sxtab r0, r1, r2 | r1=0x100 r2=0xff | r0=0xff
+uxtah_ror8 | uxtah r0, r1, r2, ror #8 | r1=1 r2=0xab00 | r0=0xac
+sxtb16_ | sxtb16 r0, r1 | r1=0x00810080 | r0=0xff81ff80
+uxtb16_ | uxtb16 r0, r1 | r1=0x12345678 | r0=0x00340078
+uxtab16_ | uxtab16 r0, r1, r2 | r1=0x00010001 r2=0x00ff00ff | r0=0x01000100
+sxtab16_ | sxtab16 r0, r1, r2 | r1=0x00010002 r2=0x00ff0080 | r0=0x0000ff82
+# ---- reversal, bit counting, bit fields --------------------------------------------------------------------------------------
+rev_ | rev r0, r1 | r1=0x11223344 | r0=0x44332211
+rev16_ | rev16 r0, r1 | r1=0x11223344 | r0=0x22114433
+revsh_ | revsh r0, r1 | r1=0x180 | r0=0xffff8001
+rbit_ | rbit r0, r1 | r1=1 | r0=0x80000000
+clz_zero | clz r0, r1 | r1=0 | r0=32
+clz_one | clz r0, r1 | r1=1 | r0=31
+clz_msb | clz r0, r1 | r1=0x80000000 | r0=0
+bfi_ | bfi r0, r1, #4, #8 | r0=0xffffffff r1=0x5a | r0=0xfffff5af
+bfc_ | bfc r0, #8, #8 | r0=0x12345678 | r0=0x12340078
+bfi_whole | bfi r0, r1, #0, #32 | r0=0xdeadbeef r1=0x12345678 | r0=0x12345678
+bfi_top_bit | bfi r0, r1, #31, #1 | r0=0 r1=1 | r0=0x80000000
+ubfx_ | ubfx r0, r1, #8, #8 | r1=0x12345678 | r0=0x56
+sbfx_negative | sbfx r0, r1, #4, #8 | r1=0xff0 | r0=0xffffffff
+sbfx_positive | sbfx r0, r1, #4, #8 | r1=0x7f0 | r0=0x7f
+ubfx_whole | ubfx r0, r1, #0, #32 | r1=0x87654321 | r0=0x87654321
+# ---- saturation ------------------------------------------------------------------------------------------------------------------
+ssat_positive | ssat r0, #8, r1 | r1=200 | r0=127 q=1
+ssat_negative | ssat r0, #8, r1 | r1=0xffffff38 | r0=0xffffff80 q=1
+ssat_in_range | ssat r0, #8, r1 | r1=5 | r0=5 q=0
+ssat_q_is_sticky | ssat r0, #8, r1 | r1=5 q=1 | r0=5 q=1
+ssat_shifted | ssat r0, #8, r1, lsl #1 | r1=100 | r0=127 q=1
+ssat_32 | ssat r0, #32, r1 | r1=0x80000000 | r0=0x80000000 q=0
+usat_high | usat r0, #8, r1 | r1=300 | r0=255 q=1
+usat_negative | usat r0, #8, r1 | r1=0xffffffff | r0=0 q=1
+usat_to_zero_bits | usat r0, #0, r1 | r1=5 | r0=0 q=1
+usat_asr | usat r0, #4, r1, asr #1 | r1=100 | r0=15 q=1
+ssat16_ | ssat16 r0, #8, r1 | r1=0x00c8ff38 | r0=0x007fff80 q=1
+usat16_ | usat16 r0, #8, r1 | r1=0x012cffff | r0=0x00ff0000 q=1
+qadd_saturates | qadd r0, r1, r2 | r1=0x7fffffff r2=1 | r0=0x7fffffff q=1
+qadd_plain | qadd r0, r1, r2 | r1=1 r2=2 | r0=3 q=0
+qsub_saturates | qsub r0, r1, r2 | r1=0x80000000 r2=1 | r0=0x80000000 q=1
+qdadd_saturates | qdadd r0, r1, r2 | r1=0 r2=0x60000000 | r0=0x7fffffff q=1
+qdadd_plain | qdadd r0, r1, r2 | r1=1 r2=2 | r0=5 q=0
+qdsub_saturates_doubling | qdsub r0, r1, r2 | r1=0 r2=0x60000000 | r0=0x80000001 q=1
+# ---- packing, parallel arithmetic, select ---------------------------------------------------------------------------------------------
+pkhbt_ | pkhbt r0, r1, r2, lsl #16 | r1=0x1111aaaa r2=0x0000bbbb | r0=0xbbbbaaaa
+pkhtb_ | pkhtb r0, r1, r2, asr #16 | r1=0xaaaa1111 r2=0xbbbb2222 | r0=0xaaaabbbb
+uadd8_ge | uadd8 r0, r1, r2 | r1=0xff0180ff r2=0x01018001 | r0=0x00020000 ge=11
+sel_ | sel r0, r1, r2 | r1=0xaabbccdd r2=0x11223344 ge=5 | r0=0x11bb33dd
+usad8_ | usad8 r0, r1, r2 | r1=0x0a141e28 r2=0x0f0f0f0f | r0=50
+usada8_ | usada8 r0, r1, r2, r3 | r1=0x0a141e28 r2=0x0f0f0f0f r3=100 | r0=150
+sadd16_ | sadd16 r0, r1, r2 | r1=0x00017fff r2=0xffff0001 | r0=0x00008000 ge=15
+qadd16_ | qadd16 r0, r1, r2 | r1=0x7fff8000 r2=0x0001ffff | r0=0x7fff8000
+shadd16_ | shadd16 r0, r1, r2 | r1=0x0004fffe r2=0x00020001 | r0=0x0003ffff
+uqsub16_ | uqsub16 r0, r1, r2 | r1=0x00050010 r2=0x00060005 | r0=0x0000000b
+sasx_ | sasx r0, r1, r2 | r1=0x00030009 r2=0x00040002 | r0=0x00050005 ge=15
+ssax_ | ssax r0, r1, r2 | r1=0x00030009 r2=0x00040002 | r0=0x0001000d
+usub8_ge | usub8 r0, r1, r2 | r1=0x05050505 r2=0x04050606 | r0=0x0100ffff ge=12
+# ---- DSP multiplies --------------------------------------------------------------------------------------------------------------------
+smulbb_ | smulbb r0, r1, r2 | r1=0xffff0003 r2=0xfffe0004 | r0=12
+smultb_ | smultb r0, r1, r2 | r1=0xffff0003 r2=0xfffe0004 | r0=0xfffffffc
+smulbt_ | smulbt r0, r1, r2 | r1=0xffff0003 r2=0xfffe0004 | r0=0xfffffffa
+smultt_ | smultt r0, r1, r2 | r1=0xffff0003 r2=0xfffe0004 | r0=2
+smlabb_ | smlabb r0, r1, r2, r3 | r1=3 r2=4 r3=5 | r0=17 q=0
+smlabb_overflow | smlabb r0, r1, r2, r3 | r1=0x7fff r2=0x7fff r3=0x7fffffff | r0=0xbfff0000 q=1
+smulwb_ | smulwb r0, r1, r2 | r1=0x00010000 r2=2 | r0=2
+smulwt_ | smulwt r0, r1, r2 | r1=0x00010000 r2=0x00030000 | r0=3
+smlawb_ | smlawb r0, r1, r2, r3 | r1=0x00010000 r2=2 r3=10 | r0=12
+smuad_ | smuad r0, r1, r2 | r1=0x00020003 r2=0x00040005 | r0=23
+smuadx_ | smuadx r0, r1, r2 | r1=0x00020003 r2=0x00040005 | r0=22
+smusd_ | smusd r0, r1, r2 | r1=0x00020003 r2=0x00040005 | r0=7
+smlad_ | smlad r0, r1, r2, r3 | r1=0x00020003 r2=0x00040005 r3=100 | r0=123
+smlad_overflow | smlad r0, r1, r2, r3 | r1=0x80008000 r2=0x80008000 r3=0 | r0=0x80000000 q=1
+smlsd_ | smlsd r0, r1, r2, r3 | r1=0x00020003 r2=0x00040005 r3=100 | r0=107
+smlald_ | smlald r0, r1, r2, r3 | r0=1 r1=0 r2=0x00020003 r3=0x00040005 | r0=24 r1=0
+smlsld_ | smlsld r0, r1, r2, r3 | r0=1 r1=0 r2=0x00020003 r3=0x00040005 | r0=8 r1=0
+smlalbb_ | smlalbb r0, r1, r2, r3 | r0=0xffffffff r1=0 r2=3 r3=4 | r0=0xb r1=1
+smmul_ | smmul r0, r1, r2 | r1=0x40000000 r2=0x40000000 | r0=0x10000000
+smmul_truncates | smmul r0, r1, r2 | r1=0x00010000 r2=0x00008000 | r0=0
+smmulr_rounds | smmulr r0, r1, r2 | r1=0x00010000 r2=0x00008000 | r0=1
+smmla_ | smmla r0, r1, r2, r3 | r1=0x40000000 r2=0x40000000 r3=5 | r0=0x10000005
+smmls_ | smmls r0, r1, r2, r3 | r1=0x40000000 r2=0x40000000 r3=0x20000000 | r0=0x10000000

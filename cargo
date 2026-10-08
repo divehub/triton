@@ -1,0 +1,26 @@
+#!/bin/sh
+# cargo for this workspace, always run from the repository root.
+#
+#   1. If a repository-local toolchain exists in tools/rust (see tools/README.md), it is used and RUSTUP_HOME /
+#      CARGO_HOME point at it, so no global rustup or cargo state is read or written.
+#   2. Otherwise the cargo on PATH is used (this is what CI does). rustup then reads rust-toolchain.toml: Rust 1.98.1
+#      with the wasm32-unknown-unknown target. Install it once with
+#          rustup toolchain install 1.98.1 --profile minimal --target wasm32-unknown-unknown
+#
+# Usage (from anywhere): ./cargo <cargo arguments>
+set -e
+root=$(cd "$(dirname "$0")" && pwd)
+cd "$root"
+if [ -x "$root/tools/rust/cargo/bin/cargo" ]; then
+    RUSTUP_HOME="$root/tools/rust/rustup"
+    CARGO_HOME="$root/tools/rust/cargo"
+    PATH="$CARGO_HOME/bin:$PATH"
+    export RUSTUP_HOME CARGO_HOME PATH
+    exec "$CARGO_HOME/bin/cargo" "$@"
+fi
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "No cargo found: put a toolchain in tools/rust (see tools/README.md) or install rustup (https://rustup.rs) and run" >&2
+    echo "    rustup toolchain install 1.98.1 --profile minimal --target wasm32-unknown-unknown" >&2
+    exit 1
+fi
+exec cargo "$@"

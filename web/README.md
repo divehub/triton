@@ -1,0 +1,125 @@
+# NGC WebAssembly emulator: browser application
+
+A browser front end for the Rust/WebAssembly engine (`ngc-wasm`) that runs the unchanged **main 5.8** and **handset 65.3** firmware of a **TRITON** or **NEPTUN** release over CAN. It needs no Renode and no server-side emulation: a static page, a Web Worker and one `.wasm` file. The only network use is the optional **Load from URLs** (below), which fetches the two firmware files through a small proxy; choosing or dropping files needs no network at all. Its user interface follows the viewer of the Renode-based analysis workspace (not public): a basic, player-facing view with simulated conditions, and a closed Advanced panel with the raw inputs, outputs and diagnostics.
+
+It is a **functional model**, not a claim of physical accuracy. The engine is new (ported from the Renode 1.17.0 behaviour); results labeled `ngc-wasm/<version>` do not inherit Renode evidence. Design and contracts: [../DESIGN.md](../DESIGN.md) (sections 1, 10, 14 and 15). A hosted copy runs at <https://triton.divehub.ai>; you bring the firmware.
+
+## Run
+
+```sh
+python3 web/build.py      # ../cargo (tools/rust or cargo on PATH) -> web/pkg/ngc_wasm.wasm (ignored by Git)
+python3 web/serve.py      # http://127.0.0.1:8770, loopback only
+```
+
+Open <http://127.0.0.1:8770>. The page asks for the two original S-record files of one release, `ngc_main_5.8_<TRITON|NEPTUN>.srec` and `ngc_handset_65.3_<TRITON|NEPTUN>.srec` (file pickers or drag and drop, either order, also one drop with both files). The worker verifies them (SHA-256, record counts, span hash, vector table, board role, release) and shows the hashes and every check; a wrong, damaged or swapped file is refused with the engine's message. The page names the release it recognised, and a **mixed pair** (for example the TRITON main with the NEPTUN handset) is refused with a message that says which file to remove. **Boot emulator** starts the session. Nothing is uploaded and the firmware is never bundled, copied into `web/` or served (see the development aid below for the one opt-in exception).
+
+`serve.py` options: `--port N`, `--wasm FILE` (serve another module), `--quiet`, `--dev-firmware DIR` (repeatable). It serves `web/pkg/ngc_wasm.wasm` (from `build.py`) or, when that is missing, the newest release module in the cargo target directories. `build.py` options: `--target-dir`, `--debug`, `--no-build`, `--no-copy`. No dependencies beyond the Python standard library, a Rust toolchain (see the root README) and a browser.
+
+### Load from URLs (entry screen)
+
+Instead of choosing files, the entry screen can **fetch the two S-record files from addresses**. The page is only a client: the sources (`api.multi3s.com` and the Wayback Machine) send no CORS headers, so a page cannot read them directly, and the firmware is never mirrored. The request goes to a small proxy (`../deploy/api/firmware.mjs`, a Vercel Function hosted on its own address, separate from the static site; see [../deploy/README.md](../deploy/README.md)) that fetches the one named file on demand, keeps nothing and caches nothing. Where the proxy is is a **build-time setting** (`config.js`, below); without one, the form says that loading from URLs is not configured yet and everything else works.
+
+* **Fields.** Two address fields (main, handset; either may stay empty), **Load from URLs**, a progress bar per file, **Cancel** and a 45 s timeout. It is a real form (Enter submits), keyboard accessible, laid out for phones and themed light and dark. Pasting addresses never starts anything: `?main-url=<address>&handset-url=<address>` only pre-fills the fields, and only the button fetches.
+* **Accepted addresses** (`firmware-url.js`, the page-side copy of the proxy's allowlist): `https://api.multi3s.com/static/NAME.srec` and `https://web.archive.org/web/<14-digit timestamp>[id_]/https://api.multi3s.com/static/NAME.srec`, with `NAME` 1 to 64 of `A-Za-z0-9_-`. Anything else (other hosts, ports, user names, query strings, fragments, `http:`, IP addresses, percent-encoding, other paths) is refused with a reason before any request. The Wayback form is normalised to the raw `<timestamp>id_` form and the field shows the exact address that will be requested; after the fetch it shows the address the proxy finally used (after redirects).
+* **Which proxy.** The one the site was built with: `config.js` exports `FIRMWARE_PROXY_URL` (`null` in the committed default; the Pages build generates it from the repository variable of that name, see [../deploy/README.md](../deploy/README.md)), and the build adds the proxy's origin to `connect-src` of the page's Content-Security-Policy. When it is `null` there is no proxy: the address fields are hidden and the page says "Loading from URLs is not configured yet"; it **never falls back to a same-origin `/api/firmware`**. A page on `localhost` / `127.0.0.1` (`serve.py`) can in addition use a loopback dev proxy named by `?firmware-proxy=http://127.0.0.1:<port>/api/firmware` (only honoured on a loopback page and only for `http://127.0.0.1` / `http://localhost` addresses with exactly that path; otherwise ignored with a note), which wins over the configured proxy. The page names the proxy in use under the form. For a local test without Vercel run `node deploy/dev-proxy.mjs`.
+* **Verification.** The fetched bytes take exactly the path of a dropped file: the worker's `inspect` (SHA-256, record counts, vector table, board role, release), slot assignment by content (a handset image typed into the main field still lands in the handset slot, and the field says so) and the mixed-release refusal (with the file's SHA-256). **Remember these files** applies unchanged. Unknown firmware, a mixed pair, a refused SREC and every fetch failure (address not allowed, proxy unreachable, proxy does not serve this page, source HTTP status, too large, not an SREC, timeout, cancelled) are shown on the field with a message that says what to do.
+* **Privacy.** The proxy host sees the address you enter and the request (the proxy host's own request log, for example Vercel's, keeps the path and query for a limited time); the page sends nothing else and the files are never uploaded anywhere.
+
+### Start options (entry screen, "Start options")
+
+System (dual / handset only), boot (handset wake / cold), board-ID ADC sample (default 400), the **main I2C idle-high fixture** (on by default: the main board's PB6/PB7/PB10/PB11 are driven high before the firmware runs, standing for external pull-ups; it is an idle-line fixture, not electrical I2C modelling, and leaving PB6/PB7 low changes the start-up ordering of settings loading and HUD initialization), simultaneous CPU start, start paused, and the exact idle fast-forward (host speed only; results are identical with it on or off). Every session creation also passes a random `historyNonce`, so the output-history epochs of two launches never coincide.
+
+### Releases
+
+The engine identifies the release of each image (`release: {id, label}` in the inspection report; `TRITON-5.8-65.3` and `NEPTUN-5.8-65.3` are known). The page shows it on the slots, the header and the window title, and the session information. **Each release has its own saved profile**: TRITON keeps the original storage location (`ngc-wasm/profile/`), every other release gets a directory of its own (NEPTUN: `ngc-wasm/profile-neptun-5_8-65_3/`; in IndexedDB the equivalent object store), so EEPROM, log flash, RTC checkpoint, sensor inputs and LED labels are never shared between releases. Export, import, Reset profile and the "saved profile" notice on the entry screen act on the profile of the release in use. The remembered-firmware option keeps one pair at a time (remembering another release replaces it) and records its release.
+
+### Remember the files (off by default)
+
+Ticking **Remember these files in this browser** stores the two verified SRECs in the origin-private file system (OPFS; not available in IndexedDB). On the next visit they are verified again and offered automatically. **Forget them** removes them. They are only ever read by this origin; nothing leaves the browser.
+
+## The page
+
+### Basic view (player-facing)
+
+| Area | Behaviour |
+| --- | --- |
+| Status strip | **Vibrator**, **Red LED** (HUD 3) and **White LED** (HUD 2) above the LCD: On, Off, Unknown or **Pulse** (a replayed flash). These show the *commanded* outputs of the firmware; physical light output and motor current are unverified. |
+| LCD | Canvas, nearest-neighbour scaling (whole device-pixel multiples when they fill at least 85 % of the panel, otherwise fit; switchable), 4:3 panel, placeholder until the firmware turns the panel on. Frames arrive only when the visible pixels change (at most 60 per second, transferable buffers). |
+| Buttons | Up / Down / Confirm and keyboard arrows / Enter (a held key is one press; keys work after a mouse click and yield to fields, selects, links and disclosure summaries, so opening Advanced or a variations section from the keyboard never moves the guest). Physical pulses through TIM3 capture; Confirm uses the two staggered 204.8 ms pulses (50 virtual ms apart) of the runner. |
+| Execution | Pause / Resume, Step 0.1 s (2 x 50 ms), Restart boards, **Speed** (0.25x to 4x or unpaced), virtual time. |
+| Simulated conditions | **Oxygen**: a 0 to 100 mV base plus three signed cell offsets. **Pressure / depth**: surface pressure (mbar), a 0 to 110 m depth and Fresh 1000 / Salt 1025 / EN13319 1020 kg/m^3 water, `mbar = surface + density x 9.80665 x depth / 100 + offset`, two signed sensor offsets. **Temperature**: a -4 to 40 C base plus two signed offsets. Each **Sensor variations** section starts collapsed. |
+
+Basic edits apply immediately (no Apply button). The calculated seven raw model inputs fill the raw fields of the Advanced panel and go out as one `inputs` action. An invalid sum (the raw ranges are oxygen 0 to 250 mV, pressure 100 to 30 000 mbar, temperature -20 to 85 C) or an incomplete number (a blank field is not zero) shows **Not applied** and sends nothing; readings are never clipped (a sum that misses a limit only by floating-point rounding is snapped to it). Every UI action goes through one queue: actions run one at a time in order, adjacent *pending* basic updates coalesce to the newest, and an explicit raw **Apply inputs** is an ordered snapshot that keeps its place. Revision counters keep stale replies from overwriting newer edits (a reply rebases the basic controls only if no basic edit and no newer raw sensor edit happened since, and refreshes the raw fields only if no raw edit did; status broadcasts never touch the fields). The status reads **Applying...**, **Inputs applied** or **Raw edits pending**. Bases and offsets are derived from the current raw inputs whenever a session starts or the profile is replaced; nothing is stored separately, and the raw inputs persist in the profile. These controls are local input fixtures, not a claim about physical sensor accuracy; firmware filtering and stored calibration still determine what the handset shows.
+
+### Advanced · raw inputs, outputs and diagnostics (closed initially)
+
+Raw sensor fields with **Apply inputs** (drafts until applied; the engine's ranges and messages unchanged, any decimal accepted), CAN connect / disconnect and Drop ID, Cold boot, Wake system, **Save evidence**, the emulated serial number (0 to 999 999 999), storage summaries, the **raw hardware outputs** (Drive, Replay and history per output, HUD colour selectors Unknown / Red / White, LCD backlight), the read-only **UART console** (five channels, Text / Hex; retained 16 KiB tails; the worker sends the bytes only while the console is on screen), Execution (**Advance N s**: 0.01 to 20, run in 0.5 s chunks with progress and Cancel; background-tab policy; real-time factor and engine capacity), execution and model details (PCs, batteries ready, mode, LCD summary), **Profile and evidence** (export / import / reset, evidence zip) and **Loaded firmware and session** (release, files with hashes, start options, fixtures, clock persistence provenance, executed instructions with the idle fast-forward share, machine resets).
+
+### Replay pulses (on by default, Advanced > Raw hardware outputs)
+
+The engine keeps bounded histories of the commanded drive per output (`activity`, and `pwmActivity` for the vibrator; DESIGN 15.3a): HUD commands sampled every 50 virtual ms, the vibrator's PB15 enable changes exactly and its gated motor command sampled every 20 virtual ms. A short pulse can fall between two status updates. With replay on, the current command stays steady while it is On; when it is Off, activations newly observed since the last update queue wall-clock flashes, **150 ms on and 100 ms gap, at most 12 per output**. The first observation (initial load, reconnect, an Unknown drive) is only a baseline and never replays; a new `outputHistoryEpoch` (or restart generation), missing history, a count regression, a changed overlap or a sequence gap clears the queue (the gap is reported as "history events unavailable"). A hidden tab clears replay and never plays a stale catch-up. Separate **Drive** and **Replay** labels keep the current command, the configured duty and the virtual-time evidence apart from the animation. **Replay is a visibility aid, not firmware timing**: a flash can outlast the command that caused it, and a command shorter than the sampling period can be missed. Turn it off to inspect the current drive alone. An engine without histories simply shows the drive.
+
+## Pacing
+
+The engine never reads a clock; `worker.js` / `runtime.js` pace it against `performance.now()`:
+
+* the engine runs in slices of **10 virtual ms** (`Session::run_for`; the result is a pure function of the firmware, configuration and inputs, so slicing never changes it);
+* every timer tick computes `target = epochVirtual + elapsedWall * speed` and runs slices until it has caught up or used its **10 ms wall budget**; it then yields so UI messages (button presses, actions) are handled between slices, and sleeps until the next slice is due. Zero-delay yields use a `MessageChannel` (no 4 ms timer clamp);
+* a backlog above **250 virtual ms** is forgotten (never spiral) and reported as "backlog skipped"; Pause / Resume / speed changes / returning to a hidden tab restart the reference;
+* **real-time factor** = virtual seconds per wall second over the last 2 s (about 1.00 when keeping up); **engine capacity** = virtual seconds per second of engine execution (the speed the engine could sustain; conservative while paced because every slice starts cold). The badge says "not keeping up" when the factor falls behind or backlog was skipped. The measured factor is also written to the state document (`realtimeFactor`, captured in `state.json`);
+* state is published at 5 Hz (1 Hz while the page is hidden), frames only when they change (at most 60 per second, at most 1 per second while hidden), with back-pressure (at most three frames in flight).
+
+**Hidden tabs.** Browsers throttle or deprioritise background pages (timers, even workers; Safari and Firefox more than Chromium). Because virtual time is deterministic, this only slows wall-clock progress. Default policy "Keep running": the loop continues at whatever rate the browser allows, skips backlog above 250 ms instead of burning through it, and sends at most one LCD frame per second (a fresh frame goes out at once on return). The browser's visibility flag is only a hint: embedded panes and occluded windows report "hidden" while the page is looked at, so a hidden page must still show its picture; an earlier version sent nothing to a hidden page and the first session after a page load stayed black until an action forced a frame. Alternative "Suspend until it is visible again" stops the loop without touching the session (the badge says "suspended"). In both cases the profile is saved when the page is hidden.
+
+## Persistence
+
+The worker keeps the profile of the running release in OPFS (`ngc-wasm/profile/` for TRITON, `ngc-wasm/profile-<release>/` for the others), falling back to IndexedDB, then to memory with a visible warning. It is written about 2 s after storage changes (`take_profile_changes`), as a full export with a fresh RTC checkpoint every 15 s, when the page is hidden or closing (`visibilitychange`, `pagehide`: closing the tab within a few seconds can lose that much clock progress; EEPROM and log flash are saved within about 2 s), on Restart / Cold / Wake / serial and when the session is closed (the runner's close semantics). A Web Lock (`ngc-wasm-profile`) keeps two tabs from writing a profile: the second tab starts from an empty profile and does not save. An invalid stored profile is never silently erased: boot reports the engine's message and offers "Erase the saved profile and boot" or "Boot without the saved profile (nothing is saved)".
+
+The calendar advances in **virtual time only**: it stands still while the emulator is paused or closed (AGENTS.md, calendar retention). EEPROM offset 0 (the emulated serial) is synthetic storage; it never identifies a physical unit.
+
+## Files
+
+| File | Role |
+| --- | --- |
+| `index.html`, `style.css` | Page and styles (theme tokens: dark by default, light when the system asks for it; layout for phones with 16 px gutters). Content-Security-Policy: `default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:* http://localhost:*; worker-src 'self'; base-uri 'none'; form-action 'none'`. Only `connect-src` allows more than the same origin (loopback dev proxies of "Load from URLs"); no external resource, CDN or font; no inline style or script. `serve.py` sends the same policy as a header. GitHub Pages cannot send headers, so the published page carries the `<meta>` policy only (the worker script is then not covered by a policy of its own), and `../deploy/build_site.py` adds the origin of the configured firmware proxy to `connect-src` there and fails when the rest of the policy differs from `serve.py`'s. |
+| `config.js` | Build-time configuration: `FIRMWARE_PROXY_URL` (`null` in the committed default; `../deploy/build_site.py` publishes a generated copy). |
+| `app.js`, `entry.js`, `emulator.js`, `lcd.js`, `dom.js`, `worker-client.js` | Main thread: screens, rendering, controls, worker requests. |
+| `firmware-url.js` | "Load from URLs": the address allowlist, proxy selection (configured, loopback dev proxy or none), the fetch with progress and error classification. No DOM. |
+| `sensors.js` | Simulated conditions: the basic settings to the seven raw inputs and back, hydrostatic pressure, limits, rejection messages. No DOM. |
+| `conditions.js` | The action queue (serialised, coalescing) and the basic / raw input logic with revision counters and status labels, on a view adapter. No DOM. |
+| `replay.js` | Output-history cursor, bounded pulse queue, replay controller with injected timers, and the Drive / Replay presentation. No DOM. |
+| `keys.js` | Which key presses drive the handset buttons. No DOM. |
+| `releases.js` | Known releases, report-to-release mapping, per-release storage areas, mixed-pair rule. No DOM. |
+| `worker.js` | Worker entry: engine, storage, profile lock; shim around `runtime.js`. |
+| `runtime.js` | All worker logic without worker globals (firmware slots and releases, boot, pacing, actions, frames and state, persistence, capture, import / export); the Node tests run this very code. |
+| `engine.js` | Wrapper over the WebAssembly ABI (also used by the tests). Session options an older engine build does not know (`historyNonce`, `i2cIdleHigh`) are dropped one at a time and reported. |
+| `storage.js`, `zip.js` | OPFS / IndexedDB / memory backends; STORE zip writer and STORE / DEFLATE reader. |
+| `serve.py`, `build.py` | Loopback server and build / staging scripts. |
+| `test-node.mjs`, `test-ui.mjs`, `fake-dom.mjs`, `bench-node.mjs` | Headless tests with the real engine; UI tests without engine or browser (and the minimal DOM they run on); throughput benchmark (unchanged ABI). |
+
+### WebAssembly ABI (`crates/ngc-wasm/src/lib.rs`)
+
+Hand-written `extern "C"`, no wasm-bindgen, no imports. Bytes go through `ngc_alloc` / `ngc_free`; text and binary results through the output buffer (`ngc_output_ptr` / `ngc_output_len`) or the parts list (`ngc_part_*`). Session: `ngc_firmware_inspect`, `ngc_set_firmware`, `ngc_profile_set`, `ngc_session_create` (JSON config), `ngc_session_run_for`, `ngc_session_action` (runner JSON), `ngc_session_state`, `ngc_session_frame` + `ngc_frame_ptr/len/width/height`, `ngc_session_profile_changes` / `_export` / `_capture` / `_shutdown`, `ngc_session_set_clock` / `_set_seed` / `_host_info`. A Rust panic is recorded (`ngc_panic_ptr/len`) and reaches the page as a "stopped after an internal error" notice. The benchmark half (`ngc_create`, `ngc_run_for`, `ngc_fingerprint`, ...) is independent of the session.
+
+## Tests and benchmark
+
+```sh
+node web/test-ui.mjs                    # UI logic and the real page on a fake DOM; no engine, no firmware
+node web/test-node.mjs                  # needs web/pkg/ngc_wasm.wasm and the SREC files (firmware/ or NGC_FIRMWARE_DIR)
+node web/test-node.mjs --skip-pacing    # without the wall-clock pacing measurement
+node web/bench-node.mjs                 # unchanged benchmark of the bare engine
+```
+
+`test-ui.mjs` ports the cases of the analysis workspace's `test_sensor_controls.js`, `test_output_replay.js`, `test_output_replay_ui.js` and `test_scenario_ui.js` (those ran that workspace's viewer scripts; here the same behaviours are checked against `sensors.js`, `replay.js`, `conditions.js` and the real `index.html` + `emulator.js` on `fake-dom.mjs`), and adds tests for releases, per-release profiles, the session options and the worker logic on a fake engine, and for "Load from URLs": the address allowlist (accepted forms, normalisation, every refusal with its reason), the proxy choice (configured address, `?firmware-proxy`, none), the unavailable state without a proxy, the fetch and each error class on a fake `fetch`, and the real entry screen on `fake-dom.mjs` with the real worker `Runtime` on a fake engine (pre-fill without fetching, success through the same verification, mixed releases, unknown firmware, progress, cancel, timeout, buffer transfer) plus the CSP. The proxy and the deployment have their own tests in `../deploy/`.
+
+`test-node.mjs` drives `runtime.js` with in-memory messaging and the real engine: firmware verification and refusals, the TRITON and NEPTUN pairs (NEPTUN tests are skipped without `firmware/NEPTUN-5.8-65.3` or `NGC_FIRMWARE_DIR`), mixed pairs, dual boot to the B1 prompt (the 320x240 frame hashes to `62c3a30e...`, a regression value recorded from the Renode runner and reproduced by this engine for both releases), buttons, validation messages, pause / step / standby / wake, session options and output-history epochs, the output-history contract (skipped by an engine build without it), capture zip contents (also checked with the system `unzip`), profile persistence and export / import round trip, profile lock, handset-only and remembered firmware, frame back-pressure, background policy, and the paced versus unpaced real-time factor.
+
+## Development aid
+
+`serve.py --dev-firmware DIR` (off by default; DIR is a release directory such as `firmware/TRITON-5.8-65.3`; repeat it for several release directories) additionally serves the original SREC files of `DIR` (exactly the four known TRITON / NEPTUN names) at `/dev-firmware/<name>`, and the page loads them when opened as `http://127.0.0.1:8770/?dev-firmware` (TRITON) or `/?dev-firmware=neptun`, as if chosen by hand (`/?dev-firmware=mixed` offers a TRITON handset with a NEPTUN main file, to see the refusal). It exists for automated browser checks, where a script cannot operate the native file chooser. Without the flag the route does not exist.
+
+## Browser support and limits
+
+Engine speed depends on the exact idle-loop fast-forward. With the engine build of 2026-10-08 the NEPTUN *main* image's idle loop is not recognised by it (0 % of the main board's instructions are skipped, against 98 % for TRITON), so a NEPTUN session ran at about 1.4x real time in V8 on the reference machine (TRITON: 9x boot, 20x steady) and below 1x in a busy browser; the badge then says "not keeping up". This is an engine matter, not a page setting.
+
+Needs module workers, WebAssembly, OPFS (or IndexedDB), Web Locks and canvas: current Chrome, Edge, Safari and Firefox. No `SharedArrayBuffer` and no cross-origin isolation are required. Safari and Firefox were not exercised here (design review only); the in-browser checks were made in Chromium. Profile import of DEFLATE-compressed zips needs `DecompressionStream`; stored archives always work.
