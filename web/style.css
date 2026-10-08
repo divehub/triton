@@ -186,6 +186,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .status-card h2 { margin: 0 0 4px; font-size: 13px; }
 .status-card span:last-child { font-size: 12px; color: var(--text-muted); }
 .status-card .output-light { width: 22px; height: 22px; margin: 0; flex-shrink: 0; }
+.deco-health { display: grid; gap: 8px; margin-bottom: 22px; }
+.deco-health p { margin: 0; padding: 11px 16px; border: 1px solid var(--warn-border); border-radius: 10px; color: var(--warn-text); background: var(--warn-bg); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .workspace { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 22px; align-items: start; }
 .display-panel, .controls, .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; }
 .display-panel { min-width: 0; padding: 22px; }
@@ -351,6 +353,7 @@ footer { margin-top: 20px; color: var(--text-dim); font-size: 12px; line-height:
 .banner { padding: 12px 14px; border: 1px solid var(--info-border); border-radius: 9px; background: var(--info-bg); color: var(--info-text); font-size: 13px; line-height: 1.5; }
 .start-options { margin-top: 18px; }
 .start-options .inputs { margin: 14px 0 4px; }
+.start-options .inputs > p { grid-column: 1 / -1; margin: 0; }
 .entry-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 24px; }
 .profile-note { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border-soft); font-size: 13px; display: grid; gap: 8px; color: var(--text-body); }
 .dialog { max-width: 460px; border: 1px solid var(--border-field); border-radius: 12px; background: var(--surface); color: var(--text); padding: 22px; }

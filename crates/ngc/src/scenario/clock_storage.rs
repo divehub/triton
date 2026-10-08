@@ -172,7 +172,7 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
     if let Ok(parsed) = &parsed {
         rec.check("the saved main provenance is rtc-registers", parsed.board(BOARD_MAIN).map(|b| b.provenance.clone()) == Some(Provenance::RtcRegisters), "rtc-registers");
     }
-    let reopened = Session::new_with(env.options, "", env.configure(SessionConfig::default()), Some(env.main), env.handset, profile.clone())?;
+    let reopened = Session::new_with(env.options, "", env.configure(super::recorded_config(SessionConfig::default())), Some(env.main), env.handset, profile.clone())?;
     let reopened = Rig { session: reopened };
     rec.compare("calendars after closing and reopening the profile", calendars(&reopened), before_close, SOURCE, true, "reopened: saved main/handset calendars equal what ran before the close");
     rec.file("rtc-state.json", state_text.into_bytes());

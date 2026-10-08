@@ -27,6 +27,7 @@ impl Machine {
 
 pub const USAGE: &str = "ngc-cli run [--main <srec>] [--handset <srec>] [--mode dual|handset] [--seconds S]\n  \
     [--boot-mode handset-wake|cold] [--simultaneous-start] [--no-idle-ff] [--no-routine-accel|--shadow-routine-accel] [--no-i2c-idle-high] [--release ID]\n  \
+    [--no-deco-storage-fixture] [--no-start-at-surface]\n  \
     [--ppm out.ppm] [--can-trace out.tsv]\n  \
     [--pc-trace N out.u32le [--pc-trace-after S] [--board handset|main]] [--json out.json] [--no-warnings] [--log N] [--inputs SCRIPT]\n  \
     [--dump-sram PREFIX] [--peek ADDR[,ADDR...] [--board handset|main]] [--access-trace N [--board handset|main]]\n  \
@@ -50,6 +51,10 @@ pub const USAGE: &str = "ngc-cli run [--main <srec>] [--handset <srec>] [--mode 
     --no-routine-accel turns off the exact acceleration of the runtime-library routines (memoized soft-float calls, DESIGN.md 16.2;\n  \
     results are identical either way, only host speed differs); --shadow-routine-accel replays and interprets every memo hit and\n  \
     compares the two (slow verification mode).\n  \
+    --no-deco-storage-fixture and --no-start-at-surface (with --data-dir only: the fixtures act on the saved profile) turn off the\n  \
+    two labelled emulator fixtures of the decompression handling, which are on by default: before every board creation a stored\n  \
+    tissue block that was never saved loses the saved decompression date (so the firmware resets the tissues instead of loading\n  \
+    NaN), and every board creation starts at the surface pressure, a new session with the oxygen cells at their defaults.\n  \
     --mode handset runs the handset alone (no CAN peer, like the viewer without --dual).\n  \
     --pc-trace records the first N executed instruction addresses of a board (default handset) as little-endian\n  \
     u32 words; that board runs without idle fast-forward until N instructions were traced. With --pc-trace-after S the\n  \
@@ -86,7 +91,7 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<(), RunError> {
     let parsed = args::parse(
         argv,
         &["main", "handset", "mode", "seconds", "boot-mode", "ppm", "can-trace", "pc-trace", "board", "json", "pc-trace-out", "log", "inputs", "dump-sram", "peek", "access-trace", "data-dir", "release", "pc-trace-after"],
-        &["simultaneous-start", "no-idle-ff", "no-warnings", "no-i2c-idle-high", "no-routine-accel", "shadow-routine-accel"],
+        &["simultaneous-start", "no-idle-ff", "no-warnings", "no-i2c-idle-high", "no-routine-accel", "shadow-routine-accel", "no-deco-storage-fixture", "no-start-at-surface"],
     )
     .map_err(RunError::Usage)?;
     let routine_accel = common::routine_accel_mode(&parsed).map_err(RunError::Usage)?;
@@ -124,6 +129,8 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<(), RunError> {
                 routine_accel: routine_accel != RoutineAccelMode::Off,
                 routine_accel_shadow: routine_accel == RoutineAccelMode::Shadow,
                 i2c_idle_high,
+                deco_storage_fixture: !parsed.flag("no-deco-storage-fixture"),
+                start_at_surface: !parsed.flag("no-start-at-surface"),
                 ..SessionConfig::default()
             };
             let label = format!("{}/", dir.display());
@@ -249,6 +256,7 @@ pub fn result_json(system: &System, wall_seconds: f64, setup_seconds: f64) -> Js
     // The digest of the guest state alone (older builds' fingerprint): unchanged by the output histories.
     json.insert("guestFingerprint", system.guest_fingerprint());
     json.insert("release", system.release().to_json());
+    json.insert("decoHealth", ngc::deco::health(system).to_json());
     json.insert("i2cIdleHigh", system.options().main_i2c_idle_high && system.main.is_some());
     let mut boards = Json::object();
     for which in [Which::Main, Which::Handset] {
@@ -341,6 +349,8 @@ fn report(system: &System, out: &mut dyn Write, wall: f64, setup: f64, traced: O
             system.main_battery_ready_flag().map_or("n/a".to_string(), |ready| ready.to_string())
         );
         let _ = writeln!(out, "{}", system.link.summary());
+        let deco = ngc::deco::health(system);
+        let _ = writeln!(out, "decompression state: tissues {}, oxygen {} (read-only report; details in --json)", deco.tissues.name(), deco.oxygen.name());
         if let Some(app) = system.main_application() {
             let show = |value: Option<u32>| value.map_or("n/a".to_string(), |v| v.to_string());
             let _ = writeln!(

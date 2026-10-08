@@ -321,8 +321,14 @@ function addDaysBcd(dateRegister, days) {
   return (dateRegister & ~0x3f) | (Math.floor(newDay / 10) << 4) | (newDay % 10);
 }
 
+// The workload the benchmark was measured with (DESIGN.md 16.6), as ngc::scenario::dive pins it: batteries at the 1500 mV
+// that fit the Photolithium type the wizard chooses (a fresh profile's 4100 mV makes the firmware ask for a battery change
+// and stand by) and both decompression fixtures off (the profile is built through the firmware's own routes instead).
+const PINNED_INPUTS = new TextEncoder().encode('{"battery1Mv": 1500, "battery2Mv": 1500}\n');
+
 function openSession(session, options, routineAccel, profile) {
-  session.createSession({ mode: 'dual', bootMode: 'handset-wake', idleFastForward: options.idleFf, routineAccel }, profile);
+  const pinned = profile['inputs.json'] ? profile : { ...profile, 'inputs.json': PINNED_INPUTS };
+  session.createSession({ mode: 'dual', bootMode: 'handset-wake', idleFastForward: options.idleFf, routineAccel, decoStorageFixture: false, startAtSurface: false }, pinned);
 }
 
 function runStage(session, options, routineAccel, name, profile, timeline, seconds) {
@@ -410,7 +416,7 @@ function runWholeDive(engine, options, routineAccel) {
   rtc.boards['ngc-main'].dateRegister = addDaysBcd(rtc.boards['ngc-main'].dateRegister, CLOCK_JUMP_DAYS);
   profile['rtc-state.json'] = new TextEncoder().encode(`${JSON.stringify(rtc, null, 2)}\n`);
   if (surface) profile['inputs.json'] = surface;
-  else delete profile['inputs.json'];
+  else delete profile['inputs.json']; // openSession then pins the batteries again
   const dives = options.diveDepths.map((metres) => {
     const depth = DEPTHS[metres];
     if (!depth) throw new Error(`--dive-depths takes 20 and/or 30 (got ${metres})`);

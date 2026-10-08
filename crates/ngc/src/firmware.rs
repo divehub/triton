@@ -205,11 +205,25 @@ pub struct ReleaseAddresses {
     /// FreeRTOS current-TCB pointers.
     pub main_current_tcb: AddressEntry,
     pub handset_current_tcb: AddressEntry,
+    /// Decompression state (see [`crate::deco`]). Main RAM address of the first of the 16 tissue records (36 bytes each,
+    /// the N2 float at +24 and the He float at +28 of every record).
+    pub main_deco_tissues: AddressEntry,
+    /// Main RAM byte: the breathing mode; [`crate::deco::MEASURED_PPO2_MODE`] (2) takes the ppO2 from the oxygen cells.
+    pub main_breathing_mode: AddressEntry,
+    /// Main RAM float: the ppO2 the decompression code uses (NaN while the oxygen cells are not calibrated, in mode 2).
+    pub main_ppo2: AddressEntry,
+    /// Main RAM: the three cached oxygen-cell flag bytes (EEPROM record IDs `0x2f..=0x31`): bit 0 enables the cell, bits 2-3 are
+    /// its calibration state (0 uncalibrated, 2 fresh, 1 aged). Read only while the ppO2 has not been computed yet.
+    pub main_cell_flags: AddressEntry,
+    /// Main **EEPROM** physical offset of the 128-byte stored tissue block (logical record IDs `0x6a..=0x89`, 32 words).
+    pub eeprom_tissue_block: AddressEntry,
+    /// Main **EEPROM** physical offset of the 4-byte last-decompression date record (logical record ID `0x8a`).
+    pub eeprom_deco_date: AddressEntry,
 }
 
 impl ReleaseAddresses {
     /// `(name, entry)` of every address, in a stable order.
-    pub fn entries(&self) -> [(&'static str, &AddressEntry); 11] {
+    pub fn entries(&self) -> [(&'static str, &AddressEntry); 17] {
         [
             ("handsetOrientation", &self.handset_orientation),
             ("handsetErrorLoopPC", &self.handset_error_loop),
@@ -222,6 +236,12 @@ impl ReleaseAddresses {
             ("mainTemperature", &self.main_temperature),
             ("mainCurrentTcb", &self.main_current_tcb),
             ("handsetCurrentTcb", &self.handset_current_tcb),
+            ("mainDecoTissues", &self.main_deco_tissues),
+            ("mainBreathingMode", &self.main_breathing_mode),
+            ("mainPpO2", &self.main_ppo2),
+            ("mainCellFlags", &self.main_cell_flags),
+            ("eepromTissueBlock", &self.eeprom_tissue_block),
+            ("eepromDecoDate", &self.eeprom_deco_date),
         ]
     }
 
@@ -284,6 +304,27 @@ pub static TRITON: Release = Release {
         main_temperature: AddressEntry::known(0x2000_4360, "TRITON static analysis"),
         main_current_tcb: AddressEntry::known(0x2000_5708, "FreeRTOS pxCurrentTCB, PendSV literal of the main image"),
         handset_current_tcb: AddressEntry::known(0x2000_13FC, "FreeRTOS pxCurrentTCB, PendSV literal of the handset image"),
+        main_deco_tissues: AddressEntry::known(
+            0x2000_1E94,
+            "Renode hooks on the start-up initializer 0x08008308 and the NDL routine (0x08008550, 0x0800857e): 16 records of 36 bytes, N2 float at +24 and He float at +28; the initializer loads them from the EEPROM block, and every NaN word of the loaded block was seen at this address",
+        ),
+        main_breathing_mode: AddressEntry::known(0x2000_2457, "Renode hooks (same routines): byte 2 = ppO2 measured by the oxygen cells; the settings default is 2"),
+        main_ppo2: AddressEntry::known(
+            0x2000_421C,
+            "Renode hooks (same routines): the ppO2 the NDL routine reads (the median cell ppO2); NaN (0x7fc00000) with uncalibrated cells in mode 2, finite after the air calibration",
+        ),
+        main_cell_flags: AddressEntry::known(
+            0x2000_23F4,
+            "cache of the EEPROM cell flags (records 0x2f..=0x31) filled by the settings loader 0x080091fc; observed on this engine: 0x01 x3 on a fresh profile, 0x09 x3 after the firmware's air calibration, 0x01 x3 again after a cold boot",
+        ),
+        eeprom_tissue_block: AddressEntry::known(
+            0x0FF,
+            "EEPROM record table of the main image (entries of offset u16 and size u16 at 0x080306f2 + 4 * record ID): IDs 0x6a..=0x89 are 32 words at physical 0x0ff..=0x17e; the block is written only by the power-down route",
+        ),
+        eeprom_deco_date: AddressEntry::known(
+            0x17F,
+            "EEPROM record table of the main image: ID 0x8a is 4 bytes at physical 0x17f (packed RTC calendar of the last decompression; 0xffffffff when erased); erasing it makes the initializer (0x08008308) take its >= 4 day reset path",
+        ),
     },
     cold_boot_refusal: None,
 };
@@ -325,6 +366,12 @@ pub static NEPTUN: Release = Release {
             0x2000_13FC,
             "FreeRTOS kernel of the handset: 13 of the 15 TRITON access sites have exactly one identical 26..36 instruction window in NEPTUN and load the same literal",
         ),
+        main_deco_tissues: AddressEntry::unavailable(NEPTUN_MAIN_BUILD),
+        main_breathing_mode: AddressEntry::unavailable(NEPTUN_MAIN_BUILD),
+        main_ppo2: AddressEntry::unavailable(NEPTUN_MAIN_BUILD),
+        main_cell_flags: AddressEntry::unavailable(NEPTUN_MAIN_BUILD),
+        eeprom_tissue_block: AddressEntry::unavailable(NEPTUN_MAIN_BUILD),
+        eeprom_deco_date: AddressEntry::unavailable(NEPTUN_MAIN_BUILD),
     },
     cold_boot_refusal: Some(
         "The cold-boot fixture is characterized for TRITON-5.8-65.3 only: with zero PWR.SR1/RCC.CSR wake flags the TRITON main requests standby after about 1.5 virtual seconds, but the NEPTUN main kept running for 40 virtual seconds without a standby request, so the fixture's observed-standby route does not exist for this release. Use Restart or Wake instead.",
@@ -1009,7 +1056,7 @@ mod tests {
                 }
             }
             let json = release.addresses.to_json();
-            assert_eq!(json.len(), 11);
+            assert_eq!(json.len(), 17);
         }
         // TRITON has every address; the NEPTUN main application variables are unavailable (never a TRITON value).
         assert!(TRITON.addresses.entries().iter().all(|(_, entry)| entry.address().is_some()));

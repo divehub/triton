@@ -44,8 +44,8 @@ DEFAULT_OUT = ROOT / "target" / "pages-site"
 # Files taken from web/ (the page and its modules; the engine module is added from web/pkg/). config.js and index.html
 # are published in a generated / adapted form.
 SITE_FILES = (
-    "index.html", "style.css", "config.js", "app.js", "conditions.js", "dom.js", "emulator.js", "engine.js", "entry.js",
-    "firmware-url.js", "keys.js", "lcd.js", "releases.js", "replay.js", "runtime.js", "sensors.js", "storage.js",
+    "index.html", "style.css", "config.js", "app.js", "conditions.js", "deco.js", "dom.js", "emulator.js", "engine.js",
+    "entry.js", "firmware-url.js", "keys.js", "lcd.js", "releases.js", "replay.js", "runtime.js", "sensors.js", "storage.js",
     "worker-client.js", "worker.js", "zip.js",
 )
 ENGINE_FILE = "pkg/ngc_wasm.wasm"

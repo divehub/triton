@@ -266,6 +266,16 @@ Status and decisions are tracked in section 13.
     - **Firmware reaction (synthetic reproduction):**
       - The B1 prompt is pixel-identical at 4100 and 1500 mV (LCD hash `62c3a30e…`); only the UART line differs ("Main voltage: 4099 mV").
       - After the wizard the voltage must fit the chosen type: Alkaline at 4100 mV makes the next start show "Change battery" and the main board stands by at 8.1 s with the handset unpowered. Alkaline at 1500 mV and Li-Ion 3.7V-18650 at 4100 mV start normally. This is what made the `diluent-menu` and `can-loss` scenarios fail without the pin. Regression test: `crates/ngc/tests/battery_default.rs`.
+- DECO-FIX (2026-10-08): decompression state handling (section 17).
+  - **Diagnosis (behaviour of the original firmware, not of the engine; the engine's decompression arithmetic equals Renode's bit for bit):** the no-decompression limit stayed at 99 for two reasons. (1) On a later start of a profile that was booted once, the main application loads 32 erased tissue words as NaN and keeps them, because it saves the tissues only on power-down while it saves the decompression date at start-up. (2) With uncalibrated oxygen cells in the measured-ppO2 mode the ppO2 is NaN. Related: a cold boot clears the cell calibration flags, and a depth left in `inputs.json` makes the next start begin under water (the firmware takes its first pressure as the surface).
+  - **Done:**
+    - `decoHealth` in the state (read-only report), with the addresses in the per-release table (`docs/releases.md`).
+    - The pre-boot EEPROM consistency fixture `decoStorageFixture` (default on), which erases the saved date record when the stored tissue block was never saved.
+    - The start-at-the-surface fixture `startAtSurface` (default on): every board creation starts at depth 0, a new session also with the default oxygen cells.
+    - Page warnings with the next step, a cold-boot hint, two start options, and a surface-pressure setting of the basic view that is remembered and sent with Restart, Cold, Wake and a serial change.
+    - Switches in `SessionConfig`, the session-create JSON and `ngc-cli run`; the scenario suite pins both fixtures off (`scenario::recorded_config`), like the battery pin.
+  - **Results (this engine, fresh profile, air calibration through the firmware's CAN protocol, 35 m, Restart):** with the fixture on the tissues are finite and the raw NDL is 5 min 10 s after the descent; with it off 32 of 32 tissue words are NaN and the NDL stays 99 for 30 s at depth (`decoHealth.tissues` is `invalid`). Synthetic reproductions, not physical observations.
+  - **Tests:** `crates/ngc/tests/deco_fixtures.rs` (5, real firmware), unit tests in `deco.rs` and `surface_start.rs`, 8 page tests and one real-engine runtime test in `web/`.
 
 ## 14. Session API (contract for FEATURES and WEB)
 
@@ -296,7 +306,7 @@ impl Session {
 }
 ```
 
-Actions mirror `run_emulator.py` exactly (names, payload fields, validation messages): `pause`, `resume`, `step` (2 × 50 ms), `advance` (`seconds` ≤ 20), `reset`, `cold`, `wake`, `up`, `down`, `confirm`, `can` (`connected`, `dropId`), `inputs` (`inputs` object; ranges/defaults from `INPUT_DEFAULTS`/`INPUT_RANGES`; values rounded through f32 like Renode's monitor), `led-colors` (`colors`), `serial` (`serialNumber`), `capture`. Pacing (wall clock) belongs to the host.
+Actions mirror `run_emulator.py` exactly (names, payload fields, validation messages): `pause`, `resume`, `step` (2 × 50 ms), `advance` (`seconds` ≤ 20), `reset`, `cold`, `wake`, `up`, `down`, `confirm`, `can` (`connected`, `dropId`), `inputs` (`inputs` object; ranges/defaults from `INPUT_DEFAULTS`/`INPUT_RANGES`; values rounded through f32 like Renode's monitor), `led-colors` (`colors`), `serial` (`serialNumber`), `capture`. Pacing (wall clock) belongs to the host. Additions of section 17: `reset`, `cold`, `wake` and `serial` accept an optional `surfacePressureMbar` (100 to 30000, validated before anything is shut down); `SessionConfig` and the session-create JSON gain `decoStorageFixture`, `startAtSurface` (both default true) and `surfacePressureMbar`; the state gains `decoHealth`, `decoStorageFixture` and `startAtSurface`.
 - REF done: 242 pinned Renode/tlib sources (`reference/renode-src`, MANIFEST hashes; tlib is LGPL reference only), firmware.bin ×2 verified, `docs/renode-semantics.md`, reference data (`reference/data/`: 20 M-instruction handset PC trace + 1 ms snapshots + checkpoints 1/2/3/3.9 s; dual-wake run1/run2 checkpoints 0.5–5.5 s; micro vectors). Renode run-to-run envelope (dual): identical through 1.05 s; afterwards idle PC/R3 and ≤373 SRAM1 bytes differ, CAN stamps ±79.6 µs, all payloads/order/LCD/storage identical.
 - FPU done: `armv7m-vfp` decodes all 4 348 Ghidra-listed VFP instructions of both images (+42 Ghidra missed), exact soft-float reference plus proven native fast paths, bit-exact against the AArch64 FPU in all 32 RMode/FZ/DN combinations (millions of cases per op), wasm self-test checksum identical to native; 60 tests pass. Integration notes for CPU: `Undefined` → UNDEFINSTR, `NotVfp` → NOCP, `execute` never returns `Undefined`, FPSCR loads use `vfp::fpscr::WRITE_MASK` (0xF7C0009F).
 
@@ -412,38 +422,46 @@ Add a committed, deterministic dive benchmark that builds its valid-tissue profi
 
 Both edit `cpu.rs` and `system.rs`. Re-read before every edit, keep edits small and local, and keep every crate compiling at each save. Target dirs: `target/perf-hle` and `target/perf-interp`.
 
-## 17. Decompression state handling (user-approved 2026-10-08; starts after section 16 lands)
+### 16.6 Results (2026-10-08)
 
-**Diagnosis** (DECO-DIAG, all original firmware behaviour; the hook evidence stayed outside the repository).
+- **Routine acceleration (PERF-HLE).** A record/replay memo of whole calls to the soft-double divide, `expf` and its helpers, `unorddf2`, `f2d` and `d2f`, identified by SHA-256 of body plus literal pool (`crates/armv7m/src/accel/`). An entry is created only from a call the interpreter executed, keyed by r0–r3, s0–s1 and the FPSCR control bits; a dependency tracker proves that every output is a function of the key or a copy of an entry register, and that only key-determined flash and the routine's own frame are read. A hit replays only at a block boundary with no pending exception and when the call fits in the chunk budget. NEPTUN's main image has the same divide and conversion routines (same hashes) and its own `expf`.
+- **Interpreter (PERF-INTERP).** IT blocks run in the fast loop (a second loop mode); exact u64 clock arithmetic (proven against the u128 reference), a memoized SysTick deadline, a lazily advanced DWT counter, cheaper idle-loop verification, no string formatting on timer register writes.
+- **Exactness.** `bench --dive --verify-routine-accel` is identical at all 25 checkpoints; native and wasm are identical at all 25; the shadow mode compared 3.8 M replayed calls with 0 mismatches; scenarios and `bench --verify-idle-ff` are unchanged.
+- **Speed, valid-tissue dive** (Apple M1 Max):
 
-The engine's deco arithmetic matches Renode bit for bit: 60/60 NDL hook records and all 32 tissue words on main's valid seed. NDL stuck at 99 has two causes.
-- **NaN tissues on any later boot of a persisted profile.**
-  - On a first boot with an erased saved date (EEPROM physical `0x17f`), the init at `0x08008308` sees elapsed ≥ 345 600 s. It resets the tissues (`0x08007584`) and writes the date, but never saves them.
-  - Tissues are saved only on the device's power-down route: handset CAN `0x149` → `0x0801f7d0` → `0x08008770`, or queue case 2. Sessions never take that route, so the tissue block at physical `0xff–0x17e` stays erased.
-  - On the next boot, the 32 erased words load as NaN. Elapsed time is under 4 days, so they are kept, and NDL stays 99.
-- **Uncalibrated oxygen in measured-ppO₂ mode** (mode byte `0x20002457` = 2): ppO₂ `0x2000421c` is NaN, so NDL stays 99.
-- Cold boot rewrites the calibration flags `0x09`→`0x01`, which brings the second cause back.
-- The persisted depth makes the next boot start under water; the firmware then takes that pressure as the surface pressure.
+| | Node, before this phase | Node, after | Native, after |
+| --- | --- | --- | --- |
+| 20 m average | 2.85× | 11.8× | 17.1–17.4× |
+| 20 m deco bursts | 1.1× | 5.6× | 7.5–7.6× |
+| 30 m average | | 13.6× | 18.7–20.9× |
+| Surface, idle fast-forward on | 17× | 24.5× | 42.8× |
 
-**Work package DECO-FIX** (after PERF-HLE/PERF-INTERP; owns `crates/ngc/**` for this feature, `crates/ngc-wasm/**`, `crates/ngc-cli/**` and `web/**`).
+The remaining time is interpretation of the deco code, limited by host branch mispredictions; further gains need fewer executed guest instructions (more accelerated routines or a block compiler).
 
-1. **Detect and warn (read-only).**
-   - The state gains `decoHealth`: `{tissues: "valid"|"invalid"|"unknown", oxygen: "calibrated"|"uncalibrated"|"unknown", details}`.
-   - Its source is host peeks of the TRITON tissue words `0x20001e94 + 36·i + 24/28` (i = 0…15) and of ppO₂ `0x2000421c` when `0x20002457` = 2. Put them in the per-release address table: NEPTUN fields are `unknown` with a reason unless proven by byte matching.
-   - The basic view shows a clear warning with the next step: for example, calibrate oxygen through the menu (Calibration → Air → Auto → Start → Save), or restart to apply fixture 2. Choosing Cold boot shows a hint that it resets calibration.
-2. **Pre-boot EEPROM consistency fixture** (labelled, switchable, default on).
-   - Before every board creation (session start, Restart, Cold, Wake, reopen): if the stored tissue block is entirely erased and the 4-byte date record at physical `0x17f` is not, erase that date record in the EEPROM image. The firmware then takes its own ≥4-day reset path (`0x08008334`/`0x0800833a`, flag `0x0800834a`, `0x08007584` reset block `0x080075bc–0x080075de`).
-   - TRITON only (proven layout); NEPTUN is skipped with a reason.
-   - Record each application in the state and the captures (`decoStorageFixture: {applied, reason}`). Switches: `SessionConfig`, CLI `--no-deco-storage-fixture`, session-create JSON `decoStorageFixture`.
-   - Never touch calibration, tissue words, ppO₂ or guest RAM.
-3. **Start every boot at the surface** (labelled, switchable, default on).
-   - At every board creation, both pressure inputs equal the configured surface pressure plus each sensor's offset, with depth 0.
-   - Keep `inputs.json` byte-compatible with the Renode runner: store the surface/offset choice in the page's own settings, or in a separate profile file, not as new `inputs.json` fields.
-   - The basic depth slider shows 0 m after boot.
-   - User request: a **new session** (Boot) also resets the three oxygen-cell inputs to their defaults (base and offsets), together with the depth.
+## 17. Decompression state handling
 
-**Tests.**
-- A session test: first boot, dive, Restart. Fixture on gives finite tissues and NDL below 99 at depth; fixture off reproduces the NaN state.
-- A test that calibration bytes are unchanged by the fixture.
-- UI tests for the warnings and the surface start.
-- Fingerprint identity of everything else when both fixtures are off.
+Everything in 17.1 is behaviour of the original TRITON main 5.8 firmware, reproduced by this engine; the engine's decompression arithmetic equals Renode's bit for bit. Everything in 17.2 and 17.3 is a labelled emulator fixture or a read-only report. All of it is a synthetic reproduction on a functional model, not a physical observation.
+
+### 17.1 What the firmware does
+
+- **Tissues.** The main application keeps 16 tissue records (36 bytes each; an N2 float at +24 and a He float at +28) in RAM and loads them from 32 EEPROM words (physical `0x0ff..=0x17e`, record IDs `0x6a..=0x89`) in its start-up initializer (`0x08008308`). The initializer compares the saved last-decompression date (record `0x8a`, physical `0x17f`, four bytes, a packed RTC calendar) with the RTC (elapsed-time compare at `0x08008334`/`0x0800833a`); at four days (345 600 s) or more, or with an erased date, it sets a reset flag and calls the reset routine (`0x08007584`), which puts the tissues in equilibrium with the pressure it reads at that moment, and it writes the date. It saves the tissues only on the power-down route (handset CAN `0x149`, or queue case 2), never at start-up.
+- **Consequence 1.** A profile that was booted once holds a date and an erased tissue block (all `0xFF`). The next start loads 32 NaN words, finds the elapsed time under four days and keeps them: the no-decompression limit (raw NDL, RAM `0x20002108`) stays 99 at any depth.
+- **Consequence 2.** In the measured-ppO2 mode (breathing-mode byte `0x20002457` = 2) the ppO2 (`0x2000421c`) is NaN while the oxygen cells have no calibration, with the same effect. On this engine the ppO2 of an uncalibrated profile stays 0 at the surface and becomes NaN once a dive starts; the cached cell flags (`0x200023f4..=0x200023f6`) read `0x01` until a calibration (`0x09`) and are rewritten to `0x01` by a cold boot (wake cause 0).
+- **Consequence 3.** The pressure read at start-up is taken as the surface pressure, so a profile whose `inputs.json` holds a depth starts under water with a wrong surface and tissues.
+- **Observation (cause not analysed).** After a calibration with injected CAN commands (the firmware's own protocol, but not driven by the handset's menu) the decompression code's gas record (`0x200020d4..`, entry 6 stays 0.0) was not updated: the NDL stayed 99 for 120 virtual seconds at 35 m in that session and fell within seconds after a Restart. Whether the handset's menu route, which also sends the handset's own follow-up traffic, avoids this was not checked here. The tests therefore dive after the Restart.
+
+### 17.2 `decoHealth` (read-only)
+
+The state document gains `decoHealth`: `{tissues: "valid"|"invalid"|"unknown", oxygen: "calibrated"|"uncalibrated"|"unknown", details}`, from side-effect-free peeks (`crates/ngc/src/deco.rs`).
+
+- **tissues:** all 32 words finite is `valid`; any NaN or infinity is `invalid`; all zero (RAM before the firmware initialised it) is `unknown`.
+- **oxygen:** only in mode 2. A non-finite ppO2 is `uncalibrated`, a finite non-zero one `calibrated`. A ppO2 of zero (not computed yet) is decided by the cached cell flags: `uncalibrated` when every enabled cell has calibration state 0 (flags bits 2-3), else `unknown`.
+- **Unavailable:** a handset-only run and a release whose addresses are not proven (NEPTUN: the main image is a different build, no byte-identical counterpart) report `unknown` with the reason in `details`; the addresses are in the per-release table (`docs/releases.md`), never taken from TRITON.
+- The page shows a warning only for a proven bad state, each naming the next step: "Oxygen not calibrated: Menu → Calibration → Air → Auto → Start → Save", "Decompression state invalid: restart the boards to let the firmware reset it." (with the repair fixture off: close the session, tick it and boot again). The Cold boot button and the cold-boot start option carry a hint that the firmware clears the oxygen calibration.
+
+### 17.3 The two fixtures (both on by default, both switchable)
+
+- **Pre-boot EEPROM consistency (`decoStorageFixture`).** Before every board creation (session start, Restart, Cold, Wake, serial change, reopening a profile): if the stored tissue block is entirely `0xFF` and the 4-byte date record is not, the date record is set to `0xFF` in the EEPROM image before it is loaded, and the firmware takes its own four-day reset path. No other byte is touched: not the oxygen calibration, not the tissue words, no RAM, no ppO2. The repaired image becomes the profile (it is flagged for saving). TRITON only; NEPTUN reports why it is skipped. The state names it: `decoStorageFixture: {enabled, applied, reason, previousDateRecord}` (also in captures). Switches: `SessionConfig::deco_storage_fixture`, `ngc-cli run --no-deco-storage-fixture`, session-create `decoStorageFixture`.
+- **Start at the surface (`startAtSurface`).** At every board creation both pressure inputs are set to the surface pressure plus each sensor's offset (its reading minus the mean of the two, which is what the basic view derives as the offset), so the depth is 0. A **new session** (`Session::new`: a boot, a profile import or a profile reset) also resets the three oxygen cells to their defaults (10 mV); Restart, Cold, Wake and serial keep them, because a calibration made with them stays meaningful. Nothing else changes. `inputs.json` keeps its format byte for byte: the surface pressure is a session setting (`SessionConfig::surface_pressure_mbar`, session-create `surfacePressureMbar`, default 1013.25 mbar, and the optional `surfacePressureMbar` of `reset`, `cold`, `wake` and `serial`), and the page keeps its own surface-pressure setting in the browser's local storage. The state names it: `startAtSurface: {enabled, surfacePressureMbar, applied, oxygenReset, changedInputs, note}`. Switches: `SessionConfig::start_at_surface`, `ngc-cli run --no-start-at-surface`, session-create `startAtSurface`.
+- **Scenarios.** The Renode recordings were made without either fixture (a stored image is compared byte for byte, a reopened profile keeps its inputs), so the scenario suite pins both off through `scenario::recorded_config`, and `platformOptions` says so.
+- **Tests.** `crates/ngc/tests/deco_fixtures.rs` (real firmware, calibration through the firmware's CAN protocol): first boot, calibration, a dive, Restart, then NDL below 99 with the fixture on and the NaN state with it off; the fixture writes only the date record; every board creation starts at the surface and a new session resets the cells; the health report follows a calibration and a cold boot; NEPTUN reports unknown. `web/test-ui.mjs` and `web/test-node.mjs` cover the warnings, the start options, the surface setting and the form following the engine after a Restart and a new session.

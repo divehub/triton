@@ -23,14 +23,23 @@
 //! ngc_profile_clear(); ngc_profile_set(kind, ptr, len)    stage profile files for the next session
 //!                                      kind 0 eeprom.bin, 1 nor.ngc, 2 rtc-state.json, 3 inputs.json, 4 led-colors.json
 //! ngc_session_create(cfg_ptr, cfg_len) JSON {mode, bootMode, simultaneousStart, idleFastForward, routineAccel,
-//!                                      routineAccelShadow, adcSample, startPaused, i2cIdleHigh, historyNonce}, every key
+//!                                      routineAccelShadow, adcSample, startPaused, i2cIdleHigh, historyNonce,
+//!                                      decoStorageFixture, startAtSurface, surfacePressureMbar}, every key
 //!                                      optional: `routineAccel` (default true) is the exact acceleration of the runtime-library
 //!                                      routines (memoized soft-float calls; results identical either way), `routineAccelShadow`
 //!                                      (default false) its slow verification mode;
 //!                                      `i2cIdleHigh` (default true) drives the main board's PB6/PB7/PB10/PB11 high before
 //!                                      the first instruction (functional I2C idle-line fixture), false leaves them low;
 //!                                      `historyNonce` (unsigned integer < 2^64, default 0) is the host's random part of
-//!                                      the state's `outputHistoryEpoch`, `"<historyNonce>-<generation>"`.
+//!                                      the state's `outputHistoryEpoch`, `"<historyNonce>-<generation>"`;
+//!                                      `decoStorageFixture` (default true) repairs, before every board creation, a stored
+//!                                      tissue block that was never saved by erasing the saved decompression date record
+//!                                      (TRITON only); `startAtSurface` (default true) starts every board creation with
+//!                                      both pressure inputs at the surface pressure plus the sensor offsets, a new session
+//!                                      also with the oxygen cells at their defaults; `surfacePressureMbar` (100 to 30000,
+//!                                      default 1013.25) is the surface pressure that fixture uses (the `reset`, `cold`,
+//!                                      `wake` and `serial` actions may carry a new value). Both are labelled emulator
+//!                                      fixtures, named in the state (`decoStorageFixture`, `startAtSurface`).
 //!                                      Fails with a clear message when the main and handset images are of different
 //!                                      releases, and for `bootMode` "cold" on a release without a cold-boot route (NEPTUN)
 //! ngc_session_run_for(seconds)         0 still running, 1 paused/standby/error, 2 no session
@@ -840,6 +849,26 @@ mod tests {
         for bad in [r#"{"historyNonce":-1}"#, r#"{"historyNonce":"7"}"#, r#"{"historyNonce":1.5}"#, r#"{"i2cIdleHigh":1}"#, r#"{"i2cIdleHigh":"no"}"#] {
             assert!(HostConfig::from_json(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_decompression_fixtures_are_on_by_default_and_switchable() {
+        let defaults = HostConfig::from_json("{}").unwrap();
+        assert!(defaults.deco_storage_fixture && defaults.start_at_surface, "both labelled fixtures are on by default");
+        assert_eq!(defaults.surface_pressure_mbar, 1013.25);
+        let config = HostConfig::from_json(r#"{"decoStorageFixture":false,"startAtSurface":false,"surfacePressureMbar":900}"#).unwrap();
+        assert!(!config.deco_storage_fixture && !config.start_at_surface);
+        assert_eq!(config.surface_pressure_mbar, 900.0);
+        for bad in [
+            r#"{"decoStorageFixture":0}"#,
+            r#"{"startAtSurface":"yes"}"#,
+            r#"{"surfacePressureMbar":99}"#,
+            r#"{"surfacePressureMbar":30001}"#,
+            r#"{"surfacePressureMbar":"1013"}"#,
+        ] {
+            assert!(HostConfig::from_json(bad).is_err(), "{bad}");
+        }
+        assert_eq!(HostConfig::from_json(r#"{"surfacePressureMbar":99}"#).unwrap_err(), "surfacePressureMbar must be between 100 and 30000");
     }
 
     // ---- with the real firmware (skipped when the gitignored SREC files are not available) ----

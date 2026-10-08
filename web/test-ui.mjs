@@ -24,6 +24,7 @@ import { DEFAULT_RELEASE_ID, RELEASES, describeRelease, mixedPairMessage, pairCo
 import { FirmwareFetchError, MAX_FETCH_BYTES, configuredProxyUrl, fetchFirmware, loopbackProxyUrl, normalizeFirmwareUrl, proxyEndpoint } from './firmware-url.js';
 import { FIRMWARE_PROXY_URL } from './config.js';
 import * as sensors from './sensors.js';
+import * as deco from './deco.js';
 import { Runtime, nonceFromWords } from './runtime.js';
 import { MemoryStorage } from './storage.js';
 import { Element, installDom } from './fake-dom.mjs';
@@ -1374,7 +1375,8 @@ test('page: the serial number field accepts nine digits and the action carries i
   field.value = '123456789';
   h.document.getElementById('serial-form').dispatch('submit');
   await settle();
-  assert.deepEqual(h.posts().at(-1).body, { action: 'serial', serialNumber: 123456789 });
+  // A serial change recreates the boards, so it carries the surface pressure of the basic view like Restart does.
+  assert.deepEqual(h.posts().at(-1).body, { action: 'serial', serialNumber: 123456789, surfacePressureMbar: 1013.25 });
 });
 
 test('page: every action goes through one queue, in order, and a failure is shown once and cleared by the next action', async () => {
@@ -1425,6 +1427,8 @@ test('structure: every element the scripts look up exists in index.html, and the
   assert.doesNotMatch(html, /<details class="variations" open/, 'Sensor variations start closed');
   assert.match(html, /name="serialNumber"[^>]*max="999999999"/);
   assert.match(html, /<input type="checkbox" id="start-i2c-idle" checked>/, 'the I2C idle-high fixture is a start option, on by default');
+  assert.match(html, /<input type="checkbox" id="start-deco-fixture" checked>/, 'the stored decompression state repair is a start option, on by default');
+  assert.match(html, /<input type="checkbox" id="start-surface" checked>/, 'the start at the surface is a start option, on by default');
   assert.match(html, /<input type="checkbox" id="remember" checked>/, 'Remember these files starts ticked');
 });
 
@@ -2502,4 +2506,216 @@ test('structure: the URL form is a real form with labelled fields, and the CSP o
   const header = [...served.matchAll(/^CSP = \(((?:.|\n)*?)\)\nWASM_NAME/gm)][0][1];
   const joined = [...header.matchAll(/"([^"]*)"/g)].map((match) => match[1]).join('');
   assert.equal(joined, csp, 'serve.py sends the same policy as the page <meta>');
+});
+
+// =====================================================================================================
+// deco.js and the decompression handling in the page: the read-only warnings, the surface start, the oxygen reset
+// =====================================================================================================
+
+const decoState = (health, extra = {}) => ({
+  ...initialState, inputs: { ...initialInputs },
+  decoHealth: { tissues: 'valid', oxygen: 'calibrated', details: {}, ...health }, ...extra,
+});
+const shownWarnings = (m) => ['oxygen', 'tissues'].filter((id) => !m.document.getElementById(`deco-warning-${id}`).hidden).map((id) => m.document.getElementById(`deco-warning-${id}`).textContent);
+const ORIGIN_OXYGEN = 'Oxygen not calibrated: Menu → Calibration → Air → Auto → Start → Save';
+
+test('deco: only a proven bad state warns, and each warning names the next step', () => {
+  assert.deepEqual(deco.decoWarnings(null), []);
+  assert.deepEqual(deco.decoWarnings({}), [], 'an engine without the report');
+  assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'unknown', oxygen: 'unknown' } }), [], 'unknown (NEPTUN, handset only, not yet running) never warns');
+  assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'valid', oxygen: 'calibrated' } }), []);
+  assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'valid', oxygen: 'uncalibrated' } }), [{ id: 'oxygen', text: ORIGIN_OXYGEN }]);
+  const restart = 'Decompression state invalid: restart the boards to let the firmware reset it.';
+  assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'invalid', oxygen: 'calibrated' } }), [{ id: 'tissues', text: restart }]);
+  assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'invalid', oxygen: 'uncalibrated' }, decoStorageFixture: { enabled: true } }).map((w) => w.id), ['oxygen', 'tissues']);
+  const off = deco.decoWarnings({ decoHealth: { tissues: 'invalid', oxygen: 'calibrated' }, decoStorageFixture: { enabled: false } });
+  assert.match(off[0].text, /^Decompression state invalid: the repair fixture is off\. Close the session, tick .* under Start options and boot again\.$/);
+  // The surface pressure setting: a finite number inside the engine's range, else null; a blank text is not zero.
+  assert.equal(deco.parseSurfacePressure('900'), 900);
+  assert.equal(deco.parseSurfacePressure(1013.25), 1013.25);
+  assert.equal(deco.parseSurfacePressure(' 100 '), 100);
+  assert.equal(deco.parseSurfacePressure('30000'), 30000);
+  for (const bad of ['', '  ', '99.9', '30000.1', 'abc', NaN, Infinity, null, undefined, '0x10']) assert.equal(deco.parseSurfacePressure(bad), null, String(bad));
+  // The session information: the report with the reason when unknown, and what the fixtures did.
+  assert.match(deco.healthLine({ decoHealth: { tissues: 'unknown', oxygen: 'valid', details: { tissues: 'Unknown for NEPTUN-5.8-65.3: not proven.' } } }), /tissues unknown.*Unknown for NEPTUN-5\.8-65\.3: not proven\./);
+  assert.equal(deco.healthLine({}), null);
+  assert.deepEqual(deco.fixtureLines({}), []);
+  const lines = deco.fixtureLines({ decoStorageFixture: { enabled: true, applied: true, reason: 'Repaired.' }, startAtSurface: { enabled: true, surfacePressureMbar: 900, note: 'Depth 0.' } });
+  assert.deepEqual(lines, ['Fixture: stored decompression state repair (applied at the last start). Repaired.', 'Fixture: start at the surface (on, surface 900 mbar). Depth 0.']);
+});
+
+test('page: the decompression warnings show only for a proven bad state, name the next step and go away with it', async () => {
+  const m = await mount();
+  const show = (health, extra) => m.view.onState({ state: decoState(health, extra), host: { ...hostBase } });
+  assert.equal(m.document.getElementById('deco-health').hidden, true, 'nothing is shown before a state arrives');
+  show({});
+  assert.equal(m.document.getElementById('deco-health').hidden, true, 'a healthy state shows nothing');
+  show({ oxygen: 'uncalibrated' });
+  assert.equal(m.document.getElementById('deco-health').hidden, false);
+  assert.deepEqual(shownWarnings(m), [ORIGIN_OXYGEN]);
+  show({ oxygen: 'uncalibrated', tissues: 'invalid' });
+  assert.deepEqual(shownWarnings(m), [ORIGIN_OXYGEN, 'Decompression state invalid: restart the boards to let the firmware reset it.']);
+  show({ oxygen: 'calibrated', tissues: 'invalid' });
+  assert.deepEqual(shownWarnings(m), ['Decompression state invalid: restart the boards to let the firmware reset it.'], 'a calibrated oxygen removes only its own warning');
+  show({ oxygen: 'unknown', tissues: 'unknown' });
+  assert.equal(m.document.getElementById('deco-health').hidden, true, 'unknown never warns (NEPTUN reports it)');
+  show({ tissues: 'invalid' }, { decoStorageFixture: { enabled: false, applied: false, reason: 'Switched off.' } });
+  assert.match(shownWarnings(m)[0], /the repair fixture is off/);
+  // An engine build without the report: no member, no warning, nothing breaks.
+  m.view.onState({ state: { ...initialState, inputs: { ...initialInputs } }, host: { ...hostBase } });
+  assert.equal(m.document.getElementById('deco-health').hidden, true);
+  // The region is a live status region with the warnings inside, and Advanced describes the report and the fixtures.
+  assert.match(html, /<section id="deco-health" class="deco-health" aria-label="Decompression state" role="status" hidden>/);
+  show({ tissues: 'invalid' }, {
+    decoStorageFixture: { enabled: true, applied: true, reason: 'The date record was erased.', previousDateRecord: '0x50100454' },
+    startAtSurface: { enabled: true, surfacePressureMbar: 1013.25, note: 'Depth 0 at every start.' },
+  });
+  m.document.getElementById('firmware-details').open = true;
+  m.view.render();
+  const info = m.document.getElementById('session-info').textContent;
+  assert.match(info, /Decompression state \(read-only report\): tissues invalid, oxygen calibrated\./);
+  assert.match(info, /Fixture: stored decompression state repair \(applied at the last start\)\. The date record was erased\./);
+  assert.match(info, /Fixture: start at the surface \(on, surface 1013\.25 mbar\)\. Depth 0 at every start\./);
+});
+
+test('page: the cold boot hint sits at the Cold boot button and appears in the start options when a cold boot is chosen', async () => {
+  assert.match(html, /<button type="button" data-action="cold" title="[^"]*oxygen calibration[^"]*">Cold boot<\/button>/);
+  assert.match(/<p id="cold-hint"[^>]*>([^<]*)<\/p>/.exec(html)[1], /Cold boot: the firmware clears the oxygen-cell calibration.*Calibrate again afterwards: Menu → Calibration → Air → Auto → Start → Save\./);
+  const m = await mountEntry();
+  assert.equal(m.el('start-cold-hint').hidden, true, 'the default boot is a handset wake: no hint');
+  m.el('start-boot-mode').value = 'cold';
+  m.el('start-boot-mode').dispatch('change');
+  assert.equal(m.el('start-cold-hint').hidden, false);
+  assert.match(m.el('start-cold-hint').textContent, /clear the oxygen-cell calibration.*Calibrate again afterwards/);
+  m.el('start-boot-mode').value = 'handset-wake';
+  m.el('start-boot-mode').dispatch('change');
+  assert.equal(m.el('start-cold-hint').hidden, true);
+});
+
+test('entry and runtime: the decompression fixtures are start options, on by default, with the remembered surface pressure', async () => {
+  const m = await mountEntry();
+  assert.equal(m.el('start-deco-fixture').checked && m.el('start-surface').checked, true, 'both fixtures start ticked');
+  assert.deepEqual(plain(m.view.options()), { ...plain(m.view.options()), decoStorageFixture: true, startAtSurface: true, surfacePressureMbar: null });
+  m.el('start-deco-fixture').checked = false;
+  m.el('start-surface').checked = false;
+  globalThis.window.localStorage.setItem('ngc-wasm.surface-pressure', '900');
+  const options = m.view.options();
+  assert.deepEqual([options.decoStorageFixture, options.startAtSurface, options.surfacePressureMbar], [false, false, 900]);
+  globalThis.window.localStorage.setItem('ngc-wasm.surface-pressure', '50');
+  assert.equal(m.view.options().surfacePressureMbar, null, 'a remembered value outside the engine\'s range is not sent');
+
+  // The worker passes them on: on unless switched off; the surface pressure only when valid.
+  assert.deepEqual(Object.fromEntries(['decoStorageFixture', 'startAtSurface'].map((key) => [key, Runtime.normalizeConfig({})[key]])), { decoStorageFixture: true, startAtSurface: true });
+  assert.equal('surfacePressureMbar' in Runtime.normalizeConfig({}), false);
+  assert.equal('surfacePressureMbar' in Runtime.normalizeConfig({ surfacePressureMbar: 50 }), false);
+  assert.deepEqual(Runtime.normalizeConfig({ decoStorageFixture: false, startAtSurface: false, surfacePressureMbar: 900 }), { ...Runtime.normalizeConfig({}), decoStorageFixture: false, startAtSurface: false, surfacePressureMbar: 900 });
+
+  const engine = new FakeEngine();
+  const h = new RuntimeHarness(engine);
+  await h.request('init');
+  await h.inspect('main', 'TRITON-5.8-65.3');
+  await h.inspect('handset', 'TRITON-5.8-65.3');
+  await h.request('boot', { options: { mode: 'dual', startPaused: true, decoStorageFixture: false, surfacePressureMbar: 950 } });
+  const first = engine.created[0].config;
+  assert.deepEqual([first.decoStorageFixture, first.startAtSurface, first.surfacePressureMbar], [false, true, 950]);
+  // An action that recreates the boards and carries a surface pressure changes the session's setting; a profile import then uses it.
+  await h.request('action', { request: { action: 'reset', surfacePressureMbar: 900 } });
+  await h.request('action', { request: { action: 'inputs', inputs: { oxygen1Mv: 11 }, surfacePressureMbar: 123 } });
+  await h.request('import-profile', { files: [{ name: 'eeprom.bin', data: new Uint8Array([9]) }] });
+  assert.equal(engine.created[1].config.surfacePressureMbar, 900, 'the Restart\'s value, not the boot\'s, and not one carried by another action');
+  assert.equal(engine.created[1].config.decoStorageFixture, false, 'the fixture switch survives a profile import');
+  await h.request('close-session');
+  // An older engine build that does not know the options: they are dropped one at a time and the page can say so.
+  const older = new FakeEngine();
+  older.rejectOptions = ['decoStorageFixture', 'startAtSurface', 'surfacePressureMbar'];
+  const o = new RuntimeHarness(older);
+  await o.request('init');
+  await o.inspect('main', 'TRITON-5.8-65.3');
+  await o.inspect('handset', 'TRITON-5.8-65.3');
+  await o.request('boot', { options: { mode: 'dual', startPaused: true, surfacePressureMbar: 900 } });
+  assert.deepEqual([...older.unsupportedOptions].sort(), ['decoStorageFixture', 'startAtSurface', 'surfacePressureMbar']);
+  await o.request('close-session');
+});
+
+test('page: Restart, Cold boot, Wake and a serial change carry the surface pressure of the basic view, which is remembered', async () => {
+  const h = await scenarioHarness();
+  await h.edit('surface-pressure', 900);
+  assert.equal(globalThis.window.localStorage.getItem('ngc-wasm.surface-pressure'), '900', 'remembered in this browser');
+  await applyResponse(h, 0);
+  for (const [index, action] of ['reset', 'cold', 'wake'].entries()) {
+    h.sendAction(action);
+    await settle();
+    assert.deepEqual(h.posts()[index + 1].body, { action, surfacePressureMbar: 900 }, action);
+    await h.respond(h.posts()[index + 1]);
+  }
+  // A half-typed or out-of-range value is neither sent nor remembered; the last valid one is.
+  await h.edit('surface-pressure', '50');
+  assert.equal(globalThis.window.localStorage.getItem('ngc-wasm.surface-pressure'), '900');
+  assert.equal(h.pending().length, 0, 'an invalid edit sends nothing');
+  h.sendAction('reset');
+  await settle();
+  assert.equal(h.posts().at(-1).body.surfacePressureMbar, 900, 'the last valid setting goes with the Restart');
+  await h.respond(h.posts().at(-1));
+  // Other actions carry nothing extra.
+  h.sendAction('step');
+  await settle();
+  assert.deepEqual(h.posts().at(-1).body, { action: 'step' });
+});
+
+test('page: after a Restart that returned the unit to the surface the depth slider shows 0 m and the oxygen cells keep their values', async () => {
+  const deepInputs = { pressure1Mbar: 4600, pressure2Mbar: 4600, oxygen1Mv: 12.5, oxygen2Mv: 12, oxygen3Mv: 12.25 };
+  const h = await scenarioHarness(deepInputs);
+  assert.ok(Number(h.control('depth').value) > 30, 'the form starts at depth');
+  h.sendAction('reset');
+  await settle();
+  const request = h.posts()[0];
+  assert.equal(request.body.surfacePressureMbar, 1013.25);
+  // The worker broadcasts the state of the new boards (generation 2), where the engine returned both pressures to the surface
+  // and kept the cells, then answers the request.
+  const next = { ...initialState, inputs: { ...initialInputs, ...deepInputs, pressure1Mbar: 1013.25, pressure2Mbar: 1013.25 } };
+  h.view.onState({ state: clone(next), host: { ...hostBase, generation: 2 } });
+  request.done = true;
+  request.resolve(clone(next));
+  await settle();
+  assert.equal(Number(h.control('depth').value), 0, 'the depth slider shows 0 m');
+  assert.equal(h.control('depth-value').textContent, '0.00 m');
+  assert.equal(Number(h.raw('pressure1Mbar').value), 1013.25);
+  assert.equal(Number(h.raw('pressure2Mbar').value), 1013.25);
+  near(Number(h.control('oxygen-base').value), 12.25, 'the cells are the ones the user set');
+  near(Number(h.raw('oxygen1Mv').value), 12.5, 'raw cell 1');
+  assert.equal(h.status(), 'Inputs applied');
+  // A board creation that left the sensors as they were does not touch the form: a raw draft stays.
+  await h.editRaw('noiseSeed', '77');
+  const same = { ...next };
+  h.view.onState({ state: clone(same), host: { ...hostBase, generation: 3 } });
+  assert.equal(h.raw('noiseSeed').value, '77', 'the draft is kept');
+  assert.equal(h.status(), 'Raw edits pending');
+});
+
+test('page: a new session starts at 0 m with the engine\'s default cells whatever the previous one left, using the remembered surface pressure', async () => {
+  const h = await scenarioHarness({ pressure1Mbar: 4600, pressure2Mbar: 4600 });
+  assert.ok(Number(h.control('depth').value) > 30);
+  near(Number(h.control('oxygen-base').value), 60, 'the previous session\'s cell');
+  // The session is closed and a new one booted: the page shows the state of the new engine session, whose inputs the engine reset.
+  h.view.hide();
+  globalThis.window.localStorage.setItem('ngc-wasm.surface-pressure', '900');
+  h.view.show({
+    options: { mode: 'dual', adcSample: 400 }, profile: 'stored', release: describeRelease(DEFAULT_RELEASE_ID),
+    slots: { main: fakeSlot('main.srec'), handset: fakeSlot('handset.srec') },
+  });
+  const fresh = { ...initialState, inputs: { ...initialInputs, oxygen1Mv: 10, oxygen2Mv: 10, oxygen3Mv: 10, pressure1Mbar: 900, pressure2Mbar: 900 } };
+  h.view.onState({ state: clone(fresh), host: { ...hostBase, profileEpoch: 2, generation: 2 } });
+  assert.equal(Number(h.control('depth').value), 0, 'the depth slider shows 0 m after the boot');
+  assert.equal(Number(h.control('surface-pressure').value), 900, 'the depth is derived from the remembered surface pressure');
+  assert.equal(Number(h.control('pressure-offset-1').value), 0, 'and no phantom sensor offset appears');
+  assert.equal(Number(h.control('oxygen-base').value), 10);
+  for (const index of [1, 2, 3]) assert.equal(Number(h.control(`oxygen-offset-${index}`).value), 0, `cell ${index} offset`);
+  assert.equal(h.posts().length, 0, 'showing the new session sends nothing');
+});
+
+test('structure: deco.js is a published page module and the engine option list names the decompression options', () => {
+  const build = fs.readFileSync(path.join(here, '..', 'deploy', 'build_site.py'), 'utf8');
+  assert.match(build, /"deco\.js"/, 'deco.js is on the site allowlist on purpose');
+  const engineSource = fs.readFileSync(path.join(here, 'engine.js'), 'utf8');
+  assert.match(engineSource, /OPTIONAL_OPTIONS = \[[^\]]*'decoStorageFixture'[^\]]*'startAtSurface'[^\]]*'surfacePressureMbar'/);
 });

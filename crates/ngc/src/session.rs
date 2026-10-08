@@ -26,8 +26,14 @@
 //!   and an internal counter.
 //! * An IWDG expiry or `AIRCR.SYSRESETREQ` performs a Renode-style machine reset instead of ending the run (see
 //!   `System::machine_reset`).
+//! * Two labelled emulator fixtures act at every board creation, both **on by default** and switchable
+//!   ([`SessionConfig::deco_storage_fixture`], [`SessionConfig::start_at_surface`]): the runner has neither. The pre-boot
+//!   EEPROM consistency repair ([`crate::deco`]) and the start at the surface ([`crate::surface_start`]; a new session also
+//!   resets the oxygen cells). The state names them (`decoStorageFixture`, `startAtSurface`) next to the read-only
+//!   `decoHealth`; DESIGN.md section 17.
 
 use crate::actions::{self, Request};
+use crate::deco::{self, StorageFixture};
 use crate::firmware::Firmware;
 use crate::fixtures::{python_float, Inputs};
 use crate::models::lcd::NgcParallelLcd;
@@ -37,6 +43,7 @@ use crate::persistence::{
 };
 use crate::png;
 use crate::state::{self, FirmwareDescriptor, RtcInfo, StateView};
+use crate::surface_start::{self, SurfaceStart};
 pub use crate::system::BuildOptions;
 use crate::system::{BootMode, Input, Mode, System, SystemConfig, Which};
 use emu_core::json::WriteOptions;
@@ -75,6 +82,19 @@ pub struct SessionConfig {
     /// generation counts the history domains of this session (creation, every restart/cold/wake/serial/reset, every machine
     /// reset). The browser passes a fresh random value per session so that two sessions never share an epoch.
     pub history_nonce: u64,
+    /// The pre-boot EEPROM consistency fixture (`decoStorageFixture`, `--no-deco-storage-fixture`; **on by default**, see
+    /// [`crate::deco`]): before every board creation, a stored tissue block that is entirely erased while the saved
+    /// decompression date is set loses the date record, so that the firmware takes its own four-day reset path instead of
+    /// loading NaN tissues. TRITON only. An emulator fixture; the state names it (`decoStorageFixture`).
+    pub deco_storage_fixture: bool,
+    /// The start-at-the-surface fixture (`startAtSurface`, `--no-start-at-surface`; **on by default**, see
+    /// [`crate::surface_start`]): every board creation starts both pressure inputs at [`SessionConfig::surface_pressure_mbar`]
+    /// plus each sensor's offset (depth 0), and a new session also resets the oxygen cells to their defaults. The state
+    /// names it (`startAtSurface`).
+    pub start_at_surface: bool,
+    /// The surface pressure in mbar (`surfacePressureMbar`, 100 to 30000) the start-at-the-surface fixture uses; the
+    /// `reset`, `cold`, `wake` and `serial` actions may carry a new value of it.
+    pub surface_pressure_mbar: f64,
 }
 
 impl Default for SessionConfig {
@@ -90,6 +110,9 @@ impl Default for SessionConfig {
             start_paused: false,
             i2c_idle_high: true,
             history_nonce: 0,
+            deco_storage_fixture: true,
+            start_at_surface: true,
+            surface_pressure_mbar: surface_start::DEFAULT_SURFACE_MBAR,
         }
     }
 }
@@ -182,6 +205,10 @@ struct Launched {
     system: System,
     provenance: Vec<(String, Provenance)>,
     info: RtcInfo,
+    /// What the pre-boot EEPROM consistency fixture did for this board creation.
+    deco_storage: StorageFixture,
+    /// What the start-at-the-surface fixture did for this board creation.
+    surface_start: SurfaceStart,
 }
 
 /// The session: system, controls, state, persistence.
@@ -199,6 +226,10 @@ pub struct Session {
     stored: Profile,
     dirty: Dirty,
     rtc: RtcBook,
+    /// The pre-boot EEPROM consistency fixture of the last board creation (`decoStorageFixture` of the state).
+    deco_storage: StorageFixture,
+    /// The start-at-the-surface fixture of the last board creation (`startAtSurface` of the state).
+    surface_start: SurfaceStart,
     /// `storage_state_ready`: EEPROM and NOR may be saved from the live system.
     storage_ready: bool,
     /// A Restart/cold/wake failed half way: nothing runs until the next successful launch.
@@ -257,6 +288,7 @@ impl Session {
         if config.adc_sample > 4095 {
             return Err("the ADC sample must be in 0..=4095".to_string());
         }
+        surface_start::validate_surface(config.surface_pressure_mbar)?;
         let labels = Labels { prefix: label_prefix.to_string() };
         // Emulator.__init__: inputs.json only for a dual run; led-colors.json for every run.
         let inputs = match (&profile.inputs, dual) {
@@ -271,8 +303,8 @@ impl Session {
             Some(text) => RtcState::parse(text, &labels.rtc())?,
             None => RtcState::empty(),
         };
-        let launched =
-            launch_system(&config, options, main, handset, config.boot_mode, &inputs, &profile, &saved, &labels).map_err(|e| format!("Emulator startup failed: {e}"))?;
+        let launched = launch_system(&config, options, main, handset, config.boot_mode, &inputs, true, &profile, &saved, &labels)
+            .map_err(|e| format!("Emulator startup failed: {e}"))?;
         let mut firmware = Vec::new();
         if let (true, Some(main)) = (dual, main) {
             firmware.push(FirmwareDescriptor::of(main));
@@ -286,6 +318,8 @@ impl Session {
             stored: profile,
             dirty: Dirty { inputs: dual, ..Dirty::default() },
             rtc: RtcBook { saved, ready: true, provenance: launched.provenance, info: launched.info },
+            deco_storage: launched.deco_storage,
+            surface_start: launched.surface_start,
             storage_ready: dual,
             failed: false,
             last_capture: None,
@@ -412,6 +446,8 @@ impl Session {
             host_pacing: pacing,
             realtime_factor: self.host.realtime_factor,
             output_history_epoch: &epoch,
+            deco_storage: &self.deco_storage,
+            surface_start: &self.surface_start,
         })
     }
 
@@ -582,6 +618,7 @@ impl Session {
             self.system.handset_firmware(),
             chosen,
             &inputs,
+            false,
             &self.stored,
             &self.rtc.saved,
             &self.labels,
@@ -591,6 +628,8 @@ impl Session {
         self.system = launched.system;
         self.rtc.provenance = launched.provenance;
         self.rtc.info = launched.info;
+        self.deco_storage = launched.deco_storage;
+        self.surface_start = launched.surface_start;
         self.rtc.ready = true;
         self.storage_ready = self.config.mode == Mode::Dual;
         self.failed = false;
@@ -673,6 +712,7 @@ impl Session {
                         return Err(reason.to_string());
                     }
                 }
+                self.take_surface_pressure(payload)?;
                 let running = self.running;
                 let mode = match name {
                     "cold" => Some(BootMode::Cold),
@@ -736,6 +776,8 @@ impl Session {
                 if marker != crate::fixtures::EEPROM_VALIDITY_MARKER {
                     return Err("Wait for the first boot to initialize EEPROM before changing the emulated serial".to_string());
                 }
+                self.take_surface_pressure(payload)?;
+                let main = self.system.main.as_ref().ok_or("Serial fixture requires --dual")?;
                 main.eeprom.set_double_word(0, serial).map_err(|e| e.to_string())?;
                 main.eeprom.flush();
                 let running = self.running;
@@ -748,6 +790,16 @@ impl Session {
             }
             _ => return Err("Unknown action".to_string()),
         }
+        Ok(())
+    }
+
+    /// The optional `surfacePressureMbar` of the actions that recreate the boards (`reset`, `cold`, `wake`, `serial`): the
+    /// page's surface-pressure setting, which the start-at-the-surface fixture uses from this board creation on. Validated
+    /// before anything is shut down.
+    fn take_surface_pressure(&mut self, payload: &Json) -> Result<(), String> {
+        let Some(value) = payload.get("surfacePressureMbar") else { return Ok(()) };
+        let mbar = python_float(value).map_err(|_| surface_start::SURFACE_RANGE_MESSAGE.to_string())?;
+        self.config.surface_pressure_mbar = surface_start::validate_surface(mbar)?;
         Ok(())
     }
 
@@ -810,6 +862,9 @@ fn routine_accel_mode(config: &SessionConfig) -> armv7m::RoutineAccelMode {
 }
 
 /// `launch_system`: builds, loads the storage, restores the RTC and applies the boot fixtures, in the runner's order.
+/// The two emulator fixtures of the decompression handling act here: the start-at-the-surface fixture on the `inputs` the
+/// system is built with (`new_session` is true for [`Session::new`]: the oxygen cells are reset as well) and the pre-boot
+/// EEPROM consistency fixture on the stored EEPROM image before it is loaded.
 #[allow(clippy::too_many_arguments)]
 fn launch_system(
     config: &SessionConfig,
@@ -818,11 +873,13 @@ fn launch_system(
     handset: &Firmware,
     boot_mode: BootMode,
     inputs: &Inputs,
+    new_session: bool,
     stored: &Profile,
     rtc_saved: &RtcState,
     labels: &Labels,
 ) -> Result<Launched, String> {
     let dual = config.mode == Mode::Dual;
+    let (inputs, surface_start) = surface_start::apply(config.start_at_surface, dual, config.surface_pressure_mbar, new_session, inputs);
     let system_config = SystemConfig {
         mode: config.mode,
         boot_mode,
@@ -830,12 +887,18 @@ fn launch_system(
         idle_fast_forward: config.idle_fast_forward,
         routine_accel: routine_accel_mode(config),
         adc_sample: config.adc_sample,
-        inputs: inputs.clone(),
+        inputs,
         ..SystemConfig::default()
     };
     let mut system = System::build_with(system_config, main, handset, options)?;
+    let mut eeprom_image = stored.eeprom.clone();
+    let deco_storage = deco::storage_fixture(config.deco_storage_fixture, dual, system.release(), eeprom_image.as_deref_mut());
     if let Some(main_board) = system.main.as_mut() {
-        main_board.eeprom.load_backing(&labels.eeprom(), stored.eeprom.as_deref()).map_err(|e| e.to_string())?;
+        main_board.eeprom.load_backing(&labels.eeprom(), eeprom_image.as_deref()).map_err(|e| e.to_string())?;
+        if deco_storage.applied {
+            // The repaired image is the profile from now on: ask for it to be saved.
+            main_board.eeprom.flush();
+        }
         let qspi_id = main_board.ids.qspi;
         let qspi = main_board.board.get_mut::<NgcQuadSpi>(qspi_id).ok_or("the main QSPI is missing")?;
         qspi.load_backing(&labels.nor(), stored.nor.as_deref()).map_err(|e| e.to_string())?;
@@ -861,7 +924,7 @@ fn launch_system(
         main_bkp1_wake_override: dual && boot_mode == BootMode::HandsetWake,
     };
     system.apply_boot_fixtures()?;
-    Ok(Launched { system, provenance, info })
+    Ok(Launched { system, provenance, info, deco_storage, surface_start })
 }
 
 /// `%Y%m%dT%H%M%S%fZ` of a UTC time in microseconds since the Unix epoch.

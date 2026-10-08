@@ -18,6 +18,7 @@ pub mod sha256;
 pub mod srec;
 
 pub mod actions;
+pub mod deco;
 pub mod fixtures;
 pub mod handset;
 pub mod main_board;
@@ -27,6 +28,7 @@ pub mod png;
 pub mod scenario;
 pub mod session;
 pub mod state;
+pub mod surface_start;
 pub mod system;
 
 pub use board::{Board, BoardConfig, BoardStats, CpuCore, RunReport};

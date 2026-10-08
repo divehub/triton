@@ -87,7 +87,10 @@
         <div class="inputs">
           <label>System<select id="start-mode"><option value="dual" selected>Main 5.8 + handset 65.3 over CAN</option><option value="handset">Handset only (no CAN peer)</option></select></label>
           <label>Boot<select id="start-boot-mode"><option value="handset-wake" selected>Handset wake from standby (default fixture)</option><option value="cold">Cold boot (pauses at the firmware's standby request)</option></select></label>
+          <p id="start-cold-hint" class="small warn-text" hidden>A cold boot makes the firmware clear the oxygen-cell calibration (flags 0x09 back to 0x01). Calibrate again afterwards: Menu → Calibration → Air → Auto → Start → Save.</p>
           <label>Board-ID ADC sample (0–4095)<input id="start-adc" type="number" min="0" max="4095" step="1" value="400"></label>
+          <label class="check"><input type="checkbox" id="start-deco-fixture" checked><span>Repair the stored decompression state before every start (an emulator fixture, TRITON only: when the tissue block was never saved, the saved decompression date is erased so that the firmware resets its tissues instead of loading NaN, which keeps the no-decompression limit at 99)</span></label>
+          <label class="check"><input type="checkbox" id="start-surface" checked><span>Start at the surface (an emulator fixture: every start sets both pressure inputs to the surface pressure plus the sensor offsets, a new session also resets the oxygen cells to their defaults)</span></label>
           <label class="check"><input type="checkbox" id="start-i2c-idle" checked><span>Main I2C idle lines PB6/PB7/PB10/PB11 driven high before the firmware runs (an idle-line fixture standing for external pull-ups, not electrical I2C modelling; leaving PB6/PB7 low changes the start-up ordering of settings loading and HUD initialization)</span></label>
           <label class="check"><input type="checkbox" id="start-simultaneous"><span>Start both CPUs together (bypass the inferred main PE3 handset supply gate)</span></label>
           <label class="check"><input type="checkbox" id="start-paused"><span>Start paused</span></label>
@@ -110,6 +113,12 @@
         <div class="status-card"><span id="simple-handset-vibrator-light" class="output-light unknown vibrator" aria-hidden="true"></span><div><h2>Vibrator</h2><span id="simple-handset-vibrator-state">Unknown</span></div></div>
         <div class="status-card"><span id="simple-main-hud-3-light" class="output-light unknown red" aria-hidden="true"></span><div><h2>Red LED</h2><span id="simple-main-hud-3-state">Unknown</span></div></div>
         <div class="status-card"><span id="simple-main-hud-2-light" class="output-light unknown white" aria-hidden="true"></span><div><h2>White LED</h2><span id="simple-main-hud-2-state">Unknown</span></div></div>
+      </section>
+
+      <!-- Decompression state warnings (read-only report of the engine; each paragraph shows only while it applies) -->
+      <section id="deco-health" class="deco-health" aria-label="Decompression state" role="status" hidden>
+        <p id="deco-warning-oxygen" hidden></p>
+        <p id="deco-warning-tissues" hidden></p>
       </section>
 
       <div class="workspace">
@@ -229,9 +238,10 @@
           <div class="transport">
             <button type="button" id="can-toggle">Disconnect CAN</button>
             <button type="button" data-action="capture">Save evidence</button>
-            <button type="button" data-action="cold">Cold boot</button>
+            <button type="button" data-action="cold" title="The firmware clears the oxygen calibration on a cold boot; calibrate again afterwards">Cold boot</button>
             <button type="button" data-action="wake">Wake system</button>
           </div>
+          <p id="cold-hint" class="small warn-text">Cold boot: the firmware clears the oxygen-cell calibration (flags 0x09 back to 0x01). Calibrate again afterwards: Menu → Calibration → Air → Auto → Start → Save.</p>
           <form id="can-form" class="inputs"><label>Drop CAN ID (decimal; -1 off)<input name="dropId" type="number" min="-1" max="2047" step="1" value="-1" required></label><button type="submit">Apply CAN loss</button></form>
           <p id="can-summary" class="mono mt16"></p>
           <p id="capture-path" class="mono"></p>

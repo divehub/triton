@@ -24,7 +24,8 @@ vectors of the image it is given (`firmware.reset_pc()`, `initial_sp()`), not fr
 Application RAM fields and one code address are properties of an image. `ReleaseAddresses` holds them per release; the
 state document publishes the table as `firmware.addresses` (`{address, basis}` or `{address: null, reason}`) and the
 fields that depend on an unproven one are `null` with the reason in `unavailable`. **No value is ever taken over from
-TRITON.**
+TRITON.** The decompression entries below are main RAM addresses or physical EEPROM offsets; `decoHealth` and
+`decoStorageFixture` carry their own reason when one is unavailable.
 
 | entry | TRITON | NEPTUN | used for |
 | --- | --- | --- | --- |
@@ -34,9 +35,21 @@ TRITON.**
 | `mainWakeCause`, `mainScreenMode`, `mainMode`, `mainHalTick`, `mainPressure`, `mainTemperature` | `0x20004388`, `0x2000438d`, `0x200024b2`, `0x20004a6c`, `0x20004378`, `0x20004360` | unavailable | `mainApplication` of the status JSON, benchmark, scenarios |
 | `mainCurrentTcb` (FreeRTOS `pxCurrentTCB`) | `0x20005708` | `0x200053a8` (proven) | diagnostics |
 | `handsetCurrentTcb` | `0x200013fc` | `0x200013fc` (proven) | diagnostics |
+| `mainDecoTissues` (RAM, 16 records of 36 bytes; N2 float at +24, He float at +28) | `0x20001e94` | unavailable | `decoHealth.tissues` |
+| `mainBreathingMode` (RAM byte; 2 = measured ppO2) | `0x20002457` | unavailable | `decoHealth.oxygen` |
+| `mainPpO2` (RAM float) | `0x2000421c` | unavailable | `decoHealth.oxygen` |
+| `mainCellFlags` (RAM, 3 bytes, cached cell flags) | `0x200023f4` | unavailable | `decoHealth.oxygen` while the ppO2 is zero |
+| `eepromTissueBlock` (EEPROM physical offset, 128 bytes) | `0x0ff` | unavailable | the pre-boot EEPROM consistency fixture |
+| `eepromDecoDate` (EEPROM physical offset, 4 bytes) | `0x17f` | unavailable | the pre-boot EEPROM consistency fixture |
 
 Scenario-only addresses (battery wizard offsets, key sampler, screen ids, `0x08005b18`) are TRITON-specific; the scenario
 suite refuses other releases.
+
+### How the TRITON decompression entries were established
+
+The five RAM entries come from Renode hooks on the unchanged TRITON main image (start-up initializer `0x08008308`, the NDL routine around `0x08008550`/`0x0800857e`): every tissue word, the breathing-mode byte and the ppO2 were read at those points, including the NaN case; the cell-flag cache `0x200023f4..=0x200023f6` was read on this engine (`0x01` x3 on a fresh profile, `0x09` x3 after the firmware's air calibration, `0x01` x3 after a cold boot). The two EEPROM entries were checked against the original record table of the main image: it holds one entry (offset u16, size u16) per record ID at `0x080306f2 + 4 * ID`, and IDs `0x6a..=0x89` are 32 words at physical `0x0ff..=0x17e`, ID `0x8a` is 4 bytes at `0x17f` (the fixture reads only these two ranges). They are consumed by `crates/ngc/src/deco.rs` and reported in the state as `firmware.addresses`.
+
+NEPTUN: **unavailable**. The decompression code of its main image is part of the different, frame-pointer build that has no instruction-identical counterpart (the reason of `NEPTUN_MAIN_BUILD`), so `decoHealth` reports `unknown` with that reason and the EEPROM consistency fixture is skipped with it. A proof would need `testdata/tools/release_match.py` windows around the initializer, which was not attempted.
 
 ### How the NEPTUN entries were proven
 

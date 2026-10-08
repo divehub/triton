@@ -85,6 +85,12 @@ pub struct HostConfig {
     pub i2c_idle_high: bool,
     /// The host's random nonce of the output-history epoch (`historyNonce`, default 0).
     pub history_nonce: u64,
+    /// The pre-boot EEPROM consistency fixture (`decoStorageFixture`, default on; `--no-deco-storage-fixture` of the CLI).
+    pub deco_storage_fixture: bool,
+    /// The start-at-the-surface fixture (`startAtSurface`, default on; `--no-start-at-surface` of the CLI).
+    pub start_at_surface: bool,
+    /// The surface pressure in mbar of that fixture (`surfacePressureMbar`, 100 to 30000, default 1013.25).
+    pub surface_pressure_mbar: f64,
 }
 
 impl Default for HostConfig {
@@ -100,6 +106,9 @@ impl Default for HostConfig {
             start_paused: false,
             i2c_idle_high: true,
             history_nonce: 0,
+            deco_storage_fixture: true,
+            start_at_surface: true,
+            surface_pressure_mbar: ngc::surface_start::DEFAULT_SURFACE_MBAR,
         }
     }
 }
@@ -132,6 +141,12 @@ impl HostConfig {
                 "routineAccelShadow" => config.routine_accel_shadow = flag("routineAccelShadow")?,
                 "startPaused" => config.start_paused = flag("startPaused")?,
                 "i2cIdleHigh" => config.i2c_idle_high = flag("i2cIdleHigh")?,
+                "decoStorageFixture" => config.deco_storage_fixture = flag("decoStorageFixture")?,
+                "startAtSurface" => config.start_at_surface = flag("startAtSurface")?,
+                "surfacePressureMbar" => {
+                    let mbar = value.as_f64().ok_or(ngc::surface_start::SURFACE_RANGE_MESSAGE)?;
+                    config.surface_pressure_mbar = ngc::surface_start::validate_surface(mbar)?;
+                }
                 "historyNonce" => {
                     config.history_nonce = value.as_u64().ok_or("historyNonce must be a non-negative integer below 2^64")?;
                 }

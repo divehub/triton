@@ -269,7 +269,10 @@ impl Recorder {
                 Json::object()
                     .with("mainI2cIdleHigh", env.options.main_i2c_idle_high)
                     // Pinned to the value of the Renode recordings (a fresh profile starts at 4100 mV; see `recorded_inputs`).
-                    .with("batteryMv", Json::from_items([crate::fixtures::RECORDED_BATTERY_MV; 2])),
+                    .with("batteryMv", Json::from_items([crate::fixtures::RECORDED_BATTERY_MV; 2]))
+                    // The decompression fixtures are on by default in a session; the recordings were made without them.
+                    .with("decoStorageFixture", false)
+                    .with("startAtSurface", false),
             )
             .with("checks", Json::Array(self.checks))
             .with("comparisons", Json::Array(self.comparisons))
@@ -296,6 +299,14 @@ pub(crate) fn recorded_inputs(mut profile: Profile) -> Profile {
     profile
 }
 
+/// Pins the two decompression fixtures off, explicitly, like [`recorded_inputs`] pins the battery voltage: the Renode
+/// recordings the scenarios compare with were made without them (a stored tissue block that was never saved keeps its date
+/// record, the EEPROM image is compared byte for byte, a reopened profile uses its inputs as saved). The fixtures have
+/// their own tests (`crates/ngc/tests/deco_fixtures.rs`).
+pub(crate) fn recorded_config(config: SessionConfig) -> SessionConfig {
+    SessionConfig { deco_storage_fixture: false, start_at_surface: false, ..config }
+}
+
 /// A [`Session`] plus the helpers every scenario uses: actions as JSON, side-effect-free RAM readbacks, evidence.
 pub(crate) struct Rig {
     pub session: Session,
@@ -303,7 +314,7 @@ pub(crate) struct Rig {
 
 impl Rig {
     pub fn new(env: &ScenarioEnv<'_>, config: SessionConfig, profile: Profile) -> Result<Rig, String> {
-        let session = Session::new_with(env.options, "", env.configure(config), Some(env.main), env.handset, recorded_inputs(profile))?;
+        let session = Session::new_with(env.options, "", env.configure(recorded_config(config)), Some(env.main), env.handset, recorded_inputs(profile))?;
         Ok(Rig { session })
     }
 

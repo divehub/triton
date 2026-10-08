@@ -18,6 +18,7 @@
 // last two seconds; the capacity factor is virtual time per second of engine execution (the speed the engine
 // could sustain if unpaced).
 
+import { parseSurfacePressure } from './deco.js';
 import { Engine, EngineError, PROFILE_FILES } from './engine.js';
 import { DEFAULT_RELEASE_ID, RELEASE_IDS, describeRelease, mixedPairMessage, profileArea, releaseOf } from './releases.js';
 import { makeZip } from './zip.js';
@@ -367,7 +368,7 @@ export class Runtime {
     const dual = (options.mode || 'dual') !== 'handset';
     const adc = options.adcSample === undefined ? 400 : Number(options.adcSample);
     if (!Number.isInteger(adc) || adc < 0 || adc > 4095) throw new EngineError('The board-ID ADC sample must be an integer from 0 to 4095');
-    return {
+    const config = {
       mode: dual ? 'dual' : 'handset',
       bootMode: options.bootMode === 'cold' ? 'cold' : 'handset-wake',
       simultaneousStart: !!options.simultaneousStart,
@@ -377,7 +378,16 @@ export class Runtime {
       // Fixture (DESIGN 15.3c): the main board's I2C idle lines PB6/PB7/PB10/PB11 are driven high before guest
       // execution, as the external pull-ups would. A start option; on unless switched off.
       i2cIdleHigh: options.i2cIdleHigh !== false,
+      // Fixtures (DESIGN "Decompression state handling"), both on unless switched off: the pre-boot EEPROM consistency
+      // repair of a tissue block that was never saved, and the start at the surface (a new session also resets the
+      // oxygen cells).
+      decoStorageFixture: options.decoStorageFixture !== false,
+      startAtSurface: options.startAtSurface !== false,
     };
+    // The page's surface-pressure setting; the engine's own default (1013.25 mbar) applies without a valid one.
+    const surface = parseSurfacePressure(options.surfacePressureMbar);
+    if (surface !== null) config.surfacePressureMbar = surface;
+    return config;
   }
 
   /** The release of the firmware a session with `config` needs (both roles must come from the same release). */
@@ -523,6 +533,10 @@ export class Runtime {
     const state = this.engine.action(request);
     this.virtual = this.engine.time();
     if (name === 'reset' || name === 'cold' || name === 'wake' || name === 'serial') {
+      // A surface pressure the action carried is the session's setting from now on (a later profile import or reset
+      // creates its session with it).
+      const surface = parseSurfacePressure(request.surfacePressureMbar);
+      if (surface !== null) this.session.config = { ...this.session.config, surfacePressureMbar: surface };
       this.session.generation = ++this.generation;
       this.afterSessionChange({ postFrame: true });
       await this.saveProfile({ reason: name });

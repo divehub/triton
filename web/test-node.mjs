@@ -761,6 +761,51 @@ test('runtime: every session gets a fresh history nonce and the I2C idle-high fi
   await h.close();
 });
 
+test('runtime: the decompression fixtures are start options of the real engine: a boot starts at the surface with default cells, a Restart keeps the cells, and the state names the fixtures', async () => {
+  // A profile left at depth with unusual cells (the saved inputs.json of an earlier session).
+  const left = { pressure1Mbar: 4600, pressure2Mbar: 4600, oxygen1Mv: 60, oxygen2Mv: 61, oxygen3Mv: 59 };
+  const seed = async (inputs) => {
+    const storage = new MemoryStorage();
+    await storage.write('profile', 'inputs.json', new TextEncoder().encode(JSON.stringify(inputs)));
+    return storage;
+  };
+  const h = new Harness({ storage: await seed(left) });
+  await h.ready();
+  const booted = await h.request('boot', { options: { mode: 'dual', startPaused: true } });
+  const pick = (state) => [state.inputs.pressure1Mbar, state.inputs.pressure2Mbar, state.inputs.oxygen1Mv, state.inputs.oxygen2Mv, state.inputs.oxygen3Mv];
+  assert.deepEqual(pick(booted.state), [1013.25, 1013.25, 10, 10, 10], 'a new session starts at the surface with the default cells');
+  assert.equal(booted.state.startAtSurface.enabled, true);
+  assert.equal(booted.state.startAtSurface.oxygenReset, true);
+  assert.equal(booted.state.decoStorageFixture.enabled, true, 'the repair fixture is on by default');
+  assert.equal(booted.state.decoStorageFixture.applied, false, 'a fresh EEPROM needs no repair');
+  assert.equal(booted.state.decoHealth.tissues, 'unknown', 'the firmware has not run yet');
+  // The user sets cells and goes down; the Restart brings the depth back (with the surface pressure of the page), the cells stay.
+  await h.action({ action: 'inputs', inputs: { pressure1Mbar: 3013.5, pressure2Mbar: 3015.5, oxygen1Mv: 12.5, oxygen2Mv: 12.5, oxygen3Mv: 12.5 } });
+  const restarted = await h.action({ action: 'reset', surfacePressureMbar: 900 });
+  assert.deepEqual(pick(restarted), [899, 901, 12.5, 12.5, 12.5]);
+  assert.equal(restarted.startAtSurface.surfacePressureMbar, 900);
+  assert.equal(restarted.startAtSurface.oxygenReset, false);
+  await assert.rejects(() => h.action({ action: 'reset', surfacePressureMbar: 99 }), /surfacePressureMbar must be between 100 and 30000/);
+  await h.close();
+
+  // Switched off, the saved inputs are used as they are, and the state says the fixtures are off.
+  const off = new Harness({ storage: await seed(left) });
+  await off.ready();
+  const kept = await off.request('boot', { options: { mode: 'dual', startPaused: true, startAtSurface: false, decoStorageFixture: false } });
+  assert.deepEqual(pick(kept.state), [4600, 4600, 60, 61, 59]);
+  assert.equal(kept.state.startAtSurface.enabled, false);
+  assert.equal(kept.state.decoStorageFixture.enabled, false);
+  assert.match(kept.state.decoStorageFixture.reason, /^Switched off/);
+  await off.close();
+
+  // The page's remembered surface pressure goes into the first session start.
+  const altitude = new Harness({ storage: await seed(left) });
+  await altitude.ready();
+  const high = await altitude.request('boot', { options: { mode: 'dual', startPaused: true, surfacePressureMbar: 850 } });
+  assert.deepEqual(pick(high.state).slice(0, 2), [850, 850]);
+  await altitude.close();
+});
+
 test('runtime: output histories follow the DESIGN 15.3a contract and feed the replay cursor without gaps', async (t) => {
   const h = new Harness();
   await h.ready();

@@ -8,10 +8,12 @@
 
 import { byId, confirmDialog, formatBytes, formatClock, h, hex32, prefs, setText } from './dom.js';
 import { ActionQueue, BASIC_IDS, ConditionsController } from './conditions.js';
+import { decoWarnings, fixtureLines, healthLine, parseSurfacePressure } from './deco.js';
 import { handsetKeyAction } from './keys.js';
 import { LcdView } from './lcd.js';
 import { ReplayController, STATUS_STRIP, activityText, describeEntry, driveText, historyText } from './replay.js';
 import { describeRelease } from './releases.js';
+import { SENSOR_KEYS } from './sensors.js';
 import { readZip } from './zip.js';
 
 const PROFILE_FILES = ['eeprom.bin', 'nor.ngc', 'rtc-state.json', 'inputs.json', 'led-colors.json'];
@@ -101,6 +103,8 @@ export class EmulatorView {
     this.info = null;
     this.haveFrame = false;
     this.inputsEpoch = null; // `profileEpoch` of the state whose inputs the form shows
+    this.inputsGeneration = null; // `generation` (board creations) of that state
+    this.engineSensors = null; // the seven sensor inputs of the previous state: a board creation that changed them reloads the form
     this.canConnected = true;
     this.actionError = '';
     this.connectionError = '';
@@ -167,6 +171,12 @@ export class EmulatorView {
     });
     for (const input of this.conditionsDom.fields) input.addEventListener('input', () => this.conditions.rawEdited(input.name));
     for (const id of BASIC_IDS) byId(id).addEventListener(id === 'water-type' ? 'change' : 'input', () => this.conditions.basicChanged());
+    // The surface pressure is the page's own setting (not part of `inputs.json`): remembered in this browser, used for the
+    // next session start and sent with Restart, Cold, Wake and a serial change.
+    byId('surface-pressure').addEventListener('input', () => {
+      const surface = parseSurfacePressure(byId('surface-pressure').value);
+      if (surface !== null) prefs.set('surface-pressure', surface);
+    });
     byId('can-form').addEventListener('submit', (event) => {
       event.preventDefault();
       this.sendAction('can', { dropId: Number(byId('can-form').elements.namedItem('dropId').value) });
@@ -290,6 +300,12 @@ export class EmulatorView {
     this.state = null;
     this.host = null;
     this.inputsEpoch = null;
+    this.inputsGeneration = null;
+    this.engineSensors = null;
+    // The remembered surface pressure is what the basic view derives the depth from when the session starts (the engine
+    // started the boards with the same value); without one the default of the basic view applies.
+    const surface = parseSurfacePressure(prefs.get('surface-pressure', ''));
+    if (surface !== null) this.conditions.scenarioSettings = { ...this.conditions.scenarioSettings, surfacePressureMbar: surface };
     this.actionError = '';
     this.connectionError = '';
     this.advancing = false;
@@ -341,6 +357,7 @@ export class EmulatorView {
         `Start options: ${options.mode === 'handset' ? 'handset only' : 'dual (main + handset over CAN)'}, ${options.bootMode === 'cold' ? 'cold boot' : 'handset wake'}, ` +
         `${options.simultaneousStart ? 'simultaneous CPU start' : 'handset released by the inferred PE3 supply enable'}, board-ID ADC sample ${options.adcSample}, ` +
         `I2C idle-high fixture ${options.i2cIdleHigh === false ? 'off' : 'on'}, ` +
+        `stored decompression state repair ${options.decoStorageFixture === false ? 'off' : 'on'}, start at the surface ${options.startAtSurface === false ? 'off' : 'on'}, ` +
         `idle fast-forward ${options.idleFastForward === false ? 'off' : 'on'}${info.profile === 'none' ? ', saved profile not used' : ''}.`),
     );
   }
@@ -667,11 +684,20 @@ export class EmulatorView {
     // The input fields take the engine's values when a session starts and whenever the profile is replaced (boot,
     // import, reset); otherwise they keep what the user typed (the viewer loaded them once). Bases and offsets of
     // the basic controls are derived from the raw readings at the same moments.
-    if (next.inputs && this.inputsEpoch !== host.profileEpoch) {
+    // A board creation (Restart, Cold, Wake, a serial change) can change the sensor inputs too: the start-at-the-surface
+    // fixture of the engine returns both pressure inputs to the surface (depth 0), so the form follows the engine then.
+    // It does not touch the form when the board creation left the sensors as they were.
+    const boardsRecreated = !!next.inputs && this.inputsGeneration !== host.generation && this.engineSensors !== null && !this.sameSensors(next.inputs, this.engineSensors);
+    if (next.inputs && (this.inputsEpoch !== host.profileEpoch || boardsRecreated)) {
       this.conditions.attach(next.inputs);
       byId('serial-form').elements.namedItem('serialNumber').value = next.serialNumber ?? 0;
       this.inputsEpoch = host.profileEpoch;
     }
+    if (next.inputs) {
+      this.inputsGeneration = host.generation;
+      this.engineSensors = Object.fromEntries(SENSOR_KEYS.map((key) => [key, next.inputs[key]]));
+    }
+    this.renderDeco(next);
     byId('storage-summary').textContent = [next.storageSummary, next.flashSummary].filter(Boolean).join(' · ');
     byId('can-summary').textContent = next.canSummary || '';
     this.canConnected = !String(next.canSummary).includes('connected=False');
@@ -692,6 +718,22 @@ export class EmulatorView {
     this.showErrors();
   }
 
+  sameSensors(inputs, previous) {
+    return SENSOR_KEYS.every((key) => inputs[key] === previous[key]);
+  }
+
+  /** The decompression warnings of the basic view: only a proven bad state shows (see deco.js), each with its next step. */
+  renderDeco(state) {
+    const warnings = decoWarnings(state);
+    byId('deco-health').hidden = warnings.length === 0;
+    for (const id of ['oxygen', 'tissues']) {
+      const element = byId(`deco-warning-${id}`);
+      const warning = warnings.find((entry) => entry.id === id);
+      element.hidden = !warning;
+      if (warning) setText(element, warning.text);
+    }
+  }
+
   /** Release, fixtures, clock persistence provenance, executed instructions with the idle fast-forward share, machine resets. */
   renderSessionInfo(state) {
     const lines = [];
@@ -706,6 +748,12 @@ export class EmulatorView {
       if (unsupported && typeof state.i2cIdleHigh !== 'boolean') lines.push('Main I2C idle lines: this engine build has no idle-high fixture option; the lines keep the engine default.');
       else if (high && typeof state.i2cFixture === 'string') lines.push(`Fixture: ${state.i2cFixture}.`);
       else lines.push(`Main I2C idle lines PB6/PB7/PB10/PB11: ${high ? 'driven high before the firmware runs' : 'left at their default (low)'}. This is an idle-line fixture, not electrical I2C modelling.`);
+      // The decompression handling: the engine's read-only report and what its two labelled fixtures did at the last start.
+      const health = healthLine(state);
+      if (health) lines.push(health);
+      lines.push(...fixtureLines(state));
+      const missing = ((this.host && this.host.unsupportedOptions) || []).filter((name) => ['decoStorageFixture', 'startAtSurface', 'surfacePressureMbar'].includes(name));
+      if (missing.length) lines.push(`This engine build does not know the option${missing.length > 1 ? 's' : ''} ${missing.join(', ')}; the decompression fixtures are not available.`);
     }
     const rtc = state.rtcPersistence;
     if (rtc) {
@@ -756,9 +804,24 @@ export class EmulatorView {
 
   // ---- actions ---------------------------------------------------------------------------------
 
-  /** Queues a UI action (see conditions.js: one at a time, in order). Resolves to whether it was applied. */
+  /**
+   * Queues a UI action (see conditions.js: one at a time, in order). Resolves to whether it was applied. The actions that
+   * recreate the boards carry the page's surface-pressure setting for the engine's start-at-the-surface fixture.
+   */
   sendAction(action, extra = {}) {
+    if (RESET_ACTIONS.has(action) && extra.surfacePressureMbar === undefined) {
+      const surface = this.surfacePressure();
+      if (surface !== null) extra = { ...extra, surfacePressureMbar: surface };
+    }
     return this.queue.send(action, extra);
+  }
+
+  /** The surface pressure of the basic view (the field, else the last valid setting), or null when there is none. */
+  surfacePressure() {
+    const typed = parseSurfacePressure(byId('surface-pressure').value);
+    if (typed !== null) return typed;
+    const settings = this.conditions.scenarioSettings;
+    return settings ? parseSurfacePressure(settings.surfacePressureMbar) : null;
   }
 
   async exportProfile() {

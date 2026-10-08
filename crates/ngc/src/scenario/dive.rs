@@ -375,14 +375,17 @@ fn recalibration() -> Vec<Act> {
 
 type Clock<'a> = &'a mut dyn FnMut() -> f64;
 
+/// The benchmark keeps the workload it was measured with (DESIGN.md 16.6): batteries at the 1500 mV that fit the
+/// Photolithium type its wizard chooses (a fresh profile's 4100 mV would make the firmware ask for a battery change and
+/// stand by), and both decompression fixtures off (the profile is built through the firmware's own routes instead).
 fn open(env: &ScenarioEnv<'_>, config: &DiveConfig, profile: Profile) -> Result<Session, String> {
-    let session_config = SessionConfig {
+    let session_config = super::recorded_config(SessionConfig {
         idle_fast_forward: config.idle_fast_forward,
         routine_accel: config.routine_accel != RoutineAccelMode::Off,
         routine_accel_shadow: config.routine_accel == RoutineAccelMode::Shadow,
         ..SessionConfig::default()
-    };
-    Session::new_with(env.options, "", session_config, Some(env.main), env.handset, profile)
+    });
+    Session::new_with(env.options, "", session_config, Some(env.main), env.handset, super::recorded_inputs(profile))
 }
 
 pub fn checkpoint(session: &mut Session, name: &str) -> Checkpoint {

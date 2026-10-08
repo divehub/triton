@@ -2,7 +2,8 @@
 // verify them, and boots the session.
 
 import { FIRMWARE_PROXY_URL } from './config.js';
-import { byId, confirmDialog, formatBytes, formatClock, h } from './dom.js';
+import { parseSurfacePressure } from './deco.js';
+import { byId, confirmDialog, formatBytes, formatClock, h, prefs } from './dom.js';
 import { FETCH_TIMEOUT_MS, fetchFirmware, normalizeFirmwareUrl, proxyEndpoint } from './firmware-url.js';
 import { RELEASES, RELEASE_IDS } from './releases.js';
 
@@ -106,7 +107,7 @@ export class EntryView {
       this.dropzone.classList.remove('over');
       if (event.dataTransfer && event.dataTransfer.files.length) this.addFiles([...event.dataTransfer.files]);
     });
-    for (const id of ['start-mode', 'start-boot-mode', 'start-adc', 'start-i2c-idle', 'start-simultaneous', 'start-paused', 'start-idle-ff']) {
+    for (const id of ['start-mode', 'start-boot-mode', 'start-adc', 'start-i2c-idle', 'start-deco-fixture', 'start-surface', 'start-simultaneous', 'start-paused', 'start-idle-ff']) {
       byId(id).addEventListener('change', () => this.refresh());
     }
     this.bootButton.addEventListener('click', () => this.boot('stored'));
@@ -481,6 +482,10 @@ export class EntryView {
       bootMode: byId('start-boot-mode').value,
       adcSample: adc,
       i2cIdleHigh: byId('start-i2c-idle').checked,
+      // Fixtures of the decompression handling (both on by default) and the page's remembered surface pressure.
+      decoStorageFixture: byId('start-deco-fixture').checked,
+      startAtSurface: byId('start-surface').checked,
+      surfacePressureMbar: parseSurfacePressure(prefs.get('surface-pressure', '')),
       simultaneousStart: byId('start-simultaneous').checked,
       startPaused: byId('start-paused').checked,
       idleFastForward: byId('start-idle-ff').checked,
@@ -503,6 +508,8 @@ export class EntryView {
     this.renderUrls();
     const state = this.ready();
     this.bootButton.disabled = !state.ok;
+    // Choosing a cold boot: the firmware clears the oxygen calibration on that wake cause, so say so.
+    byId('start-cold-hint').hidden = byId('start-boot-mode').value !== 'cold';
     const release = this.release();
     const name = release ? `${release.name} ` : '';
     if (this.booting) this.bootHint.textContent = 'Starting…';
