@@ -1930,8 +1930,14 @@ test('urls (page): a query parameter pre-fills the fields and never fetches; the
   assert.match(bad.info('main'), /Only https/);
   assert.equal(bad.el('url-load').disabled, true);
   assert.equal(bad.el('url-main').value, 'http://evil.example/x.srec', 'the value is shown as text, never interpreted');
-  // Empty fields: nothing to load.
+  // Without parameters the fields start with the archived TRITON addresses (nothing is fetched); emptied, nothing to load.
   const empty = await mountEntry();
+  assert.equal(empty.el('url-main').value, MAIN_EXAMPLE);
+  assert.equal(empty.el('url-handset').value, HANDSET_EXAMPLE);
+  await settle();
+  assert.equal(empty.calls.length, 0, 'the default addresses are never fetched automatically');
+  empty.type('main', '');
+  empty.type('handset', '');
   assert.equal(empty.el('url-load').disabled, true);
   assert.match(empty.el('url-proxy-note').textContent, /The firmware proxy at https:\/\/firmware-proxy\.example\/api\/firmware fetches the one file you name/);
 });
@@ -2010,6 +2016,7 @@ test('urls (page): the content decides the slot; a single address is enough; the
   const m = await mountEntry({ respond: proxyFor({ [HANDSET_FETCHED]: () => proxyBody(srec('handset', 'NEPTUN-5.8-65.3')) }) });
   assert.equal(m.el('remember').checked, false);
   m.type('main', HANDSET_EXAMPLE); // the handset image in the main field
+  m.type('handset', '');
   await m.view.loadUrls();
   assert.equal(m.view.slots.main, null);
   assert.equal(m.view.slots.handset.release.name, 'NEPTUN');
@@ -2140,6 +2147,7 @@ test('urls (page): a download that does not finish times out and reports it', as
     respond: (url, init) => new Promise((resolve, reject) => init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))),
   });
   m.type('main', MAIN_EXAMPLE);
+  m.type('handset', '');
   const loading = m.view.loadUrls();
   await settle();
   assert.equal(m.clock.timers.size, 1);

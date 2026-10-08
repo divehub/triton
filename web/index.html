@@ -116,7 +116,7 @@
         <section class="display-panel" aria-label="Handset LCD">
           <div class="panel-label"><span>Handset display</span><span id="frame-size">320 × 240</span></div>
           <div id="lcd" class="lcd integer">
-            <canvas id="frame" width="320" height="240" role="img" aria-label="Current LCD frame from the emulated handset" hidden></canvas>
+            <canvas id="frame" width="320" height="240" role="img" aria-label="Current LCD frame from the emulated handset; tap the upper third for Up, the middle for Confirm, the lower third for Down" title="Tap: upper third Up · middle Confirm · lower third Down" hidden></canvas>
             <div id="placeholder" class="placeholder">Waiting for LCD output</div>
           </div>
           <div class="frame-note"><span id="frame-note">The display updates as the firmware writes pixels.</span><label title="Scale by whole device-pixel multiples when that fills at least 85% of the panel; otherwise fit the panel"><input type="checkbox" id="integer-scale" checked>Pixel-perfect scaling</label></div>

@@ -150,6 +150,14 @@ export class EmulatorView {
     for (const button of document.querySelectorAll('[data-action]')) {
       button.addEventListener('click', () => this.sendAction(button.dataset.action));
     }
+    // Tapping the LCD presses a handset button: upper third Up, middle third Confirm, lower third Down.
+    const frame = byId('frame');
+    frame.addEventListener('click', (event) => {
+      const bounds = frame.getBoundingClientRect();
+      if (!bounds.height) return;
+      const third = Math.floor((3 * (event.clientY - bounds.top)) / bounds.height);
+      this.sendAction(third <= 0 ? 'up' : third === 1 ? 'confirm' : 'down');
+    });
     byId('sensor-form').addEventListener('submit', (event) => {
       event.preventDefault();
       this.conditions.submitRaw();

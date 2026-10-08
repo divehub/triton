@@ -9,6 +9,11 @@ import { RELEASES, RELEASE_IDS } from './releases.js';
 const ROLE_LABEL = { main: 'main controller 5.8', handset: 'handset 65.3' };
 const ROLES = ['main', 'handset'];
 const PREFILL_LIMIT = 2048;
+// Archived copies of the TRITON main 5.8 / handset 65.3 SREC files (fetched only through the proxy, on Load).
+const DEFAULT_URLS = {
+  main: 'https://web.archive.org/web/20261008041333/https://api.multi3s.com/static/pvlL3Iilv4o_Tu5lggngZAUt.srec',
+  handset: 'https://web.archive.org/web/20261008041427/https://api.multi3s.com/static/rlVpEk1qk8-0r1E4vMHNAjQG.srec',
+};
 
 export class EntryView {
   /**
@@ -56,12 +61,15 @@ export class EntryView {
     this.renderUrls();
   }
 
-  /** `?main-url=` and `?handset-url=` fill the fields. They never start a download: only the Load button does. */
+  /**
+   * The fields start with the archived TRITON 5.8 / 65.3 addresses; `?main-url=` and `?handset-url=` replace them.
+   * Nothing is downloaded until the Load button is pressed.
+   */
   prefillUrls() {
     const query = new URLSearchParams(window.location.search || '');
     for (const role of ROLES) {
       const value = query.get(`${role}-url`);
-      if (value) this.urlEls[role].value = value.slice(0, PREFILL_LIMIT);
+      this.urlEls[role].value = value ? value.slice(0, PREFILL_LIMIT) : DEFAULT_URLS[role];
     }
   }
 
