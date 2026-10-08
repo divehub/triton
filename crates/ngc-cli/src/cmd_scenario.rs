@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const USAGE: &str = "ngc-cli scenario list\n\
-    ngc-cli scenario <name>|all [--main <srec>] [--handset <srec>] [--release ID] [--out DIR] [--no-i2c-idle-high]\n  \
+    ngc-cli scenario <name>|all [--main <srec>] [--handset <srec>] [--release ID] [--out DIR] [--no-i2c-idle-high] [--no-routine-accel]\n  \
     Runs a scenario of the validation suite on the original TRITON firmware (default: the repository SREC files) and\n  \
     writes <out>/<name>.json plus its evidence images (<name>-<label>.png) and traces (<name>-<file>). The JSON lists the\n  \
     engine's own checks and the comparisons with the values the Renode runner recorded (embedded in the scenarios); exit\n  \
@@ -20,7 +20,8 @@ pub const USAGE: &str = "ngc-cli scenario list\n\
     The main board's I2C idle-high fixture is on by default. The Renode recordings predate it: with the fixture on their\n  \
     comparisons are informational, `--no-i2c-idle-high` reproduces the recorded start-up and makes them binding again.\n  \
     The scenarios pin both batteries to the 1500 mV of the Renode recordings (a fresh profile starts at 4100 mV); the\n  \
-    report names it under platformOptions.batteryMv.";
+    report names it under platformOptions.batteryMv.\n  \
+    `--no-routine-accel` turns off the exact acceleration of the runtime-library routines (on by default; results are identical).";
 
 pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     match run_inner(argv, out) {
@@ -39,7 +40,7 @@ pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
 fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<i32, (bool, String)> {
     let usage = |message: String| (true, message);
     let failed = |message: String| (false, message);
-    let parsed = args::parse(argv, &["main", "handset", "out", "release"], &["no-i2c-idle-high"]).map_err(usage)?;
+    let parsed = args::parse(argv, &["main", "handset", "out", "release"], &["no-i2c-idle-high", "no-routine-accel"]).map_err(usage)?;
     let release = common::parse_release(parsed.value("release")).map_err(usage)?;
     let Some(target) = parsed.positional.first().cloned() else {
         return Err(usage("missing scenario name (or `list`)".to_string()));
@@ -64,7 +65,7 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<i32, (bool, String)
     let handset = common::load_firmware(&common::firmware_path_in(parsed.value("handset"), Role::Handset, release).map_err(failed)?, Role::Handset).map_err(failed)?;
     ngc::firmware::common_release(&main, &handset).map_err(failed)?;
     let out_dir = parsed.value("out").map(PathBuf::from).unwrap_or_else(common::default_scenario_dir);
-    let env = ScenarioEnv { main: &main, handset: &handset, options: BuildOptions { main_i2c_idle_high: !parsed.flag("no-i2c-idle-high") } };
+    let env = ScenarioEnv { main: &main, handset: &handset, options: BuildOptions { main_i2c_idle_high: !parsed.flag("no-i2c-idle-high") }, routine_accel: !parsed.flag("no-routine-accel") };
     let mut any_failed = false;
     for name in names {
         let started = std::time::Instant::now();

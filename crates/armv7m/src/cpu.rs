@@ -26,9 +26,10 @@
 //! # Code structure
 //!
 //! The outer loop of `run` handles translation-block boundaries (`boundary`) and the slow paths
-//! (IT blocks, loop verification, finishing a block after an event). `fast_loop` is the tight
-//! inner loop: fetch a predecoded `Op`, dispatch, count; it only returns when the chunk budget is
-//! exhausted or an event asked for the outer loop (`kick`).
+//! (loop verification, finishing a block after an event, resuming an IT block in a new chunk).
+//! `fast_loop` is the tight inner loop: fetch a predecoded `Op`, dispatch, count; it only returns
+//! when the chunk budget is exhausted or an event asked for the outer loop (`kick`). IT blocks run
+//! inside it (a second mode of the loop, entered after the `IT` instruction, see `Cpu::set_fast_it`).
 
 use crate::decode;
 use crate::fastfwd::FastFwd;
@@ -341,7 +342,12 @@ pub struct Cpu {
     pub(crate) filter_ccr_div0: bool,
     /// Renode parity: `HaltSystickOnDeepSleep`.
     pub(crate) halt_systick_on_deep_sleep: bool,
+    /// IT blocks run inside `fast_loop` (default). Off: the `IT` instruction leaves the loop and the
+    /// block is stepped by `step_insn`; the guest-visible result is identical (host speed only).
+    pub(crate) fast_it: bool,
     pub(crate) ff: FastFwd,
+    /// ROUTINE-ACCEL (PERF-HLE, DESIGN.md 16.2): exact memoization of known runtime-library routines.
+    pub(crate) accel: crate::accel::Accel,
     pub(crate) trace: Trace,
     warnings: Vec<String>,
     warned: Vec<u32>,
@@ -403,7 +409,9 @@ impl Cpu {
             stkalign_always: true,
             filter_ccr_div0: true,
             halt_systick_on_deep_sleep: true,
+            fast_it: true,
             ff: FastFwd::new(),
+            accel: crate::accel::Accel::new(),
             trace: Trace::new(),
             warnings: Vec::new(),
             warned: Vec::new(),
@@ -649,6 +657,17 @@ impl Cpu {
         self.halt_systick_on_deep_sleep = v;
     }
 
+    /// Speed switch (default on): IT blocks execute inside the hot loop instead of being stepped one
+    /// instruction at a time by the outer loop. Results are identical either way; the off setting is
+    /// the reference for shadow verification (`tests/fast_it.rs`).
+    pub fn set_fast_it(&mut self, enabled: bool) {
+        self.fast_it = enabled;
+    }
+
+    pub fn fast_it(&self) -> bool {
+        self.fast_it
+    }
+
     /// Drops all predecoded instructions (call after flash contents change).
     pub fn invalidate_code_cache(&mut self) {
         for op in self.cache.iter_mut() {
@@ -659,6 +678,7 @@ impl Cpu {
         self.cut_entries.clear();
         self.cut_ctx = CutCtx::NONE;
         self.ff.reset();
+        self.accel_invalidate(); // ROUTINE-ACCEL HOOK: the memo tables describe the old code
     }
 
     /// Forgets the cut translation blocks (their cache slots get the plain instruction back).
@@ -831,7 +851,8 @@ impl Cpu {
         if to <= self.clock_time {
             return;
         }
-        self.dwt.advance_to(to);
+        // (The DWT counter never raises an event and is read as a function of the clock time, so it is not advanced
+        // here: reads and writes of its registers catch it up, see `cyccnt_at` and `ppb_write_word`.)
         if self.systick.advance_to(to) {
             self.nvic.set_pending_irq(EXC_SYSTICK);
             self.nvic_changed();
@@ -920,6 +941,7 @@ impl Cpu {
                 self.cut_entries.clear();
                 self.cut_ctx = CutCtx::NONE;
                 self.ff.reset();
+                self.accel_invalidate(); // ROUTINE-ACCEL HOOK
             }
         }
     }
@@ -1061,6 +1083,7 @@ impl Cpu {
         }
         self.exit_pending = false;
         self.nvic.irq_rose = false;
+        self.accel_prepare(&*bus); // ROUTINE-ACCEL HOOK (per chunk): find the accelerated routines of the code region
         let done = |this: &Self, reason: ExitReason| {
             let executed = this.icount - start;
             RunExit { now: now + executed * tpi, executed, reason }
@@ -1111,7 +1134,7 @@ impl Cpu {
                 self.ff_begin(bus);
             }
             if self.ff.verifying() {
-                at_boundary = self.ff_verify_step(bus, at_boundary);
+                at_boundary = self.ff_verify_run(bus, at_boundary);
                 continue;
             }
             if self.itstate != 0 {
@@ -1256,6 +1279,21 @@ impl Cpu {
         let mut ic = self.icount;
         'lookup: loop {
             let mut pc = self.r[15];
+            // ---- ROUTINE-ACCEL HOOK begin (PERF-HLE, DESIGN.md 16.2; `accel/mod.rs`) --------------------
+            // At a translation-block start whose address is the entry of a known runtime-library routine,
+            // a recorded call is replaced by its exact effect (or recorded). `Done`: instructions were
+            // executed; continue exactly as after the last instruction of the call.
+            if !TRACE && self.accel.probe[crate::accel::probe_index(pc)] == pc && ic == self.tb_icount {
+                self.icount = ic;
+                if let crate::accel::Enter::Done { ends } = self.accel_enter(bus, pc) {
+                    ic = self.icount;
+                    if ic >= self.limit {
+                        return ends;
+                    }
+                    continue 'lookup;
+                }
+            }
+            // ---- ROUTINE-ACCEL HOOK end ----------------------------------------------------------------
             let off = pc.wrapping_sub(self.cache_base);
             if !TRACE && off < self.cache_span {
                 let base = self.cache.as_ptr();
@@ -1266,55 +1304,110 @@ impl Cpu {
                 // does not reallocate) and handlers never touch the cache (rejection and flushes run
                 // in the outer loop).
                 let mut slot = unsafe { base.add((off >> 1) as usize) };
-                loop {
-                    let mut kind = unsafe { (*slot).kind };
-                    if (kind as u8) <= Kind::CutHead as u8 {
-                        // `Undecoded` or `CutHead`: decode, or take the wrapped instruction's kind
-                        // (and apply the cut of its block). `Undecoded` back: not cacheable, slow path.
-                        let idx = unsafe { slot.offset_from(base) } as usize;
-                        kind = self.cold_slot(bus, idx, pc, ic);
-                        if kind == Kind::Undecoded {
-                            break;
+                // Two loops over the same state: the plain one (ITSTATE == 0) and the IT block one. The plain
+                // loop pays nothing for IT blocks: the `IT` instruction sits in front of the block-ending kinds
+                // (`FIRST_SPECIAL`), so the test that already follows every instruction also catches it.
+                'run: loop {
+                    if self.itstate == 0 {
+                        loop {
+                            let mut kind = unsafe { (*slot).kind };
+                            if (kind as u8) <= Kind::CutHead as u8 {
+                                // `Undecoded` or `CutHead`: decode, or take the wrapped instruction's kind
+                                // (and apply the cut of its block). `Undecoded` back: not cacheable, slow path.
+                                let idx = unsafe { slot.offset_from(base) } as usize;
+                                kind = self.cold_slot(bus, idx, pc, ic);
+                                if kind == Kind::Undecoded {
+                                    break 'run;
+                                }
+                            }
+                            // SAFETY: the slot is not modified while the instruction executes.
+                            let op: &Op = unsafe { &*slot };
+                            let len = op.len as u32;
+                            let next = pc.wrapping_add(len);
+                            self.r[15] = next;
+                            self.exec(bus, kind, op, pc);
+                            ic += 1;
+                            if ic >= self.limit {
+                                self.icount = ic;
+                                let forced = core::mem::take(&mut self.force_tb_end);
+                                return kind.ends_tb() | forced | self.cut_block_ends(ic);
+                            }
+                            if kind as u8 >= FIRST_SPECIAL {
+                                if kind == Kind::It {
+                                    // An IT block starts; it continues behind this instruction.
+                                    pc = next;
+                                    slot = unsafe { (slot as *const u8).add((len as usize) << 3) as *const Op };
+                                    continue 'run;
+                                }
+                                self.tb_icount = ic;
+                                continue 'lookup;
+                            }
+                            debug_assert_eq!(self.r[15], next, "non-TB-ending instruction {:?} moved the PC without kicking", kind);
+                            pc = next;
+                            // 16 bytes per halfword slot: `len` (2 or 4 bytes) * 8. Computed in bytes so that the
+                            // loop-carried dependency (load of `len`, one add) stays as short as possible.
+                            slot = unsafe { (slot as *const u8).add((len as usize) << 3) as *const Op };
+                        }
+                    } else {
+                        // IT block body (ITSTATE != 0): `step_insn`'s rules, executed here. A skipped
+                        // instruction dispatches as a `Nop` (it still counts, and still ends its
+                        // translation block when its kind does); flag-setting 16-bit instructions that only
+                        // set flags outside an IT block run from a copy without `FL_S`.
+                        loop {
+                            let mut kind = unsafe { (*slot).kind };
+                            if (kind as u8) <= Kind::CutHead as u8 {
+                                let idx = unsafe { slot.offset_from(base) } as usize;
+                                kind = self.cold_slot(bus, idx, pc, ic);
+                                if kind == Kind::Undecoded {
+                                    break 'run;
+                                }
+                            }
+                            // SAFETY: the slot is not modified while the instruction executes.
+                            let op: &Op = unsafe { &*slot };
+                            let len = op.len as u32;
+                            let next = pc.wrapping_add(len);
+                            self.r[15] = next;
+                            self.insn_faulted = false;
+                            self.it_changed = false;
+                            let mut run_kind = kind;
+                            let mut run_op = op;
+                            let patched;
+                            if !cond_holds((self.itstate >> 4) as u32, self.apsr) {
+                                run_kind = Kind::Nop;
+                            } else if op.flags & FL_IT != 0 {
+                                patched = Op { flags: op.flags & !FL_S, ..*op };
+                                run_op = &patched;
+                            }
+                            self.exec(bus, run_kind, run_op, pc);
+                            if !self.insn_faulted && !self.it_changed && self.itstate != 0 {
+                                self.it_advance();
+                            }
+                            ic += 1;
+                            let ends = kind.ends_tb();
+                            if ic >= self.limit {
+                                self.icount = ic;
+                                let forced = core::mem::take(&mut self.force_tb_end);
+                                return ends | forced | self.cut_block_ends(ic);
+                            }
+                            if ends {
+                                self.tb_icount = ic;
+                                continue 'lookup;
+                            }
+                            debug_assert_eq!(self.r[15], next, "non-TB-ending instruction {:?} moved the PC without kicking", kind);
+                            pc = next;
+                            slot = unsafe { (slot as *const u8).add((len as usize) << 3) as *const Op };
+                            if self.itstate == 0 {
+                                continue 'run;
+                            }
                         }
                     }
-                    // SAFETY: the slot is not modified while the instruction executes.
-                    let op: &Op = unsafe { &*slot };
-                    let len = op.len as u32;
-                    let next = pc.wrapping_add(len);
-                    self.r[15] = next;
-                    self.exec(bus, kind, op, pc);
-                    ic += 1;
-                    let ends = kind.ends_tb();
-                    if ic >= self.limit {
-                        self.icount = ic;
-                        let forced = core::mem::take(&mut self.force_tb_end);
-                        return ends | forced | self.cut_block_ends(ic);
-                    }
-                    if ends {
-                        self.tb_icount = ic;
-                        continue 'lookup;
-                    }
-                    debug_assert_eq!(self.r[15], next, "non-TB-ending instruction {:?} moved the PC without kicking", kind);
-                    pc = next;
-                    // 16 bytes per halfword slot: `len` (2 or 4 bytes) * 8. Computed in bytes so that the
-                    // loop-carried dependency (load of `len`, one add) stays as short as possible.
-                    slot = unsafe { (slot as *const u8).add((len as usize) << 3) as *const Op };
                 }
             }
-            // Uncached code (SRAM, peripherals), a region switch, the guard slot, or tracing.
+            // Uncached code (SRAM, peripherals), a region switch, the guard slot, or tracing: one
+            // instruction through `step_insn`, which also knows the IT block rules.
             self.icount = ic;
-            let pc = self.r[15];
-            self.visit_tb_start(bus, pc, ic);
-            let op = self.fetch_op(bus, pc);
-            self.r[15] = pc.wrapping_add(op.len as u32);
-            if TRACE {
-                self.trace_record(pc, &op);
-            }
-            self.exec_slow(bus, &op, pc);
-            ic += 1;
-            self.icount = ic;
-            let forced = core::mem::take(&mut self.force_tb_end);
-            let ends = op.kind.ends_tb() | tb_page_end(pc, op.len) | forced | self.cut_block_ends(ic);
+            let ends = self.step_insn::<B, TRACE>(bus);
+            ic = self.icount;
             if ends {
                 self.tb_icount = ic;
             }
@@ -1416,7 +1509,19 @@ impl Cpu {
     pub(crate) fn step_insn<B: CpuBus, const TRACE: bool>(&mut self, bus: &mut B) -> bool {
         let pc = self.r[15];
         self.visit_tb_start(bus, pc, self.icount);
-        let mut op = self.fetch_op(bus, pc);
+        let op = self.fetch_op(bus, pc);
+        self.step_op::<B, TRACE>(bus, pc, op)
+    }
+
+    /// [`Cpu::step_insn`] for an instruction the caller fetched already (the idle-loop verification looks at the
+    /// decoded instruction before it runs): the same sequence, without fetching it a second time.
+    pub(crate) fn step_fetched<B: CpuBus>(&mut self, bus: &mut B, pc: u32, op: Op) -> bool {
+        self.visit_tb_start(bus, pc, self.icount);
+        self.step_op::<B, false>(bus, pc, op)
+    }
+
+    #[inline(always)]
+    fn step_op<B: CpuBus, const TRACE: bool>(&mut self, bus: &mut B, pc: u32, mut op: Op) -> bool {
         if TRACE {
             self.trace_record(pc, &op);
         }
@@ -1440,11 +1545,6 @@ impl Cpu {
         self.icount += 1;
         let forced = core::mem::take(&mut self.force_tb_end);
         op.kind.ends_tb() | tb_page_end(pc, op.len) | forced | self.cut_block_ends(self.icount)
-    }
-
-    /// Single-steps one instruction (idle-loop verification, no tracing).
-    pub(crate) fn step_one<B: CpuBus>(&mut self, bus: &mut B) -> bool {
-        self.step_insn::<B, false>(bus)
     }
 
     /// `ITAdvance()`.

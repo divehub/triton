@@ -30,6 +30,7 @@ mod can_loss;
 mod clock_storage;
 mod cold_wake;
 mod diluent;
+pub mod dive;
 mod dual_wake;
 mod fast_forward;
 mod machine_reset;
@@ -40,19 +41,27 @@ pub struct ScenarioEnv<'a> {
     pub main: &'a Firmware,
     pub handset: &'a Firmware,
     pub options: BuildOptions,
+    /// Exact routine acceleration of the sessions the scenarios create (default on; results are identical either way,
+    /// see `armv7m::accel`; `false` is the reference for the on/off identity checks).
+    pub routine_accel: bool,
 }
 
 impl<'a> ScenarioEnv<'a> {
     /// The default platform: the main I2C idle-high fixture on, like a viewer session. The comparisons with the Renode
     /// recordings, which predate the fixture, are informational in this environment (see [`Recorder::finish`]).
     pub fn new(main: &'a Firmware, handset: &'a Firmware) -> Self {
-        Self { main, handset, options: BuildOptions::default() }
+        Self { main, handset, options: BuildOptions::default(), routine_accel: true }
     }
 
     /// The platform scripts the Renode recordings were made with (no I2C idle-high fixture): the comparisons marked
     /// `must` are binding again.
     pub fn recorded(main: &'a Firmware, handset: &'a Firmware) -> Self {
-        Self { main, handset, options: BuildOptions { main_i2c_idle_high: false } }
+        Self { main, handset, options: BuildOptions { main_i2c_idle_high: false }, routine_accel: true }
+    }
+
+    /// The session configuration `config` with this environment's routine-acceleration switch.
+    pub(crate) fn configure(&self, config: SessionConfig) -> SessionConfig {
+        SessionConfig { routine_accel: self.routine_accel, ..config }
     }
 }
 
@@ -294,7 +303,7 @@ pub(crate) struct Rig {
 
 impl Rig {
     pub fn new(env: &ScenarioEnv<'_>, config: SessionConfig, profile: Profile) -> Result<Rig, String> {
-        let session = Session::new_with(env.options, "", config, Some(env.main), env.handset, recorded_inputs(profile))?;
+        let session = Session::new_with(env.options, "", env.configure(config), Some(env.main), env.handset, recorded_inputs(profile))?;
         Ok(Rig { session })
     }
 

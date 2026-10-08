@@ -273,25 +273,7 @@ pub(crate) struct Clk {
 /// nanoseconds, **without looking at `Enabled`** (the update handlers compute it after a one-shot entry has
 /// disabled itself). `u64::MAX` when it never gets there.
 fn ns_to_limit_ignoring_enabled(entry: &ClockEntry) -> u64 {
-    let (rn, rd) = entry.ratio();
-    if rn == 0 {
-        return u64::MAX;
-    }
-    let ticks = match entry.direction() {
-        Direction::Descending => entry.value(),
-        Direction::Ascending => entry.period().saturating_sub(entry.value()),
-    };
-    let (xn, xd) = entry.residuum();
-    let remaining = u128::from(ticks).saturating_mul(u128::from(xd)).saturating_sub(u128::from(xn));
-    let num = remaining.saturating_mul(u128::from(rd));
-    let den = u128::from(xd).saturating_mul(u128::from(rn));
-    let whole = num / den;
-    let ceil = if num % den != 0 { whole + 1 } else { whole };
-    if ceil >= u128::from(u64::MAX) {
-        u64::MAX
-    } else {
-        ceil as u64
-    }
+    entry.ns_to_limit_ignoring_enabled()
 }
 
 /// The whole model: configuration, clock source, state.
@@ -404,8 +386,7 @@ impl Model {
             if !self.clk.e[i].entry().enabled() {
                 continue;
             }
-            let advance = self.clk.e[i].advance_to(self.t);
-            if advance.reached {
+            if self.clk.e[i].advance_to_reached(self.t) {
                 self.refresh_due(i);
                 if track_phantom && !self.clk.e[i].entry().enabled() {
                     // Renode parity: the update handler computes the time to the limit after a one-shot entry

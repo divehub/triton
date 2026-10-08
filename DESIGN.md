@@ -304,7 +304,7 @@ Actions mirror `run_emulator.py` exactly (names, payload fields, validation mess
 
 ### 15.1 Repository rules
 
-- This repository is the **WebAssembly emulator**, the base for a playable CCR operating experience. During development it was the WebAssembly branch of a private repository, where its content lived under `emulation/wasm/`; paths here are relative to the repository root. The the separate Renode-based analysis workspace (not public) (earlier text: the `main` branch) is used to debug the firmware. The two never merge; changes were ported by reading that workspace's files.
+- This repository is the **WebAssembly emulator**, the base for a playable CCR operating experience. During development it was the WebAssembly branch of a private repository, where its content lived under `emulation/wasm/`; paths here are relative to the repository root. A separate Renode-based analysis workspace (not public) is used to debug the firmware. The two never merge; changes were ported by reading that workspace's files.
 - Removed here (they remain in the analysis workspace): the Renode runner/viewer/models/probes/evidence, the firmware/app static analysis, `reference/**` (pinned Renode/tlib sources, Renode harness scripts, `compare-reference` data). **Nothing may read a `reference/data/` directory any more.**
 - Kept: recorded Renode golden data committed under `crates/*/tests/**` and `testdata/renode-micro-vectors.json` (moved from `reference/micro/vectors.json`). They are regression fixtures now; they no longer need a Renode installation.
 - Comments naming `emulation/models/*.cs`, `emulation/run_emulator.py`, `emulation/viewer.html` etc. refer to the analysis workspace; leave them. Ported-file attribution headers stay (MIT notice in `licenses/`).
@@ -363,3 +363,87 @@ Port the user-facing changes of the analysis workspace's `emulation/viewer.html`
 | WEB | `web/**` |
 
 RUST builds with `--target-dir target/rust`, WEB with `target/web` (the `build.py` default). Until RUST lands 15.3, WEB develops against fixture JSON shaped like 15.3a.
+
+## 16. Dive-mode performance (2026-10-08)
+
+**Goal (user):** in dive mode (valid tissues, 20–30 m), 10× real time in the browser, at least 4×. That should hold during the main board's deco bursts too, not only on average. At the start of this phase the average in Node was 2.85× and bursts ran at 1.1× (section 13, PERF-PROFILE). The committed dive benchmark (16.3) reproduces the valid-tissue dive; the original profiling data stayed outside the repository.
+
+### 16.1 Exactness (contract for every optimization in this phase)
+
+An optimization may change only host speed. With it on and with it off, the following must be identical at every quantum boundary: all core registers (scratch registers included), xPSR (flags, IT state, exception number), FPSCR and the VFP registers, all memory (stack below SP included), the instruction count, DWT_CYCCNT/SysTick, event and IRQ timing, and the translation-block/predecode state that can change later block partitioning (Renode cut-block persistence). The proof is required, not optional:
+- **Fingerprint identity**, on vs off, at checkpoints over the committed dive benchmark (16.3) and the existing scenarios.
+- **Fast-forward identity**, on vs off, with the optimization on.
+- **Native/wasm identity.**
+- A **shadow-verification mode**: run both ways and compare. It is used in the tests, like `bench --verify-idle-ff`.
+- **Randomized differential tests** for every routine shortcut.
+- A **switch** for each optimization: SessionConfig, CLI flag and a session-create JSON key, on by default.
+
+### 16.2 Routine acceleration (work package PERF-HLE)
+
+Hot leaf routines of the firmware's runtime library are executed without per-instruction interpretation, exactly. Targets, by share of executed main-board instructions in a dive:
+- the soft-double divide at `0x0800486c` (75%; ~540 instructions per call; operands repeat, 197 distinct pairs in 399k calls);
+- `expf` and its wrapper (10%; `0x0802cc7c`, `0x0802bc90`, `0x0802be20`, `0x08004b4c`);
+- f2d/d2f (4.7%; `0x08004568`, `0x08004c08`).
+
+Rules:
+- **Identify routines by their code bytes** (a hash of the routine body plus literal pools), never by TRITON addresses alone. Record the matched entry addresses per image and report whether NEPTUN contains the same code.
+- **Apply a shortcut only when** the remaining instruction budget of the current CPU chunk (until the next event or deadline) is at least the routine's exact instruction count for this input. Then no interrupt, event, chunk cut or translation-block cut can fall inside the routine. Otherwise interpret normally.
+- **Reproduce everything:** outputs and clobbered scratch registers, flags, IT state, stack writes (pushed values and their addresses), the instruction count (including IT-skipped instructions, which count in this engine) and the return PC. A memoized result, keyed by every input the routine reads, is acceptable if the key is complete. Exact native implementations with a path-accurate instruction count are acceptable if validated against the interpreter. Choose per routine.
+- **Memory:** routines that read RAM other than their own stack frame, touch MMIO, or depend on state outside the key are not eligible.
+
+### 16.3 Dive benchmark (PERF-HLE)
+
+Add a committed, deterministic dive benchmark that builds its valid-tissue profile from scratch only through firmware routes: battery wizard, air calibration through the menu, a short NaN dive that saves a decompression date, a +5-day main RTC checkpoint fixture, restart and recalibration, then dives at 20 m and 30 m. Expose it as `ngc-cli bench --dive` (or a scenario) with burst and average speed and fingerprints at checkpoints. Add the same to `web/bench-node.mjs` (`--dive`, using the browser ABI). It is the gate for 16.1 and for the speed targets.
+
+### 16.4 Interpreter and bookkeeping (work package PERF-INTERP)
+
+- **IT blocks in the fast loop.** About 22% of executed main instructions are IT bodies; they cost about 14 ns on the slow path vs 4.4 ns.
+- **Chunk bookkeeping** in `run_board_to`.
+- **Clock arithmetic:** u128 division in `ClockEntry` replaced by exact u64 arithmetic where provable.
+- **No string formatting on timer register writes.**
+- **Other measured hot-path costs.** Every change must be exact (16.1); measure before and after on the dive scripts.
+
+### 16.5 Ownership
+
+| WP | Owns |
+| --- | --- |
+| PERF-HLE | **Owns:** new `crates/armv7m/src/accel/**`; one clearly delimited hook in `crates/armv7m/src/cpu.rs` and its config in `armv7m/src/lib.rs`; `crates/ngc/src/scenario/dive*.rs` plus its registration; config plumbing in `crates/ngc/src/{session.rs,system.rs}` (switch only); `crates/ngc-cli/**`; `crates/ngc-wasm/**`; `web/bench-node.mjs`. |
+| PERF-INTERP | **Owns:** `crates/armv7m/src/{exec.rs,op.rs,decode.rs,alu.rs}` and the rest of `cpu.rs`; `crates/emu-core/src/clock*`; `crates/stm32/src/timer/**`; `crates/ngc/src/{board.rs,bus.rs}`; chunk bookkeeping in `system.rs`. |
+
+Both edit `cpu.rs` and `system.rs`. Re-read before every edit, keep edits small and local, and keep every crate compiling at each save. Target dirs: `target/perf-hle` and `target/perf-interp`.
+
+## 17. Decompression state handling (user-approved 2026-10-08; starts after section 16 lands)
+
+**Diagnosis** (DECO-DIAG, all original firmware behaviour; the hook evidence stayed outside the repository).
+
+The engine's deco arithmetic matches Renode bit for bit: 60/60 NDL hook records and all 32 tissue words on main's valid seed. NDL stuck at 99 has two causes.
+- **NaN tissues on any later boot of a persisted profile.**
+  - On a first boot with an erased saved date (EEPROM physical `0x17f`), the init at `0x08008308` sees elapsed ≥ 345 600 s. It resets the tissues (`0x08007584`) and writes the date, but never saves them.
+  - Tissues are saved only on the device's power-down route: handset CAN `0x149` → `0x0801f7d0` → `0x08008770`, or queue case 2. Sessions never take that route, so the tissue block at physical `0xff–0x17e` stays erased.
+  - On the next boot, the 32 erased words load as NaN. Elapsed time is under 4 days, so they are kept, and NDL stays 99.
+- **Uncalibrated oxygen in measured-ppO₂ mode** (mode byte `0x20002457` = 2): ppO₂ `0x2000421c` is NaN, so NDL stays 99.
+- Cold boot rewrites the calibration flags `0x09`→`0x01`, which brings the second cause back.
+- The persisted depth makes the next boot start under water; the firmware then takes that pressure as the surface pressure.
+
+**Work package DECO-FIX** (after PERF-HLE/PERF-INTERP; owns `crates/ngc/**` for this feature, `crates/ngc-wasm/**`, `crates/ngc-cli/**` and `web/**`).
+
+1. **Detect and warn (read-only).**
+   - The state gains `decoHealth`: `{tissues: "valid"|"invalid"|"unknown", oxygen: "calibrated"|"uncalibrated"|"unknown", details}`.
+   - Its source is host peeks of the TRITON tissue words `0x20001e94 + 36·i + 24/28` (i = 0…15) and of ppO₂ `0x2000421c` when `0x20002457` = 2. Put them in the per-release address table: NEPTUN fields are `unknown` with a reason unless proven by byte matching.
+   - The basic view shows a clear warning with the next step: for example, calibrate oxygen through the menu (Calibration → Air → Auto → Start → Save), or restart to apply fixture 2. Choosing Cold boot shows a hint that it resets calibration.
+2. **Pre-boot EEPROM consistency fixture** (labelled, switchable, default on).
+   - Before every board creation (session start, Restart, Cold, Wake, reopen): if the stored tissue block is entirely erased and the 4-byte date record at physical `0x17f` is not, erase that date record in the EEPROM image. The firmware then takes its own ≥4-day reset path (`0x08008334`/`0x0800833a`, flag `0x0800834a`, `0x08007584` reset block `0x080075bc–0x080075de`).
+   - TRITON only (proven layout); NEPTUN is skipped with a reason.
+   - Record each application in the state and the captures (`decoStorageFixture: {applied, reason}`). Switches: `SessionConfig`, CLI `--no-deco-storage-fixture`, session-create JSON `decoStorageFixture`.
+   - Never touch calibration, tissue words, ppO₂ or guest RAM.
+3. **Start every boot at the surface** (labelled, switchable, default on).
+   - At every board creation, both pressure inputs equal the configured surface pressure plus each sensor's offset, with depth 0.
+   - Keep `inputs.json` byte-compatible with the Renode runner: store the surface/offset choice in the page's own settings, or in a separate profile file, not as new `inputs.json` fields.
+   - The basic depth slider shows 0 m after boot.
+   - User request: a **new session** (Boot) also resets the three oxygen-cell inputs to their defaults (base and offsets), together with the depth.
+
+**Tests.**
+- A session test: first boot, dive, Restart. Fixture on gives finite tissues and NDL below 99 at depth; fixture off reproduces the NaN state.
+- A test that calibration bytes are unchanged by the fixture.
+- UI tests for the warnings and the surface start.
+- Fingerprint identity of everything else when both fixtures are off.

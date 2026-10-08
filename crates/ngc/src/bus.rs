@@ -28,6 +28,9 @@ pub struct BusView<'a> {
     start_time: Time,
     start_icount: u64,
     ticks_per_instruction: Time,
+    /// `access_trace::enabled()` as of the start of the chunk (tracing is started and stopped between
+    /// chunks): the thread-local lookup is not repeated for every slow-path access.
+    trace: bool,
 }
 
 #[inline(always)]
@@ -55,7 +58,7 @@ impl<'a> BusView<'a> {
     /// starts. The machine must use the NGC memory layout (checked in debug builds).
     pub fn new(core: &'a mut MachineCore, start_time: Time, start_icount: u64, ticks_per_instruction: Time) -> Self {
         debug_assert!(core.mem.layout == LAYOUT, "BusView requires the NGC memory layout");
-        Self { core, start_time, start_icount, ticks_per_instruction }
+        Self { core, start_time, start_icount, ticks_per_instruction, trace: access_trace::enabled() }
     }
 
     /// Exact virtual time of an access made at executed-instruction count `icount`.
@@ -85,7 +88,7 @@ impl<'a> BusView<'a> {
         }
         let now = self.time_at(icount);
         let value = self.core.cpu_read(addr, width, now);
-        if access_trace::enabled() {
+        if self.trace {
             access_trace::record(icount, addr, width, false, value);
         }
         value
@@ -106,7 +109,7 @@ impl<'a> BusView<'a> {
         }
         let now = self.time_at(icount);
         self.core.cpu_write(addr, width, value, now);
-        if access_trace::enabled() {
+        if self.trace {
             access_trace::record(icount, addr, width, true, value);
         }
     }
@@ -359,12 +362,16 @@ mod tests {
 
     #[test]
     fn access_trace_keeps_the_latest_slow_path_accesses_only() {
+        // A view samples the tracing state when it is created (one chunk): tracing starts and stops between chunks.
         let (mut core, _) = machine(false);
         {
             let mut bus = BusView::new(&mut core, 0, 0, TPI);
             bus.write32(0x4000_0010, 1, 5); // before tracing: not recorded
-            access_trace::start(3);
-            access_trace::set_tag(1);
+        }
+        access_trace::start(3);
+        access_trace::set_tag(1);
+        {
+            let mut bus = BusView::new(&mut core, 0, 0, TPI);
             bus.write32(SRAM1_BASE, 7, 6); // plain memory: never recorded
             bus.read32(0x1000_0000, 6); // SRAM2: plain, never recorded
             bus.write32(0x4000_0010, 0xAA, 7);
@@ -377,10 +384,11 @@ mod tests {
             assert_eq!(records[0].value, 0x1122);
             assert_eq!((records[1].icount, records[1].address, records[1].write, records[1].value), (9, 0x4000_0011, true, 0x55));
             assert_eq!((records[2].address, records[2].value, records[2].width), (0x5000_0000, 0, Width::Word));
-            // Stopped: nothing is recorded any more.
-            bus.write32(0x4000_0010, 2, 11);
-            assert!(access_trace::stop().is_empty());
         }
+        // Stopped: nothing is recorded any more.
+        let mut bus = BusView::new(&mut core, 0, 0, TPI);
+        bus.write32(0x4000_0010, 2, 11);
+        assert!(access_trace::stop().is_empty());
     }
 
     #[test]

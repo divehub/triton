@@ -381,8 +381,11 @@ ctx.clock_remove(id);
 
 `ClockEntry` is a plain value type (`Copy`) with Renode's `With(...)` family (`with_period`,
 `with_frequency` (clears the residuum), `with_enabled`, `with_value`, `with_direction`, `with_mode`) and the pure
-functions `advance(ns) -> Advance { reached, to_limit }` and `ns_to_limit()`, so it is unit-testable
-without a machine.
+functions `advance(ns) -> Advance { reached, to_limit }` (the hot callers use `advance_reached(ns) -> bool`, which
+skips the time to the next limit) and `ns_to_limit()`, so it is unit-testable without a machine. The arithmetic is
+exact `u64` whenever no intermediate value overflows (always, for the clocks in use) and falls back to a 128-bit
+reference otherwise; `tests::u64_paths_equal_the_u128_reference` proves the two equal over millions of random and edge
+cases. On `wasm32` a checked 64-bit multiplication is a library call, so operands below 2^32 skip it.
 
 ### 5.8 `LocalClock`: entries owned by the CPU
 

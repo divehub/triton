@@ -11,20 +11,26 @@ use crate::args;
 use crate::common;
 use emu_core::{from_secs_f64, to_secs_f64, Json};
 use ngc::sha256;
-use ngc::system::{BoardCounters, Input, Mode, System, Which};
+use ngc::system::{BoardCounters, Input, Mode, RoutineAccelMode, System, Which};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 
 pub const USAGE: &str = "ngc-cli bench [--main <srec>] [--handset <srec>] [--release ID] [--boot-seconds S] [--seconds S] [--steady-samples N]\n  \
-    [--no-idle-ff] [--verify-idle-ff] [--no-i2c-idle-high] [--json out.json] [--no-menu]\n  \
+    [--no-idle-ff] [--verify-idle-ff] [--no-routine-accel|--shadow-routine-accel] [--verify-routine-accel] [--no-i2c-idle-high]\n  \
+    [--json out.json] [--no-menu]\n  \
     Fresh-storage dual benchmark: boot to --boot-seconds (default 4.5), then N steady intervals of --seconds\n  \
     (defaults 3 x 1 s), then a menu-redraw interval (Down / Up button presses, 2 x 0.5 s). Prints wall seconds,\n  \
     virtual seconds per wall second, instructions and idle-skip statistics per interval.\n  \
     --verify-idle-ff runs the whole benchmark twice (idle fast-forward on and off) and requires identical state\n  \
     digests (guest state and output activity histories) at every measurement point.\n  \
     --release ID selects the default SREC directory (TRITON-5.8-65.3 or NEPTUN-5.8-65.3); --no-i2c-idle-high leaves the\n  \
-    main board's I2C idle inputs low (the idle-high fixture is on by default).";
+    main board's I2C idle inputs low (the idle-high fixture is on by default).\n  \
+    --no-routine-accel turns off the exact routine acceleration (memoized soft-float library calls, on by default),\n  \
+    --shadow-routine-accel selects its verification mode, --verify-routine-accel runs the whole benchmark with it on and off and\n  \
+    requires identical state digests (state, FPSCR/VFP registers, predecode cache) at every measurement point.\n  \
+    --dive [--dive-seconds S] [--dive-depths 20,30] [--dive-png PREFIX] runs the committed dive benchmark instead (valid tissues, profile built\n  \
+    through firmware routes; average / burst / quiet speed and checkpoint digests; `ngc-cli bench --dive --help`).";
 
 struct Measurement {
     label: String,
@@ -40,6 +46,9 @@ struct Measurement {
     digest: String,
     /// `System::guest_fingerprint`: the guest state alone (what an observation change must not alter).
     guest_digest: String,
+    /// `Cpu::exactness_digest` of the main and handset cores: the architectural state including FPSCR and the VFP
+    /// registers, the predecode cache and the cut-block history (what routine acceleration must not alter).
+    exact: [u64; 2],
     lcd_sha256: Option<String>,
     can_trace_sha256: String,
     pcs: [Option<u32>; 2],
@@ -123,6 +132,7 @@ struct Report {
     boot_wall: f64,
     boot_digest: String,
     boot_guest_digest: String,
+    boot_exact: [u64; 2],
     boot_counters: [Option<BoardCounters>; 2],
     release_seconds: Option<f64>,
     measurements: Vec<Measurement>,
@@ -130,6 +140,18 @@ struct Report {
 
 fn counters(system: &System) -> [Option<BoardCounters>; 2] {
     [system.counters(Which::Main), system.counters(Which::Handset)]
+}
+
+fn exact_digests(system: &System) -> [u64; 2] {
+    [system.exactness_digest(Which::Main).unwrap_or(0), system.exactness_digest(Which::Handset).unwrap_or(0)]
+}
+
+fn accel_name(mode: RoutineAccelMode) -> &'static str {
+    match mode {
+        RoutineAccelMode::Off => "off",
+        RoutineAccelMode::On => "on",
+        RoutineAccelMode::Shadow => "shadow",
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -167,6 +189,7 @@ fn measure(system: &mut System, label: &str, chunks: &[f64], press: bool) -> Mea
         before,
         digest: system.fingerprint(),
         guest_digest: system.guest_fingerprint(),
+        exact: exact_digests(system),
         lcd_sha256: system.lcd_ppm().map(|ppm| sha256::digest_hex(&ppm)),
         can_trace_sha256: sha256::digest_hex(system.link.trace_text().as_bytes()),
         pcs: [system.pc(Which::Main), system.pc(Which::Handset)],
@@ -181,6 +204,7 @@ fn run_bench(
     main: &ngc::firmware::Firmware,
     handset: &ngc::firmware::Firmware,
     idle_ff: bool,
+    routine_accel: RoutineAccelMode,
     i2c_idle_high: bool,
     boot_seconds: f64,
     seconds: f64,
@@ -188,14 +212,15 @@ fn run_bench(
     menu: bool,
     out: &mut dyn Write,
 ) -> Result<Report, String> {
-    let mut system = common::build_system(Mode::Dual, ngc::system::BootMode::HandsetWake, false, idle_ff, i2c_idle_high, Some(main), handset)?;
-    let _ = writeln!(out, "-- idle fast-forward {} --", if idle_ff { "on" } else { "off" });
+    let mut system = common::build_system(Mode::Dual, ngc::system::BootMode::HandsetWake, false, idle_ff, routine_accel, i2c_idle_high, Some(main), handset)?;
+    let _ = writeln!(out, "-- idle fast-forward {}, routine acceleration {} --", if idle_ff { "on" } else { "off" }, accel_name(routine_accel));
     let started = Instant::now();
     system.run_for(from_secs_f64(boot_seconds));
     let boot_wall = started.elapsed().as_secs_f64();
     let release = system.handset_release_time().map(to_secs_f64);
     let boot_digest = system.fingerprint();
     let boot_guest_digest = system.guest_fingerprint();
+    let boot_exact = exact_digests(&system);
     let boot_counters = counters(&system);
     let boot_seconds_done = system.seconds();
     let _ = writeln!(
@@ -210,7 +235,7 @@ fn run_bench(
     if release.is_none() || system.main_battery_ready_flag() == Some(false) {
         let _ = writeln!(out, "WARNING: the firmware did not reach the expected paired sensor-ready boot state");
     }
-    let mut report = Report { boot_seconds: boot_seconds_done, boot_wall, boot_digest, boot_guest_digest, boot_counters, release_seconds: release, measurements: Vec::new() };
+    let mut report = Report { boot_seconds: boot_seconds_done, boot_wall, boot_digest, boot_guest_digest, boot_exact, boot_counters, release_seconds: release, measurements: Vec::new() };
     for sample in 0..samples {
         let label = if samples == 1 { "steady".to_string() } else { format!("steady_sample_{}", sample + 1) };
         let m = measure(&mut system, &label, &[seconds], false);
@@ -265,8 +290,19 @@ pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
 fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<i32, (bool, String)> {
     let usage = |message: String| (true, message);
     let failed = |message: String| (false, message);
-    let parsed = args::parse(argv, &["main", "handset", "boot-seconds", "seconds", "steady-samples", "json", "release"], &["no-idle-ff", "verify-idle-ff", "no-menu", "no-i2c-idle-high"]).map_err(usage)?;
+    let parsed = args::parse(
+        argv,
+        &["main", "handset", "boot-seconds", "seconds", "steady-samples", "json", "release", "dive-seconds", "dive-depths", "dive-png"],
+        &["no-idle-ff", "verify-idle-ff", "no-menu", "no-i2c-idle-high", "no-routine-accel", "shadow-routine-accel", "verify-routine-accel", "dive"],
+    )
+    .map_err(usage)?;
+    let routine_accel = common::routine_accel_mode(&parsed).map_err(usage)?;
     let release = common::parse_release(parsed.value("release")).map_err(usage)?;
+    if parsed.flag("dive") {
+        let (main, handset) = common::load_images_in(parsed.value("main"), parsed.value("handset"), Mode::Dual, release).map_err(failed)?;
+        let main = main.expect("dual");
+        return crate::cmd_dive::run(&parsed, &main, &handset, routine_accel, out);
+    }
     let i2c_idle_high = !parsed.flag("no-i2c-idle-high");
     if !parsed.positional.is_empty() {
         return Err(usage(format!("unexpected argument '{}'", parsed.positional[0])));
@@ -284,32 +320,45 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<i32, (bool, String)
     let (main, handset) = (main.expect("dual"), handset);
     let menu = !parsed.flag("no-menu");
     let verify = parsed.flag("verify-idle-ff");
-    let modes: Vec<bool> = if verify { vec![true, false] } else { vec![!parsed.flag("no-idle-ff")] };
+    let verify_accel = parsed.flag("verify-routine-accel");
+    if verify && verify_accel {
+        return Err(usage("--verify-idle-ff and --verify-routine-accel exclude each other".to_string()));
+    }
+    let idle_ff = !parsed.flag("no-idle-ff");
+    let modes: Vec<(bool, RoutineAccelMode)> = if verify {
+        vec![(true, routine_accel), (false, routine_accel)]
+    } else if verify_accel {
+        vec![(idle_ff, RoutineAccelMode::On), (idle_ff, RoutineAccelMode::Off)]
+    } else {
+        vec![(idle_ff, routine_accel)]
+    };
     let mut reports = Vec::new();
-    for idle_ff in &modes {
-        reports.push((*idle_ff, run_bench(&main, &handset, *idle_ff, i2c_idle_high, boot_seconds, seconds, samples as u32, menu, out).map_err(failed)?));
+    for (idle_ff, accel) in &modes {
+        reports.push((*idle_ff, *accel, run_bench(&main, &handset, *idle_ff, *accel, i2c_idle_high, boot_seconds, seconds, samples as u32, menu, out).map_err(failed)?));
     }
     let mut status = 0;
     let mut verification = None;
-    if verify {
-        let (on, off) = (&reports[0].1, &reports[1].1);
-        let mut identical = on.boot_digest == off.boot_digest;
+    if verify || verify_accel {
+        let (on, off) = (&reports[0].2, &reports[1].2);
+        let mut identical = on.boot_digest == off.boot_digest && (verify || on.boot_exact == off.boot_exact);
         let mut details = vec![format!("boot digest {}", if identical { "identical" } else { "DIFFERENT" })];
         for (a, b) in on.measurements.iter().zip(off.measurements.iter()) {
-            let same = a.digest == b.digest && a.instructions == b.instructions && a.pcs == b.pcs;
+            let same = a.digest == b.digest && a.instructions == b.instructions && a.pcs == b.pcs && (verify || a.exact == b.exact);
             identical &= same;
             details.push(format!("{} {}", a.label, if same { "identical" } else { "DIFFERENT" }));
         }
-        let _ = writeln!(out, "idle fast-forward on/off: {} ({})", if identical { "IDENTICAL" } else { "MISMATCH" }, details.join(", "));
+        let what = if verify { "idle fast-forward on/off" } else { "routine acceleration on/off" };
+        let _ = writeln!(out, "{what}: {} ({})", if identical { "IDENTICAL" } else { "MISMATCH" }, details.join(", "));
         if !identical {
             status = 1;
         }
         verification = Some(Json::object().with("identical", identical).with("details", Json::from_items(details.iter().map(String::as_str))));
     }
     if let Some(path) = parsed.value("json") {
-        let runs = Json::from_items(reports.iter().map(|(idle_ff, report)| {
+        let runs = Json::from_items(reports.iter().map(|(idle_ff, accel, report)| {
             Json::object()
                 .with("idleFastForward", *idle_ff)
+                .with("routineAccel", accel_name(*accel))
                 .with("bootVirtualSeconds", report.boot_seconds)
                 .with("bootWallSeconds", report.boot_wall)
                 .with("bootVirtualSecondsPerWallSecond", report.boot_seconds / report.boot_wall.max(1e-12))
@@ -332,7 +381,7 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<i32, (bool, String)
             .with("storage", "fresh in-memory EEPROM/NOR")
             .with("runs", runs);
         if let Some(verification) = verification {
-            json.insert("idleFastForwardVerification", verification);
+            json.insert(if verify_accel { "routineAccelVerification" } else { "idleFastForwardVerification" }, verification);
         }
         common::write_json(&PathBuf::from(path), &json).map_err(failed)?;
         let _ = writeln!(out, "result written to {path}");

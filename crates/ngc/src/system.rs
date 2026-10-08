@@ -51,6 +51,7 @@ use crate::models::qspi::NgcQuadSpi;
 use crate::models::uart_capture::UartCapture;
 use crate::sha256::Sha256;
 use armv7m::{Cpu, FastForwardStats, TraceEntry};
+pub use armv7m::{RoutineAccelMode, RoutineAccelStats};
 use emu_core::{from_secs_f64, to_secs_f64, Json, Time, Width, QUANTUM, TICKS_PER_MILLISECOND};
 use stm32::can::{CanFrame, StmCan, TxFrame};
 use stm32::i2c::Stm32F7I2c;
@@ -203,6 +204,9 @@ pub struct SystemConfig {
     pub simultaneous_start: bool,
     /// Exact idle-loop fast-forward of both cores (results are identical either way; only host speed differs).
     pub idle_fast_forward: bool,
+    /// Exact acceleration of the runtime-library routines both cores call (memoized calls; results are identical in every
+    /// mode, only host speed differs; `Shadow` replays and interprets every hit and compares).
+    pub routine_accel: RoutineAccelMode,
     /// Handset ADC board-ID sample (`--adc-sample`).
     pub adc_sample: u32,
     /// Sensor inputs of the dual run (applied to the main board's models).
@@ -216,6 +220,7 @@ impl Default for SystemConfig {
             boot_mode: BootMode::HandsetWake,
             simultaneous_start: false,
             idle_fast_forward: true,
+            routine_accel: RoutineAccelMode::On,
             adc_sample: handset::DEFAULT_ADC_SAMPLE,
             inputs: Inputs::defaults(),
         }
@@ -509,6 +514,7 @@ impl System {
         };
         system.attach_uart_capture()?;
         system.set_idle_fast_forward(system.config.idle_fast_forward);
+        system.set_routine_accel(system.config.routine_accel);
         system.apply_sensor_inputs()?;
         if options.main_i2c_idle_high {
             system.apply_main_input_fixtures();
@@ -1031,6 +1037,30 @@ impl System {
         if let Some(main) = self.main.as_mut() {
             main.board.cpu.set_idle_fast_forward(enabled);
         }
+    }
+
+    /// Routine acceleration mode for both cores (results are identical in every mode; see `armv7m::accel`).
+    pub fn set_routine_accel(&mut self, mode: RoutineAccelMode) {
+        self.config.routine_accel = mode;
+        self.handset.board.cpu.set_routine_accel(mode);
+        if let Some(main) = self.main.as_mut() {
+            main.board.cpu.set_routine_accel(mode);
+        }
+    }
+
+    pub fn routine_accel_mode(&self) -> RoutineAccelMode {
+        self.config.routine_accel
+    }
+
+    /// Counters of the routine acceleration of one core.
+    pub fn routine_accel_stats(&self, which: Which) -> Option<RoutineAccelStats> {
+        self.board(which).map(|board| board.cpu.routine_accel_stats())
+    }
+
+    /// Digest of everything routine acceleration must leave exactly as interpretation would (registers, flags, FPSCR, VFP
+    /// registers, retire counts, the predecode cache and the cut-block history) for one core: `Cpu::exactness_digest`.
+    pub fn exactness_digest(&self, which: Which) -> Option<u64> {
+        self.board(which).map(|board| board.cpu.exactness_digest())
     }
 
     // ---- inputs -----------------------------------------------------------------------------

@@ -56,6 +56,13 @@ pub struct SessionConfig {
     pub simultaneous_start: bool,
     /// Exact idle-loop fast-forward (does not change results, only host speed).
     pub idle_fast_forward: bool,
+    /// Exact acceleration of the runtime-library routines (soft-double divide, `expf`, float/double conversions) by memoized
+    /// calls (does not change results, only host speed): **on by default**; `--no-routine-accel` / `routineAccel: false` turn it
+    /// off. See `armv7m::accel` and DESIGN.md 16.2.
+    pub routine_accel: bool,
+    /// Verification mode of the routine acceleration: every memo hit is replayed *and* interpreted and the results compared
+    /// (slow; for tests and `--verify-routine-accel`). Only has an effect while `routine_accel` is on.
+    pub routine_accel_shadow: bool,
     /// `--adc-sample` (0..=4095): the synthetic handset board-ID ADC value.
     pub adc_sample: u32,
     /// `--paused`: start with execution stopped.
@@ -77,6 +84,8 @@ impl Default for SessionConfig {
             boot_mode: BootMode::HandsetWake,
             simultaneous_start: false,
             idle_fast_forward: true,
+            routine_accel: true,
+            routine_accel_shadow: false,
             adc_sample: crate::handset::DEFAULT_ADC_SAMPLE,
             start_paused: false,
             i2c_idle_high: true,
@@ -351,6 +360,13 @@ impl Session {
     pub fn set_idle_fast_forward(&mut self, enabled: bool) {
         self.config.idle_fast_forward = enabled;
         self.system.set_idle_fast_forward(enabled);
+    }
+
+    /// Routine acceleration on or off (results are identical either way); `shadow` selects the verification mode.
+    pub fn set_routine_accel(&mut self, enabled: bool, shadow: bool) {
+        self.config.routine_accel = enabled;
+        self.config.routine_accel_shadow = shadow;
+        self.system.set_routine_accel(routine_accel_mode(&self.config));
     }
 
     /// Wall-clock information for `hostPacing` / `realtimeFactor` of the state document.
@@ -784,6 +800,15 @@ impl Session {
     }
 }
 
+/// The core-level mode of the session's routine-acceleration switches.
+fn routine_accel_mode(config: &SessionConfig) -> armv7m::RoutineAccelMode {
+    match (config.routine_accel, config.routine_accel_shadow) {
+        (false, _) => armv7m::RoutineAccelMode::Off,
+        (true, false) => armv7m::RoutineAccelMode::On,
+        (true, true) => armv7m::RoutineAccelMode::Shadow,
+    }
+}
+
 /// `launch_system`: builds, loads the storage, restores the RTC and applies the boot fixtures, in the runner's order.
 #[allow(clippy::too_many_arguments)]
 fn launch_system(
@@ -803,6 +828,7 @@ fn launch_system(
         boot_mode,
         simultaneous_start: config.simultaneous_start,
         idle_fast_forward: config.idle_fast_forward,
+        routine_accel: routine_accel_mode(config),
         adc_sample: config.adc_sample,
         inputs: inputs.clone(),
         ..SystemConfig::default()

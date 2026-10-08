@@ -22,8 +22,11 @@
 //! ngc_firmware_clear(role)
 //! ngc_profile_clear(); ngc_profile_set(kind, ptr, len)    stage profile files for the next session
 //!                                      kind 0 eeprom.bin, 1 nor.ngc, 2 rtc-state.json, 3 inputs.json, 4 led-colors.json
-//! ngc_session_create(cfg_ptr, cfg_len) JSON {mode, bootMode, simultaneousStart, idleFastForward, adcSample, startPaused,
-//!                                      i2cIdleHigh, historyNonce}, every key optional:
+//! ngc_session_create(cfg_ptr, cfg_len) JSON {mode, bootMode, simultaneousStart, idleFastForward, routineAccel,
+//!                                      routineAccelShadow, adcSample, startPaused, i2cIdleHigh, historyNonce}, every key
+//!                                      optional: `routineAccel` (default true) is the exact acceleration of the runtime-library
+//!                                      routines (memoized soft-float calls; results identical either way), `routineAccelShadow`
+//!                                      (default false) its slow verification mode;
 //!                                      `i2cIdleHigh` (default true) drives the main board's PB6/PB7/PB10/PB11 high before
 //!                                      the first instruction (functional I2C idle-line fixture), false leaves them low;
 //!                                      `historyNonce` (unsigned integer < 2^64, default 0) is the host's random part of
@@ -33,6 +36,8 @@
 //! ngc_session_run_for(seconds)         0 still running, 1 paused/standby/error, 2 no session
 //! ngc_session_action(ptr, len)         runner action JSON; the state JSON (or the error text) in the output buffer
 //! ngc_session_state()                  state JSON into the output buffer, returns its length
+//! ngc_session_checkpoint()             digests of the whole machine state (JSON: fingerprint, exactMain, exactHandset,
+//!                                      instructions, lcdSha256) into the output buffer, returns its length
 //! ngc_session_frame()                  brings the LCD up to date, returns the frame version (f64);
 //!                                      ngc_frame_ptr/len/width/height describe the RGBA bytes (read them at once)
 //! ngc_session_profile_changes(), ngc_session_profile_export(), ngc_session_capture(), ngc_session_shutdown()
@@ -45,7 +50,9 @@
 //!
 //! ```text
 //! ngc_create(mode, flags, adc_sample)   mode 0 dual / 1 handset; flags bit0 simultaneous start,
-//!                                       bit1 cold boot, bit2 idle fast-forward OFF
+//!                                       bit1 cold boot, bit2 idle fast-forward OFF, bit3 I2C idle-high fixture OFF,
+//!                                       bit4 routine acceleration OFF, bit5 routine acceleration shadow mode
+//! ngc_set_routine_accel(mode)           0 off / 1 on / 2 shadow
 //! ngc_run_for(seconds)                  1 when the system stopped (standby / error), else 0
 //! ngc_time_ns(), ngc_instructions(w)    u64 (BigInt in JS); *_f64 variants for convenience
 //! ngc_idle_skipped(w), ngc_slices(w)    fast-forwarded instructions / chunks of board w (f64)
@@ -441,6 +448,16 @@ pub extern "C" fn ngc_session_state() -> u32 {
     })
 }
 
+/// Writes the checkpoint digests of the session (JSON, see `Host::checkpoint_json`) into the output buffer and returns
+/// its length (0 without a session). Used by the dive benchmark to compare native and WebAssembly runs.
+#[no_mangle]
+pub extern "C" fn ngc_session_checkpoint() -> u32 {
+    with_state(|state| {
+        let text = state.host.as_mut().map(|host| host.checkpoint_json()).unwrap_or_default();
+        text_result(state, text)
+    })
+}
+
 /// Brings the LCD visible buffer up to date and returns the frame version (it changes only when the visible
 /// pixels or the geometry change). `ngc_frame_ptr` / `ngc_frame_len` / `ngc_frame_width` / `ngc_frame_height`
 /// then describe the RGBA bytes in linear memory; read them before the next call that runs the session.
@@ -592,6 +609,7 @@ pub extern "C" fn ngc_create(mode: u32, flags: u32, adc_sample: u32) -> i32 {
             boot_mode: if flags & 2 != 0 { BootMode::Cold } else { BootMode::HandsetWake },
             simultaneous_start: flags & 1 != 0,
             idle_fast_forward: flags & 4 == 0,
+            routine_accel: routine_accel_from_flags(flags),
             adc_sample,
             ..SystemConfig::default()
         };
@@ -606,10 +624,38 @@ pub extern "C" fn ngc_create(mode: u32, flags: u32, adc_sample: u32) -> i32 {
     })
 }
 
+/// `ngc_create` flags bit 4 turns the exact routine acceleration off, bit 5 selects its shadow-verification mode.
+fn routine_accel_from_flags(flags: u32) -> ngc::system::RoutineAccelMode {
+    if flags & 16 != 0 {
+        ngc::system::RoutineAccelMode::Off
+    } else if flags & 32 != 0 {
+        ngc::system::RoutineAccelMode::Shadow
+    } else {
+        ngc::system::RoutineAccelMode::On
+    }
+}
+
 /// Drops the benchmark system (the firmware copies stay).
 #[no_mangle]
 pub extern "C" fn ngc_destroy() {
     with_state(|state| state.system = None);
+}
+
+/// Switches the exact routine acceleration of both cores: 0 off, 1 on, 2 shadow verification (results are
+/// identical in every mode; only host speed differs).
+#[no_mangle]
+pub extern "C" fn ngc_set_routine_accel(mode: u32) -> i32 {
+    with_state(|state| match state.system.as_mut() {
+        Some(system) => {
+            system.set_routine_accel(match mode {
+                0 => ngc::system::RoutineAccelMode::Off,
+                1 => ngc::system::RoutineAccelMode::On,
+                _ => ngc::system::RoutineAccelMode::Shadow,
+            });
+            0
+        }
+        None => fail(state, "no system"),
+    })
 }
 
 /// Switches the exact idle fast-forward of both cores (results are identical either way; only host speed

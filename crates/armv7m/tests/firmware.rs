@@ -113,6 +113,60 @@ fn fast_forward_identity(fw: &Fw) {
     eprintln!("{}: fast-forward on/off identical after {} instructions; {:?}", fw.name, off.cpu.instructions(), stats);
 }
 
+/// Running IT blocks inside the hot loop must be invisible too: the real firmware stepped in chunks of irregular
+/// length (so that chunk ends fall between the instructions of IT blocks, and branch targets start blocks anywhere)
+/// with `set_fast_it` on and off gives the same registers, ITSTATE, FP state, RAM and instruction count after every chunk.
+fn fast_it_identity(fw: &Fw) {
+    let (mut slow, mut fast) = match (boot(fw), boot(fw)) {
+        (Some(a), Some(b)) => (a, b),
+        _ => {
+            eprintln!("skipping {}: firmware not present", fw.name);
+            return;
+        }
+    };
+    slow.cpu.set_fast_it(false);
+    fast.cpu.set_fast_it(true);
+    let mut state = 0x2545_F491_4F6C_DD1Du64 ^ u64::from(fw.reset_pc);
+    let total = 5_000_000u64;
+    let mut chunks = 0u64;
+    while slow.cpu.instructions() < total {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let n = 1 + match state % 4 {
+            0 => (state >> 8) % 7,
+            1 => (state >> 8) % 100,
+            2 => (state >> 8) % 3_000,
+            _ => (state >> 8) % 40_000,
+        };
+        let a = slow.step_once(n);
+        let b = fast.step_once(n);
+        assert_eq!((a.reason, a.now, a.executed), (b.reason, b.now, b.executed), "{}: run exits diverge after {} instructions", fw.name, slow.cpu.instructions());
+        assert_eq!(fingerprint(&slow), fingerprint(&fast), "{}: state diverges after {} instructions", fw.name, slow.cpu.instructions());
+        assert_eq!(slow.cpu.snapshot(), fast.cpu.snapshot(), "{}: core state", fw.name);
+        assert_eq!(slow.cpu.fp_regs(), fast.cpu.fp_regs(), "{}: FP state", fw.name);
+        chunks += 1;
+        if chunks % 64 == 0 {
+            assert!(slow.bus.sram1 == fast.bus.sram1 && slow.bus.sram2 == fast.bus.sram2, "{}: RAM diverges after {} instructions", fw.name, slow.cpu.instructions());
+        }
+        if a.reason != ExitReason::Deadline && a.reason != ExitReason::StopRequested {
+            break;
+        }
+    }
+    assert!(slow.bus.sram1 == fast.bus.sram1 && slow.bus.sram2 == fast.bus.sram2, "{}: final RAM", fw.name);
+    eprintln!("{}: fast_it on/off identical after {} instructions in {} chunks", fw.name, slow.cpu.instructions(), chunks);
+}
+
+#[test]
+fn handset_fast_it_identity() {
+    fast_it_identity(&HANDSET);
+}
+
+#[test]
+fn main_fast_it_identity() {
+    fast_it_identity(&MAIN);
+}
+
 #[test]
 fn handset_fast_forward_identity() {
     fast_forward_identity(&HANDSET);

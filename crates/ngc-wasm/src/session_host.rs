@@ -43,6 +43,8 @@ impl SessionHost {
             boot_mode: if config.cold { BootMode::Cold } else { BootMode::HandsetWake },
             simultaneous_start: config.simultaneous_start,
             idle_fast_forward: config.idle_fast_forward,
+            routine_accel: config.routine_accel,
+            routine_accel_shadow: config.routine_accel_shadow,
             adc_sample: config.adc_sample,
             start_paused: config.start_paused,
             i2c_idle_high: config.i2c_idle_high,
@@ -71,6 +73,10 @@ impl Host for SessionHost {
 
     fn state_json(&self) -> String {
         self.session.state_json()
+    }
+
+    fn checkpoint_json(&mut self) -> String {
+        ngc::scenario::dive::checkpoint(&mut self.session, "").to_json().to_string()
     }
 
     fn frame(&mut self) -> FrameRef {

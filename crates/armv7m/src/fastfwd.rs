@@ -42,6 +42,10 @@ struct Entry {
     tail: u32,
     fails: u8,
     valid: bool,
+    /// The loop ending at `tail` passed the static classification (`ff_classify`): it is made of pure
+    /// instructions only. The loop head is the target of the branch at `tail`, so the result never changes
+    /// until the code cache is flushed (which resets this table).
+    classified: bool,
 }
 
 pub(crate) struct FastFwd {
@@ -283,22 +287,26 @@ impl Cpu {
         }
         let idx = ((tail >> 1) & 63) as usize;
         if !(self.ff.table[idx].valid && self.ff.table[idx].tail == tail) {
-            self.ff.table[idx] = Entry { tail, fails: 0, valid: true };
+            self.ff.table[idx] = Entry { tail, fails: 0, valid: true, classified: false };
         }
-        match self.ff_classify(bus, head, tail) {
-            None => {
-                self.ff.table[idx].fails = MAX_FAILS;
-                self.ff_reject(tail);
-            }
-            Some(_n) => {
-                // Need room for at least a couple of iterations to be worth verifying.
-                let lim = self.budget_end;
-                if lim.saturating_sub(self.icount) < 4 * MAX_BODY as u64 {
+        // The static classification only reads the (immutable) predecoded loop body: once a loop passed it,
+        // later entries skip it.
+        if !self.ff.table[idx].classified {
+            match self.ff_classify(bus, head, tail) {
+                None => {
+                    self.ff.table[idx].fails = MAX_FAILS;
+                    self.ff_reject(tail);
                     return;
                 }
-                self.ff.verify = Some(Verify { head, tail, snap: self.ff_snapshot(), start_icount: self.icount, tries: 0 });
+                Some(_n) => self.ff.table[idx].classified = true,
             }
         }
+        // Need room for at least a couple of iterations to be worth verifying.
+        let lim = self.budget_end;
+        if lim.saturating_sub(self.icount) < 4 * MAX_BODY as u64 {
+            return;
+        }
+        self.ff.verify = Some(Verify { head, tail, snap: self.ff_snapshot(), start_icount: self.icount, tries: 0 });
     }
 
     fn ff_abort(&mut self, penalise: bool) {
@@ -342,13 +350,13 @@ impl Cpu {
     /// `at_boundary` is whether the core is at a translation-block boundary on entry; the
     /// return value is the same property after the step.
     pub(crate) fn ff_verify_step<B: CpuBus>(&mut self, bus: &mut B, at_boundary: bool) -> bool {
-        let mut v = match self.ff.verify {
-            Some(v) => v,
+        let (head, tail) = match &self.ff.verify {
+            Some(v) => (v.head, v.tail),
             None => return at_boundary,
         };
         let pc = self.r[15];
         let lim = self.budget_end;
-        if pc < v.head || pc > v.tail || self.icount >= lim || self.itstate != 0 && self.icount + 8 >= lim {
+        if pc < head || pc > tail || self.icount >= lim || self.itstate != 0 && self.icount + 8 >= lim {
             self.ff_abort(false);
             return at_boundary;
         }
@@ -359,16 +367,20 @@ impl Cpu {
                 return at_boundary;
             }
         }
-        let ends = self.step_one(bus);
+        // (`step_insn`, with the instruction fetched above instead of fetching it a second time.)
+        let ends = self.step_fetched(bus, pc, op);
         if self.nvic.irq_line || self.exit_pending || self.wfi_exit || self.insn_faulted || self.reset_requested || self.lockup.is_some() || self.halted {
             self.ff_abort(false);
             return ends;
         }
         let npc = self.r[15];
-        if npc == v.head && self.itstate == 0 {
-            let len = self.icount - v.start_icount;
+        if npc == head && self.itstate == 0 {
             let cur = self.ff_snapshot();
-            if cur == v.snap && len > 0 {
+            let (same, len) = match &self.ff.verify {
+                Some(v) => (cur == v.snap, self.icount - v.start_icount),
+                None => return ends,
+            };
+            if same && len > 0 {
                 // Fixed point: skip whole iterations up to the end of the chunk. No event can
                 // happen before it (pure loop, plain memory only), so every translation-block
                 // boundary inside the skipped iterations would be a no-op.
@@ -380,23 +392,51 @@ impl Cpu {
                 }
                 self.ff.stats.loops += 1;
                 self.ff.verify = None;
-                let idx = ((v.tail >> 1) & 63) as usize;
-                if self.ff.table[idx].valid && self.ff.table[idx].tail == v.tail {
+                let idx = ((tail >> 1) & 63) as usize;
+                if self.ff.table[idx].valid && self.ff.table[idx].tail == tail {
                     self.ff.table[idx].fails = 0;
                 }
                 return ends;
             }
-            v.tries += 1;
-            if v.tries >= MAX_TRIES {
-                self.ff_abort(true);
-                return ends;
+            let icount = self.icount;
+            if let Some(v) = self.ff.verify.as_mut() {
+                v.tries += 1;
+                if v.tries >= MAX_TRIES {
+                    self.ff_abort(true);
+                    return ends;
+                }
+                v.snap = cur;
+                v.start_icount = icount;
             }
-            v.snap = cur;
-            v.start_icount = self.icount;
-            self.ff.verify = Some(v);
-        } else if npc < v.head || npc > v.tail {
+        } else if npc < head || npc > tail {
             self.ff_abort(false);
         }
         ends
+    }
+
+    /// Verification steps back to back. Between two steps the outer loop only repeats its own checks, which are all
+    /// no-ops while no exception, stop request, WFI exit, reset request or lockup is pending and the chunk budget is
+    /// not used up (`boundary()` and `event_pending()` then do nothing); this loop makes the same test and returns to
+    /// the outer loop as soon as any of them holds, or when the verification has ended.
+    pub(crate) fn ff_verify_run<B: CpuBus>(&mut self, bus: &mut B, mut at_boundary: bool) -> bool {
+        loop {
+            at_boundary = self.ff_verify_step(bus, at_boundary);
+            if self.ff.verify.is_none() {
+                return at_boundary;
+            }
+            if self.nvic.irq_line
+                || self.exit_pending
+                || self.wfi_exit
+                || self.reset_requested
+                || self.lockup.is_some()
+                || self.icount >= self.budget_end
+            {
+                return at_boundary;
+            }
+            if at_boundary {
+                // The outer loop starts the next translation block here.
+                self.tb_icount = self.icount;
+            }
+        }
     }
 }

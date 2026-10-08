@@ -5,7 +5,7 @@ use crate::common;
 use crate::profile_files;
 use emu_core::{from_millis, from_secs_f64, to_secs_f64, Json};
 use ngc::session::{Session, SessionConfig};
-use ngc::system::{Mode, System, Which};
+use ngc::system::{Mode, RoutineAccelMode, System, Which};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -26,7 +26,7 @@ impl Machine {
 }
 
 pub const USAGE: &str = "ngc-cli run [--main <srec>] [--handset <srec>] [--mode dual|handset] [--seconds S]\n  \
-    [--boot-mode handset-wake|cold] [--simultaneous-start] [--no-idle-ff] [--no-i2c-idle-high] [--release ID]\n  \
+    [--boot-mode handset-wake|cold] [--simultaneous-start] [--no-idle-ff] [--no-routine-accel|--shadow-routine-accel] [--no-i2c-idle-high] [--release ID]\n  \
     [--ppm out.ppm] [--can-trace out.tsv]\n  \
     [--pc-trace N out.u32le [--pc-trace-after S] [--board handset|main]] [--json out.json] [--no-warnings] [--log N] [--inputs SCRIPT]\n  \
     [--dump-sram PREFIX] [--peek ADDR[,ADDR...] [--board handset|main]] [--access-trace N [--board handset|main]]\n  \
@@ -47,6 +47,9 @@ pub const USAGE: &str = "ngc-cli run [--main <srec>] [--handset <srec>] [--mode 
     (you supply them; they are not part of the repository); main and handset must be of the same release.\n  \
     --no-i2c-idle-high leaves the main board's I2C idle inputs PB6/PB7/PB10/PB11 low (by default they are driven high\n  \
     before the first instruction, a functional idle-line fixture; the older Renode recordings predate it).\n  \
+    --no-routine-accel turns off the exact acceleration of the runtime-library routines (memoized soft-float calls, DESIGN.md 16.2;\n  \
+    results are identical either way, only host speed differs); --shadow-routine-accel replays and interprets every memo hit and\n  \
+    compares the two (slow verification mode).\n  \
     --mode handset runs the handset alone (no CAN peer, like the viewer without --dual).\n  \
     --pc-trace records the first N executed instruction addresses of a board (default handset) as little-endian\n  \
     u32 words; that board runs without idle fast-forward until N instructions were traced. With --pc-trace-after S the\n  \
@@ -83,9 +86,10 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<(), RunError> {
     let parsed = args::parse(
         argv,
         &["main", "handset", "mode", "seconds", "boot-mode", "ppm", "can-trace", "pc-trace", "board", "json", "pc-trace-out", "log", "inputs", "dump-sram", "peek", "access-trace", "data-dir", "release", "pc-trace-after"],
-        &["simultaneous-start", "no-idle-ff", "no-warnings", "no-i2c-idle-high"],
+        &["simultaneous-start", "no-idle-ff", "no-warnings", "no-i2c-idle-high", "no-routine-accel", "shadow-routine-accel"],
     )
     .map_err(RunError::Usage)?;
+    let routine_accel = common::routine_accel_mode(&parsed).map_err(RunError::Usage)?;
     let release = common::parse_release(parsed.value("release")).map_err(RunError::Usage)?;
     let i2c_idle_high = !parsed.flag("no-i2c-idle-high");
     let log_lines = common::parse_u64("log", parsed.value("log")).map_err(RunError::Usage)?.unwrap_or(0) as usize;
@@ -109,7 +113,7 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<(), RunError> {
     let data_dir = parsed.value("data-dir").map(PathBuf::from);
     let setup_started = Instant::now();
     let mut machine = match &data_dir {
-        None => Machine::Bare(Box::new(common::build_system(mode, boot_mode, parsed.flag("simultaneous-start"), !parsed.flag("no-idle-ff"), i2c_idle_high, main.as_ref(), &handset)?)),
+        None => Machine::Bare(Box::new(common::build_system(mode, boot_mode, parsed.flag("simultaneous-start"), !parsed.flag("no-idle-ff"), routine_accel, i2c_idle_high, main.as_ref(), &handset)?)),
         Some(dir) => {
             let profile = profile_files::read_profile(dir)?;
             let config = SessionConfig {
@@ -117,6 +121,8 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<(), RunError> {
                 boot_mode,
                 simultaneous_start: parsed.flag("simultaneous-start"),
                 idle_fast_forward: !parsed.flag("no-idle-ff"),
+                routine_accel: routine_accel != RoutineAccelMode::Off,
+                routine_accel_shadow: routine_accel == RoutineAccelMode::Shadow,
                 i2c_idle_high,
                 ..SessionConfig::default()
             };
@@ -271,11 +277,40 @@ fn report(system: &System, out: &mut dyn Write, wall: f64, setup: f64, traced: O
     let factor = if wall > 0.0 { virtual_seconds / wall } else { f64::INFINITY };
     let _ = writeln!(
         out,
-        "mode {} boot {} idle-ff {}",
+        "mode {} boot {} idle-ff {} routine-accel {}",
         if system.main.is_some() { "dual" } else { "handset" },
         system.boot_mode().name(),
-        if system.config().idle_fast_forward { "on" } else { "off" }
+        if system.config().idle_fast_forward { "on" } else { "off" },
+        match system.routine_accel_mode() {
+            RoutineAccelMode::Off => "off",
+            RoutineAccelMode::On => "on",
+            RoutineAccelMode::Shadow => "shadow",
+        }
     );
+    for which in [Which::Main, Which::Handset] {
+        if let Some(stats) = system.routine_accel_stats(which) {
+            if stats.hits() + stats.shadow_checks > 0 {
+                let _ = writeln!(
+                    out,
+                    "{:<7} routine acceleration: {} calls replaced ({} instructions){}",
+                    which.name(),
+                    stats.hits() + stats.shadow_checks,
+                    stats.instructions_replaced(),
+                    if stats.shadow_checks > 0 { format!(", {} shadow checks, {} mismatches", stats.shadow_checks, stats.shadow_mismatches) } else { String::new() }
+                );
+                for r in stats.routines.iter().filter(|r| r.hits + r.misses + r.shadow_checks > 0) {
+                    let _ = writeln!(
+                        out,
+                        "    {:<10} {:#010x}: {} hits ({} instructions), {} misses, {} memo entries, {} unsafe paths, {} over the chunk budget, {} declined",
+                        r.name, r.entry, r.hits, r.instructions_replaced, r.misses, r.memo_entries, r.unsafe_paths, r.budget_skips, r.declined
+                    );
+                }
+                if !stats.unsafe_reasons.is_empty() {
+                    let _ = writeln!(out, "    unsafe paths: {}", stats.unsafe_reasons.iter().map(|(why, n)| format!("{why} x{n}")).collect::<Vec<_>>().join("; "));
+                }
+            }
+        }
+    }
     let _ = writeln!(out, "virtual time {:.4} s ({} ns), wall {:.3} s (setup {:.3} s), realtime factor {:.2}x", virtual_seconds, system.time(), wall, setup, factor);
     for which in [Which::Main, Which::Handset] {
         let Some(counters) = system.counters(which) else { continue };

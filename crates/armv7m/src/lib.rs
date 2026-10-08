@@ -24,6 +24,7 @@ pub use armv7m_vfp as vfp;
 
 use emu_core::Time;
 
+pub mod accel;
 pub mod alu;
 pub mod decode;
 pub mod disasm;
@@ -39,6 +40,7 @@ mod scs;
 mod timers;
 mod trace;
 
+pub use accel::{RoutineAccelMode, RoutineAccelStats, RoutineStats};
 pub use cpu::{Cpu, FastForwardStats, RegSnapshot};
 pub use trace::TraceEntry;
 

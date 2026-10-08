@@ -21,6 +21,7 @@
 
 use emu_core::clock::{ClockEntry, Direction, LocalClock, WorkMode};
 use emu_core::Time;
+use std::cell::Cell;
 
 const SYSTICK_MAX: u32 = 0x00FF_FFFF;
 
@@ -50,16 +51,35 @@ pub struct SysTick {
     pub countflag: bool,
     reload: u32,
     hz: u64,
+    /// `clock.next_limit()` as last computed; every change of the clock entry or of its update time clears it
+    /// (all of them go through `clock_mut`). The deadline is asked for several times per chunk.
+    deadline_memo: Cell<Option<Option<Time>>>,
 }
 
 impl SysTick {
     pub fn new(hz: u64) -> Self {
-        SysTick { clock: LocalClock::new(systick_entry(hz), 0), enabled: false, tickint: false, countflag: false, reload: 0, hz }
+        SysTick {
+            clock: LocalClock::new(systick_entry(hz), 0),
+            enabled: false,
+            tickint: false,
+            countflag: false,
+            reload: 0,
+            hz,
+            deadline_memo: Cell::new(None),
+        }
+    }
+
+    /// The clock for a change: forgets the memoized deadline.
+    #[inline]
+    fn clock_mut(&mut self) -> &mut LocalClock {
+        self.deadline_memo.set(None);
+        &mut self.clock
     }
 
     /// Core reset: a fresh stopped entry at clock time `at`.
     pub fn reset(&mut self, at: Time) {
         self.clock = LocalClock::new(systick_entry(self.hz), at);
+        self.deadline_memo.set(None);
         self.enabled = false;
         self.tickint = false;
         self.countflag = false;
@@ -88,7 +108,12 @@ impl SysTick {
 
     /// Absolute time of the next expiry (`ceil` tick), if the counter is running.
     pub fn deadline(&self) -> Option<Time> {
-        self.clock.next_limit()
+        if let Some(memo) = self.deadline_memo.get() {
+            return memo;
+        }
+        let deadline = self.clock.next_limit();
+        self.deadline_memo.set(Some(deadline));
+        deadline
     }
 
     /// The `LimitReached` handler of the NVIC SysTick class. Returns whether the exception is pended.
@@ -98,10 +123,10 @@ impl SysTick {
         if self.reload == 0 {
             // "If the timer is running and the reload value is 0, this has the effect of
             // disabling the counter on the expiration."
-            self.clock.exchange(at, |e| e.with_enabled(false));
+            self.clock_mut().exchange(at, |e| e.with_enabled(false));
         } else {
             let reload = self.reload as u64;
-            self.clock.exchange(at, |e| e.with_value(reload));
+            self.clock_mut().exchange(at, |e| e.with_value(reload));
         }
         pend
     }
@@ -111,18 +136,18 @@ impl SysTick {
     /// (TICKINT set at the time of the expiry). COUNTFLAG is set by every expiry.
     pub fn advance_to(&mut self, t: Time) -> bool {
         let mut pend = false;
-        while let Some(limit) = self.clock.next_limit() {
+        while let Some(limit) = self.deadline() {
             if limit > t {
                 break;
             }
-            let advance = self.clock.advance_to(limit.max(self.clock.last_update()));
-            if !advance.reached {
+            let from = limit.max(self.clock.last_update());
+            if !self.clock_mut().advance_to_reached(from) {
                 break;
             }
             pend |= self.limit_reached(limit);
         }
         if t > self.clock.last_update() {
-            self.clock.advance_to(t);
+            self.clock_mut().advance_to_reached(t);
         }
         pend
     }
@@ -130,7 +155,7 @@ impl SysTick {
     /// `LimitTimer` entry change at the current clock time, followed by Renode's zero-time update.
     fn exchange(&mut self, change: impl FnOnce(ClockEntry) -> ClockEntry) -> bool {
         let at = self.clock.last_update();
-        let reached = self.clock.exchange(at, change);
+        let reached = self.clock_mut().exchange(at, change);
         reached && self.limit_reached(at)
     }
 
@@ -215,7 +240,7 @@ impl Dwt {
 
     pub fn advance_to(&mut self, t: Time) {
         if t > self.clock.last_update() {
-            self.clock.advance_to(t);
+            self.clock.advance_to_reached(t);
         }
     }
 

@@ -46,8 +46,10 @@ impl Cpu {
 
     /// DWT CYCCNT at `now` without disturbing the counter.
     fn cyccnt_at(&self, now: Time) -> u32 {
+        // The counter is advanced lazily (see `Cpu::advance_clock`); it has always been at least as far as the
+        // machine clock, so an earlier `now` shows the value at the clock time.
         let mut d = self.dwt.clone();
-        d.advance_to(now);
+        d.advance_to(now.max(self.clock_time));
         d.cyccnt()
     }
 
@@ -242,10 +244,13 @@ impl Cpu {
             0xE000_E000..=0xE000_EFFF => self.scs_write(a - SCS, v),
             0xE000_1000..=0xE000_1FFF => match a - DWT {
                 0x000 => {
+                    // The counter is advanced lazily (it never raises an event): catch up to the machine clock first.
+                    self.dwt.advance_to(self.clock_time);
                     self.dwt.set_enabled(v & 1 != 0);
                     self.limit_timer_touched();
                 }
                 0x004 => {
+                    self.dwt.advance_to(self.clock_time);
                     self.dwt.set_cyccnt(v);
                     self.limit_timer_touched();
                 }

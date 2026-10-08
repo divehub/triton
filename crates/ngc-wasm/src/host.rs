@@ -74,6 +74,11 @@ pub struct HostConfig {
     pub cold: bool,
     pub simultaneous_start: bool,
     pub idle_fast_forward: bool,
+    /// Exact routine acceleration (`routineAccel`, default on; `--no-routine-accel` of the CLI).
+    pub routine_accel: bool,
+    /// Verification mode of the routine acceleration (`routineAccelShadow`, default off): every memo hit is replayed and
+    /// interpreted and compared. Slow; for tests.
+    pub routine_accel_shadow: bool,
     pub adc_sample: u32,
     pub start_paused: bool,
     /// The main board's I2C idle-high fixture (`i2cIdleHigh`, default on; `--no-i2c-idle-high` of the CLI).
@@ -89,6 +94,8 @@ impl Default for HostConfig {
             cold: false,
             simultaneous_start: false,
             idle_fast_forward: true,
+            routine_accel: true,
+            routine_accel_shadow: false,
             adc_sample: 400,
             start_paused: false,
             i2c_idle_high: true,
@@ -121,6 +128,8 @@ impl HostConfig {
                 },
                 "simultaneousStart" => config.simultaneous_start = flag("simultaneousStart")?,
                 "idleFastForward" => config.idle_fast_forward = flag("idleFastForward")?,
+                "routineAccel" => config.routine_accel = flag("routineAccel")?,
+                "routineAccelShadow" => config.routine_accel_shadow = flag("routineAccelShadow")?,
                 "startPaused" => config.start_paused = flag("startPaused")?,
                 "i2cIdleHigh" => config.i2c_idle_high = flag("i2cIdleHigh")?,
                 "historyNonce" => {
@@ -153,6 +162,10 @@ pub trait Host {
     fn action(&mut self, request_json: &str) -> Result<String, String>;
     /// The runner's state snapshot as JSON text.
     fn state_json(&self) -> String;
+    /// Digests of the whole machine state (JSON: `fingerprint`, `exactMain`, `exactHandset`, `instructionsMain`,
+    /// `instructionsHandset`, `lcdSha256`, `virtualNs`): the checkpoint the dive benchmark compares between runs, native
+    /// and WebAssembly (`ngc::scenario::dive::checkpoint`).
+    fn checkpoint_json(&mut self) -> String;
     /// The LCD frame (brings the visible buffer up to date first).
     fn frame(&mut self) -> FrameRef;
     /// Storage files that changed since the last call (empty when nothing is dirty).

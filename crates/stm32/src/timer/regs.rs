@@ -27,7 +27,7 @@ use super::logic::sms;
 use super::model::{Model, MAIN};
 use emu_core::{Direction, LogLevel, Time, WorkMode};
 use std::borrow::Cow;
-use std::fmt::Write as _;
+use std::fmt;
 
 /// Register offsets.
 pub mod reg {
@@ -120,6 +120,14 @@ static EGR_TAGS: &[Tag] = &[
     tag("Trigger generation (TG)", 6, 1),
     tag("RESERVED", 7, 25),
 ];
+/// Names of the unimplemented bits OCxFE (bit 2), OCxPE (bit 3) and OCxCE (bit 7) of the output-compare half of
+/// channel `x` (index `x - 1`), in that order.
+static CCMR_TAG_NAMES: [[&str; 3]; 4] = [
+    ["Output compare 1 fast enable (OC1FE)", "Output compare 1 preload enable (OC1PE)", "Output compare 1 clear enable (OC1CE)"],
+    ["Output compare 2 fast enable (OC2FE)", "Output compare 2 preload enable (OC2PE)", "Output compare 2 clear enable (OC2CE)"],
+    ["Output compare 3 fast enable (OC3FE)", "Output compare 3 preload enable (OC3PE)", "Output compare 3 clear enable (OC3CE)"],
+    ["Output compare 4 fast enable (OC4FE)", "Output compare 4 preload enable (OC4PE)", "Output compare 4 clear enable (OC4CE)"],
+];
 static CCER_TAGS: &[Tag] = &[
     tag("Capture/Compare 1 complementary output enable (CC1NE)", 2, 1),
     tag("Capture/Compare 2 complementary output enable (CC2NE)", 6, 1),
@@ -141,30 +149,37 @@ static BDTR_TAGS: &[Tag] = &[
     tag("RESERVED", 16, 16),
 ];
 
-/// `BitHelper.GetSetBitsPretty`: `"0, 3-5, 7"`.
-fn set_bits_pretty(mask: u32) -> String {
-    let mut out = String::new();
-    let mut bit = 0;
-    while bit < 32 {
-        if mask & (1 << bit) == 0 {
+/// `BitHelper.GetSetBitsPretty`: `"0, 3-5, 7"`. A `Display` value so that nothing is built unless the message is
+/// really logged.
+struct BitsPretty(u32);
+
+impl fmt::Display for BitsPretty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mask = self.0;
+        let mut first = true;
+        let mut bit = 0;
+        while bit < 32 {
+            if mask & (1 << bit) == 0 {
+                bit += 1;
+                continue;
+            }
+            let start = bit;
+            while bit + 1 < 32 && mask & (1 << (bit + 1)) != 0 {
+                bit += 1;
+            }
+            if !first {
+                f.write_str(", ")?;
+            }
+            first = false;
+            if start == bit {
+                write!(f, "{start}")?;
+            } else {
+                write!(f, "{start}-{bit}")?;
+            }
             bit += 1;
-            continue;
         }
-        let start = bit;
-        while bit + 1 < 32 && mask & (1 << (bit + 1)) != 0 {
-            bit += 1;
-        }
-        if !out.is_empty() {
-            out.push_str(", ");
-        }
-        if start == bit {
-            let _ = write!(out, "{start}");
-        } else {
-            let _ = write!(out, "{start}-{bit}");
-        }
-        bit += 1;
+        Ok(())
     }
-    out
 }
 
 fn field_mask(pos: u32, width: u32) -> u32 {
@@ -177,32 +192,57 @@ fn field_mask(pos: u32, width: u32) -> u32 {
     }
 }
 
+/// The tags of one class (silent or not) that overlap the unhandled bits, as `"name (0xV), name (0xV)"`.
+/// A `Display` value: evaluated only when the message is really logged.
+struct TagNames<'a> {
+    tags: &'a [Tag],
+    silent: bool,
+    value: u32,
+    unhandled: u32,
+}
+
+impl TagNames<'_> {
+    fn hit(&self, t: &Tag) -> bool {
+        t.silent == self.silent && field_mask(t.pos, t.width) & self.unhandled != 0
+    }
+}
+
+impl fmt::Display for TagNames<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for t in self.tags.iter().filter(|t| self.hit(t)) {
+            if !first {
+                f.write_str(", ")?;
+            }
+            first = false;
+            write!(f, "{} (0x{:X})", t.name, (self.value & field_mask(t.pos, t.width)) >> t.pos)?;
+        }
+        Ok(())
+    }
+}
+
 /// `PeripheralRegister.LogUnhandledWrites`: written bits that belong to no field and overlap a tag are
-/// reported (non-silent tags as a warning, silent ones at Noisy level).
+/// reported (non-silent tags as a warning, silent ones at Noisy level). Register writes with unhandled bits
+/// are common (`TIMx_SR` is written with all-ones-but-UIF every tick), so nothing is formatted or allocated
+/// here except for the first report of a (class, bits, offset) combination.
 fn warn_tags(io: &mut dyn Io, offset: u32, value: u32, defined: u32, tags: &[Tag]) {
     let unhandled = value & !defined;
     if unhandled == 0 {
         return;
     }
     for silent in [false, true] {
-        let level = if silent { LogLevel::Noisy } else { LogLevel::Warning };
-        let mut names = String::new();
-        for t in tags.iter().filter(|t| t.silent == silent && field_mask(t.pos, t.width) & unhandled != 0) {
-            if !names.is_empty() {
-                names.push_str(", ");
-            }
-            let _ = write!(names, "{} (0x{:X})", t.name, (value & field_mask(t.pos, t.width)) >> t.pos);
-        }
-        if names.is_empty() {
+        let names = TagNames { tags, silent, value, unhandled };
+        if !tags.iter().any(|t| names.hit(t)) {
             continue;
         }
+        let level = if silent { LogLevel::Noisy } else { LogLevel::Warning };
         let key = (u64::from(silent) << 62) | (u64::from(unhandled) << 16) | u64::from(offset & 0xFFFF);
         io.log_once(
             level,
             key,
             format_args!(
                 "Unhandled write to offset 0x{offset:X}. Unhandled bits: [{}] when writing value 0x{value:X}. Tags: {names}.",
-                set_bits_pretty(unhandled)
+                BitsPretty(unhandled)
             ),
         );
     }
@@ -283,24 +323,24 @@ impl Model {
             };
         }
         if value & !defined != 0 {
-            let mut tags: Vec<Tag> = Vec::new();
+            // At most two output halves of three tags each, plus the reserved upper half: a stack array of
+            // static names, no allocation.
+            let mut tags = [const { tag("", 0, 0) }; 7];
+            let mut count = 0;
             for half in 0..2usize {
                 if Self::half_is_output(variant, half) {
-                    let n = 2 * pair + half + 1;
+                    let channel = 2 * pair + half;
                     let base_bit = (half * 8) as u32;
-                    for (shift, what, short) in [(2, "fast", "FE"), (3, "preload", "PE"), (7, "clear", "CE")] {
-                        tags.push(Tag {
-                            name: Cow::Owned(format!("Output compare {n} {what} enable (OC{n}{short})")),
-                            pos: base_bit + shift,
-                            width: 1,
-                            silent: false,
-                        });
+                    for (k, shift) in [2u32, 3, 7].into_iter().enumerate() {
+                        tags[count] = tag(CCMR_TAG_NAMES[channel][k], base_bit + shift, 1);
+                        count += 1;
                     }
                 }
             }
-            tags.push(tag("RESERVED", 16, 16));
+            tags[count] = tag("RESERVED", 16, 16);
+            count += 1;
             let offset = if pair == 0 { reg::CCMR1 } else { reg::CCMR2 };
-            warn_tags(io, offset, value, defined, &tags);
+            warn_tags(io, offset, value, defined, &tags[..count]);
         }
     }
 

@@ -36,6 +36,29 @@ fn gcd(mut a: u128, mut b: u128) -> u128 {
     a
 }
 
+/// `a.checked_mul(b)`. WebAssembly has no 64-bit multiplication with an overflow flag, so the compiler turns the
+/// checked multiplication into a 128-bit library call; operands below 2^32 (nearly always) cannot overflow and
+/// skip it.
+#[inline(always)]
+fn mul(a: u64, b: u64) -> Option<u64> {
+    if (a | b) >> 32 == 0 {
+        Some(a * b)
+    } else {
+        a.checked_mul(b)
+    }
+}
+
+/// [`gcd`] on `u64` (the same Euclid iteration; a hardware division instead of a library call).
+#[inline]
+fn gcd64(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let t = a % b;
+        a = b;
+        b = t;
+    }
+    a
+}
+
 /// Non-negative exact fraction `num/den` (`den >= 1`), always reduced; zero is `0/1` like Renode's `Fraction.Zero`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Frac {
@@ -53,6 +76,16 @@ impl Frac {
         let g = gcd(num, den);
         let clamp = |v: u128| u64::try_from(v).unwrap_or(u64::MAX);
         Frac { num: clamp(num / g), den: clamp(den / g) }
+    }
+
+    /// [`Frac::reduced`] for operands that already fit `u64` (then nothing is clamped).
+    #[inline]
+    fn reduced64(num: u64, den: u64) -> Frac {
+        if num == 0 || den == 0 {
+            return Frac::ZERO;
+        }
+        let g = gcd64(num, den);
+        Frac { num: num / g, den: den / g }
     }
 }
 
@@ -207,7 +240,43 @@ impl ClockEntry {
     }
 
     /// `elapsed_ns * Ratio + residuum` split into whole entry ticks and the remaining fraction.
+    ///
+    /// Exact `u64` arithmetic when every intermediate value fits (always the case for the clocks in use: an
+    /// 80 MHz domain has the ratio 2/25 and residuum denominators dividing 25), otherwise the 128-bit
+    /// reference [`ClockEntry::entry_ticks_wide`]; `tests::u64_paths_equal_the_u128_reference` compares both.
+    #[inline]
     fn entry_ticks(&self, ns: u64) -> (u128, Frac) {
+        match self.entry_ticks_u64(ns) {
+            Some((integer, fraction)) => (u128::from(integer), fraction),
+            None => self.entry_ticks_wide(ns),
+        }
+    }
+
+    /// `None` as soon as a product or sum does not fit `u64`. With `den = lcm(rd, xd)`, `den / rd = xd / g` and
+    /// `den / xd = rd / g` for `g = gcd(rd, xd)`; the values are the ones [`ClockEntry::entry_ticks_wide`] computes.
+    #[inline]
+    fn entry_ticks_u64(&self, ns: u64) -> Option<(u64, Frac)> {
+        let (rn, rd) = (self.ratio.num, self.ratio.den);
+        let (xn, xd) = (self.residuum.num, self.residuum.den);
+        // (den, den / rd, den / xd)
+        let (den, k_r, k_x) = if xd == rd {
+            (rd, 1, 1)
+        } else if xd == 1 {
+            (rd, 1, rd)
+        } else {
+            let g = gcd64(rd, xd);
+            let (k_r, k_x) = (xd / g, rd / g);
+            (mul(k_x, xd)?, k_r, k_x)
+        };
+        let scaled = if k_r == 1 { mul(ns, rn)? } else { mul(mul(ns, rn)?, k_r)? };
+        let num = scaled.checked_add(if xn == 0 { 0 } else { mul(xn, k_x)? })?;
+        let integer = num / den;
+        Some((integer, Frac::reduced64(num - integer * den, den)))
+    }
+
+    /// The 128-bit reference of [`ClockEntry::entry_ticks`] (saturating products): the fallback when a `u64`
+    /// intermediate would overflow, and the oracle of the equivalence test.
+    fn entry_ticks_wide(&self, ns: u64) -> (u128, Frac) {
         let (rn, rd) = (u128::from(self.ratio.num), u128::from(self.ratio.den));
         let (xn, xd) = (u128::from(self.residuum.num), u128::from(self.residuum.den));
         let den = rd / gcd(rd, xd) * xd;
@@ -222,7 +291,51 @@ impl ClockEntry {
     /// This is the `emulatorTicksToLimit` of Renode's update handlers; `0` when the entry is already at
     /// its limit (the next update reaches it).
     pub fn ns_to_limit(&self) -> u64 {
-        if !self.enabled || self.ratio.num == 0 {
+        if !self.enabled {
+            return u64::MAX;
+        }
+        self.ns_to_limit_ignoring_enabled()
+    }
+
+    /// [`ClockEntry::ns_to_limit`] without looking at `enabled`: Renode's update handlers compute the time to
+    /// the limit *after* a one-shot entry has disabled itself on reaching it. `u64::MAX` for a zero ratio.
+    ///
+    /// Exact `u64` arithmetic when no product overflows, else the 128-bit reference.
+    #[inline]
+    pub fn ns_to_limit_ignoring_enabled(&self) -> u64 {
+        if self.ratio.num == 0 {
+            return u64::MAX;
+        }
+        let ticks = match self.direction {
+            Direction::Descending => self.value,
+            Direction::Ascending => self.period.saturating_sub(self.value),
+        };
+        let (rn, rd) = (self.ratio.num, self.ratio.den);
+        let (xn, xd) = (self.residuum.num, self.residuum.den);
+        // (ticks - residuum) / ratio = ((ticks * xd - xn) * rd) / (xd * rn)
+        if let (Some(scaled), Some(den)) = (mul(ticks, xd), mul(xd, rn)) {
+            if let Some(num) = mul(scaled.saturating_sub(xn), rd) {
+                let whole = num / den;
+                // `den >= 1`; a remainder means `den >= 2`, so `whole + 1` cannot wrap. `u64::MAX` is "never".
+                return if num - whole * den != 0 { whole + 1 } else { whole };
+            }
+        }
+        // A limit so far away that the result is `u64::MAX` ("never"): the DWT cycle counter (period `u64::MAX`) is the
+        // case in use. With `xn <= xd` the numerator is at least `(ticks - 1) * xd * rd` (not saturated when the three
+        // factors have at most 127 bits between them), so the result is at least `floor((ticks - 1) / rn) * rd`; once
+        // that reaches `u64::MAX` the 128-bit computation would clamp to it.
+        if xn <= xd && ticks >= 1 && 192 - ticks.leading_zeros() - xd.leading_zeros() - rd.leading_zeros() <= 127 {
+            let whole_steps = (ticks - 1) / rn;
+            if whole_steps != 0 && whole_steps > (u64::MAX - 1) / rd {
+                return u64::MAX;
+            }
+        }
+        self.ns_to_limit_wide()
+    }
+
+    /// The 128-bit reference of [`ClockEntry::ns_to_limit_ignoring_enabled`].
+    fn ns_to_limit_wide(&self) -> u64 {
+        if self.ratio.num == 0 {
             return u64::MAX;
         }
         let ticks = match self.direction {
@@ -249,8 +362,15 @@ impl ClockEntry {
     /// restarts at 0 (ascending) / `Period` (descending) with a zero residuum, and a one-shot entry
     /// disables itself.
     pub fn advance(&mut self, ns: u64) -> Advance {
+        let reached = self.advance_reached(ns);
+        Advance { reached, to_limit: self.ns_to_limit() }
+    }
+
+    /// [`ClockEntry::advance`] without the time to the next limit (which the hot callers never look at: they ask
+    /// [`ClockEntry::ns_to_limit`] when they need it). Returns whether the limit was reached.
+    pub fn advance_reached(&mut self, ns: u64) -> bool {
         if !self.enabled {
-            return Advance { reached: false, to_limit: u64::MAX };
+            return false;
         }
         let (integer, fraction) = self.entry_ticks(ns);
         let reached = match self.direction {
@@ -279,7 +399,7 @@ impl ClockEntry {
         if reached && self.mode == WorkMode::OneShot {
             self.enabled = false;
         }
-        Advance { reached, to_limit: self.ns_to_limit() }
+        reached
     }
 }
 
@@ -315,7 +435,7 @@ impl LocalClock {
     pub fn entry_at(&self, now: Time) -> ClockEntry {
         let mut entry = self.entry;
         if now > self.last_update {
-            entry.advance(now - self.last_update);
+            entry.advance_reached(now - self.last_update);
         }
         entry
     }
@@ -340,9 +460,16 @@ impl LocalClock {
     /// (zero-period entries, state set to the limit). Prefer [`LocalClock::run_until`] when limits may lie
     /// in between.
     pub fn advance_to(&mut self, now: Time) -> Advance {
-        let advance = self.entry.advance(now.saturating_sub(self.last_update));
+        let reached = self.advance_to_reached(now);
+        Advance { reached, to_limit: self.entry.ns_to_limit() }
+    }
+
+    /// [`LocalClock::advance_to`] returning only whether the limit was reached (no time-to-limit computation).
+    #[inline]
+    pub fn advance_to_reached(&mut self, now: Time) -> bool {
+        let reached = self.entry.advance_reached(now.saturating_sub(self.last_update));
         self.last_update = self.last_update.max(now);
-        advance
+        reached
     }
 
     /// Renode `BaseClockSource.Advance`: processes every limit up to and including `now` in order, each
@@ -354,15 +481,14 @@ impl LocalClock {
             if limit > now || count >= MAX_LIMITS_PER_RUN {
                 break;
             }
-            let advance = self.advance_to(limit.max(self.last_update));
-            if !advance.reached {
+            if !self.advance_to_reached(limit.max(self.last_update)) {
                 break; // cannot happen with ceil limits; never spin
             }
             count += 1;
             on_limit(limit);
         }
         if now > self.last_update {
-            self.advance_to(now);
+            self.advance_to_reached(now);
         }
         count
     }
@@ -372,9 +498,9 @@ impl LocalClock {
     /// period, a zero-delay one-shot) reaches it immediately. Returns `true` if the limit was reached by
     /// this call, in which case the entry state has already been reset and the handler is due now.
     pub fn exchange(&mut self, now: Time, change: impl FnOnce(ClockEntry) -> ClockEntry) -> bool {
-        let mut reached = self.advance_to(now).reached;
+        let mut reached = self.advance_to_reached(now);
         self.entry = change(self.entry);
-        reached |= self.entry.advance(0).reached;
+        reached |= self.entry.advance_reached(0);
         reached
     }
 
@@ -385,7 +511,7 @@ impl LocalClock {
 
     /// Zero-time update of a freshly added entry (the second `UpdateLimits()` of `AddClockEntry`).
     pub(crate) fn zero_update(&mut self) -> bool {
-        self.entry.advance(0).reached
+        self.entry.advance_reached(0)
     }
 }
 
@@ -1109,6 +1235,210 @@ mod tests {
             checked += oracle.len();
         }
         assert!(checked > 1_000, "the random cases exercised many limits ({checked})");
+    }
+
+    /// The update handler of [`ClockEntry::advance`] on top of the 128-bit reference helpers only.
+    fn advance_reference(e: &mut ClockEntry, ns: u64) -> Advance {
+        let to_limit = |e: &ClockEntry| if e.enabled { e.ns_to_limit_wide() } else { u64::MAX };
+        if !e.enabled {
+            return Advance { reached: false, to_limit: u64::MAX };
+        }
+        let (integer, fraction) = e.entry_ticks_wide(ns);
+        let reached = match e.direction {
+            Direction::Descending => {
+                let reached = integer >= u128::from(e.value);
+                e.residuum = fraction;
+                if reached {
+                    e.value = e.period;
+                    e.residuum = Frac::ZERO;
+                } else {
+                    e.value -= integer as u64;
+                }
+                reached
+            }
+            Direction::Ascending => {
+                e.value = u128::from(e.value).saturating_add(integer).min(u128::from(u64::MAX)) as u64;
+                e.residuum = fraction;
+                let reached = e.value >= e.period;
+                if reached {
+                    e.value = 0;
+                    e.residuum = Frac::ZERO;
+                }
+                reached
+            }
+        };
+        if reached && e.mode == WorkMode::OneShot {
+            e.enabled = false;
+        }
+        Advance { reached, to_limit: to_limit(e) }
+    }
+
+    /// Proof test of the `u64` fast paths: over millions of random and edge-case states the results (whole
+    /// ticks, remaining fraction, time to the limit, and the complete state after `advance`) equal the 128-bit
+    /// computation. The fast path runs whenever no intermediate overflows `u64`; the cases include operands
+    /// that overflow it, which must take the wide fallback and still agree.
+    #[test]
+    fn u64_paths_equal_the_u128_reference() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        const EDGES: [u64; 22] = [
+            0,
+            1,
+            2,
+            3,
+            5,
+            24,
+            25,
+            26,
+            1000,
+            65_535,
+            65_536,
+            80_000_000,
+            1_000_000_000,
+            0xFFFF_FFFF,
+            0x1_0000_0000,
+            0x1_0000_0001,
+            1 << 62,
+            (1 << 63) - 1,
+            1 << 63,
+            u64::MAX / 3,
+            u64::MAX - 1,
+            u64::MAX,
+        ];
+        fn pick(next: &mut dyn FnMut() -> u64) -> u64 {
+            let kind = next() % 6;
+            match kind {
+                0 => EDGES[(next() % EDGES.len() as u64) as usize],
+                1 => next() % 100,
+                2 => next() % 100_000,
+                3 => next() % (1 << 32),
+                4 => {
+                    let shift = next() % 64;
+                    next() >> shift
+                }
+                _ => next(),
+            }
+        }
+        let (mut fast, mut wide, mut changed) = (0u64, 0u64, 0u64);
+        for case in 0..3_000_000u64 {
+            let mut e = ClockEntry {
+                value: 0,
+                residuum: Frac::ZERO,
+                period: 0,
+                frequency: 0,
+                step: 1,
+                ratio: Frac::ZERO,
+                enabled: next() % 8 != 0,
+                direction: if next() % 2 == 0 { Direction::Ascending } else { Direction::Descending },
+                mode: if next() % 2 == 0 { WorkMode::Periodic } else { WorkMode::OneShot },
+            };
+            // Mostly realistic ratios (a real frequency, reduced by the constructor), sometimes arbitrary fractions.
+            let realistic = next() % 4 != 0;
+            if realistic {
+                let hz = match next() % 6 {
+                    0 => 80_000_000,
+                    1 => 80_000_000 / (1 + next() % 65_536),
+                    2 => 32_768,
+                    3 => 1 + next() % 2_000_000_000,
+                    4 => 1_000_000_000,
+                    _ => next(),
+                };
+                e.frequency = hz;
+                e.ratio = ratio_of(1 + next() % 3 / 2, hz);
+                e.step = 1;
+            } else {
+                let rn = pick(&mut next);
+                let rd = pick(&mut next).max(1);
+                e.ratio = Frac { num: rn, den: rd };
+            }
+            e.period = pick(&mut next);
+            e.value = pick(&mut next);
+            if next() % 3 != 0 {
+                // A residuum, as left by earlier updates (num < den) or an arbitrary fraction.
+                let xd = pick(&mut next).max(1);
+                let xn = if next() % 2 == 0 { next() % xd } else { pick(&mut next) };
+                e.residuum = if xn == 0 { Frac::ZERO } else { Frac { num: xn, den: xd } };
+                if next() % 2 == 0 {
+                    // keep it reduced, as the entry always does
+                    e.residuum = Frac::reduced(u128::from(xn), u128::from(xd));
+                }
+            }
+            let ns = pick(&mut next);
+
+            // The helpers.
+            let wide_ticks = e.entry_ticks_wide(ns);
+            let got = e.entry_ticks(ns);
+            assert_eq!(got, wide_ticks, "case {case}: entry_ticks {e:?} ns {ns}");
+            if e.entry_ticks_u64(ns).is_some() {
+                fast += 1;
+            } else {
+                wide += 1;
+            }
+            assert_eq!(e.ns_to_limit_ignoring_enabled(), e.ns_to_limit_wide(), "case {case}: ns_to_limit {e:?}");
+            assert_eq!(e.ns_to_limit(), if e.enabled { e.ns_to_limit_wide() } else { u64::MAX }, "case {case}: ns_to_limit {e:?}");
+
+            // The whole update handler.
+            let (mut a, mut b) = (e, e);
+            let ra = a.advance(ns);
+            let rb = advance_reference(&mut b, ns);
+            assert_eq!((ra, a), (rb, b), "case {case}: advance {e:?} ns {ns}");
+            changed += u64::from(a != e);
+        }
+        assert!(fast > 1_000_000 && wide > 1_000 && changed > 1_000_000, "coverage: fast {fast}, wide {wide}, changed {changed}");
+    }
+
+    #[test]
+    fn a_counter_that_never_reaches_its_limit_answers_never_without_the_wide_path() {
+        // The DWT cycle counter: period u64::MAX at 80 MHz. Every value, with and without a residuum, must give the
+        // 128-bit answer (u64::MAX once the limit is further away than the clock can express).
+        for hz in [80_000_000u64, 32_768, 1_000_000_000, 3, 2_000_000_000, 120] {
+            for dir in [Direction::Ascending, Direction::Descending] {
+                let mut state = 0x1234_5678_9ABC_DEF1u64 ^ hz;
+                for i in 0..4_000u64 {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    let value = match i % 6 {
+                        0 => 0,
+                        1 => 1,
+                        2 => state >> 32,
+                        3 => state >> (state % 40),
+                        4 => u64::MAX - (state % 1000),
+                        _ => state,
+                    };
+                    let mut e = ClockEntry::new(u64::MAX, hz, true, dir, WorkMode::Periodic).with_value(value);
+                    if i % 3 == 0 {
+                        e.advance(1 + state % 7); // leaves a residuum
+                    }
+                    assert_eq!(e.ns_to_limit(), e.ns_to_limit_wide(), "{hz} Hz {dir:?} value {value}");
+                    assert_eq!(e.ns_to_limit_ignoring_enabled(), e.ns_to_limit_wide());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn u64_paths_cover_the_firmware_clock_ratios_exactly() {
+        // Every ratio the boards use (80 MHz and its prescaled divisions, 32.768 kHz, 1 kHz threads) against a
+        // dense set of elapsed times, with residua produced by the entry itself.
+        for hz in [80_000_000u64, 40_000_000, 80_000_000 / 3, 1_000_000, 32_768, 1_000, 120, 10_000, 1_000_000_000] {
+            for dir in [Direction::Ascending, Direction::Descending] {
+                let mut fast = entry(1 << 31, hz, dir);
+                let mut slow = fast;
+                let mut t = 1u64;
+                for _ in 0..2_000 {
+                    t = t.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    let ns = (t >> 33) % 3_000_000;
+                    let (a, b) = (fast.advance(ns), advance_reference(&mut slow, ns));
+                    assert_eq!((a, fast), (b, slow), "{hz} Hz {dir:?} ns {ns}");
+                }
+            }
+        }
     }
 
     #[test]

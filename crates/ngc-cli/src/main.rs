@@ -4,6 +4,7 @@
 
 mod args;
 mod cmd_bench;
+mod cmd_dive;
 mod cmd_disasm;
 mod cmd_extract;
 mod cmd_info;
@@ -46,6 +47,9 @@ fn dispatch(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         }
         "bench" if wants_help => {
             let _ = writeln!(out, "{}", cmd_bench::USAGE);
+            if rest.iter().any(|a| a == "--dive") {
+                let _ = writeln!(out, "\n{}", cmd_dive::USAGE);
+            }
             0
         }
         "disasm" if wants_help => {

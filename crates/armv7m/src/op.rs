@@ -53,8 +53,6 @@ pub enum Kind {
     /// `rd`, `imm` = SYSm.
     Mrs,
     Clrex,
-    /// `imm` = ITSTATE value (firstcond << 4 | mask).
-    It,
 
     // --- data processing, immediate ---------------------------------------
     MovImm,
@@ -215,6 +213,13 @@ pub enum Kind {
     Strex,
     Strexb,
     Strexh,
+    /// `imm` = ITSTATE value (firstcond << 4 | mask). Does not end its translation block, but the hot loop
+    /// must leave its plain mode after it: it sits directly in front of the block-ending kinds so that one
+    /// comparison (`kind >= It`, [`FIRST_SPECIAL`]) separates the instructions that need a closer look from
+    /// the plain ones. (Moving it renumbered the kinds in between, so the values of `Cpu::exactness_digest`,
+    /// which hashes `kind as u8`, differ from those of builds before the move; they are comparable within one build
+    /// and with a build whose kinds are numbered alike.)
+    It,
 
     // --- translation-block ending kinds (contiguous; see the enum docs) ---------
     // branches
@@ -268,6 +273,12 @@ pub enum Kind {
 
 /// First translation-block ending kind.
 pub const FIRST_TB_END: u8 = Kind::B as u8;
+
+/// First kind the hot loop treats specially after executing it: [`Kind::It`] (the loop switches to IT block
+/// mode) and every translation-block ending kind (the loop looks the next instruction up again).
+pub const FIRST_SPECIAL: u8 = Kind::It as u8;
+
+const _: () = assert!(FIRST_SPECIAL + 1 == FIRST_TB_END, "It must be the last kind before the block-ending ones");
 
 impl Kind {
     /// True when Renode's translator ends the translation block after this instruction

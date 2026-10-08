@@ -40,10 +40,12 @@ pub mod fpscr;
 pub mod ieee;
 pub mod selftest;
 pub mod soft;
+mod usage;
 
 pub use decode::{decode, expand_imm_f32, VfpInsn};
 pub use disasm::disassemble;
 pub use exec::execute;
+pub use usage::{Loc, MemUse, Usage};
 
 /// S0..S31 as raw IEEE-754 bit patterns plus FPSCR.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

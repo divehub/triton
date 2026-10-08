@@ -217,6 +217,7 @@ pub fn build(view: &StateView<'_>) -> Json {
     state.insert("instructions", instruction_counts(system));
     state.insert("idleSkip", idle_skip(system));
     state.insert("idleFastForward", system.config().idle_fast_forward);
+    state.insert("routineAccel", routine_accel(system));
     state.insert("machineResets", machine_resets(system));
     state.insert("realtimeFactor", view.realtime_factor);
     state
@@ -282,6 +283,42 @@ fn idle_skip(system: &System) -> Json {
         }
     }
     skip
+}
+
+/// Exact routine acceleration (`armv7m::accel`): the mode and, per core, how many calls memo entries replaced.
+fn routine_accel(system: &System) -> Json {
+    use armv7m::RoutineAccelMode;
+    let mode = match system.routine_accel_mode() {
+        RoutineAccelMode::Off => "off",
+        RoutineAccelMode::On => "on",
+        RoutineAccelMode::Shadow => "shadow",
+    };
+    let mut out = Json::object().with("mode", mode);
+    for which in [Which::Main, Which::Handset] {
+        if let Some(stats) = system.routine_accel_stats(which) {
+            let routines = Json::from_items(stats.routines.iter().map(|r| {
+                Json::object()
+                    .with("name", r.name)
+                    .with("entry", u64::from(r.entry))
+                    .with("hits", r.hits)
+                    .with("instructionsReplaced", r.instructions_replaced)
+                    .with("recorded", r.recorded)
+                    .with("unsafePaths", r.unsafe_paths)
+                    .with("budgetSkips", r.budget_skips)
+                    .with("memoEntries", r.memo_entries)
+            }));
+            out.insert(
+                which.name(),
+                Json::object()
+                    .with("hits", stats.hits())
+                    .with("instructionsReplaced", stats.instructions_replaced())
+                    .with("shadowChecks", stats.shadow_checks)
+                    .with("shadowMismatches", stats.shadow_mismatches)
+                    .with("routines", routines),
+            );
+        }
+    }
+    out
 }
 
 fn machine_resets(system: &System) -> Json {

@@ -148,8 +148,10 @@ impl Cpu {
             }
             Kind::PageEnd => {
                 // The last instruction of a 1 KiB page: run the wrapped instruction (the wrapper only
-                // carries the TB-end property into the hot loop).
-                let inner = self.page_ops[op.imm as usize];
+                // carries the TB-end property into the hot loop). The wrapper holds the instruction's
+                // flags, adjusted when it is the body of an IT block (`FL_S` cleared for `FL_IT`).
+                let mut inner = self.page_ops[op.imm as usize];
+                inner.flags = op.flags;
                 self.exec_slow(bus, &inner, pc);
             }
             Kind::Vfp | Kind::VfpEnd => self.exec_vfp(bus, op, pc),
@@ -184,7 +186,11 @@ impl Cpu {
             Kind::Clrex => self.exclusive = None,
             Kind::It => {
                 self.itstate = imm!() as u8;
-                self.kick();
+                // With `fast_it` the hot loop runs the block's instructions itself; otherwise it
+                // returns so that the outer loop steps them.
+                if !self.fast_it {
+                    self.kick();
+                }
             }
 
             // ---- branches ----------------------------------------------------------------

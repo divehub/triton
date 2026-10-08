@@ -581,7 +581,7 @@ impl MachineCore {
         for &index in &popped {
             let slot = &mut self.clocks.slots[index as usize];
             slot.event = EventId::NONE;
-            let reached = slot.clock.advance_to(time).reached;
+            let reached = slot.clock.advance_to_reached(time);
             let id = ClockId { index, generation: slot.generation };
             if !reached {
                 continue; // cannot happen with ceil limits; the entry is re-armed below

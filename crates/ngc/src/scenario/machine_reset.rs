@@ -112,7 +112,7 @@ fn compare_record(rec: &mut Recorder, label: &str, ours: &Json, record: &Record)
 
 fn handset_only(env: &ScenarioEnv<'_>) -> Result<Rig, String> {
     let config = SessionConfig { mode: Mode::HandsetOnly, ..SessionConfig::default() };
-    Ok(Rig { session: Session::new_with(env.options, "", config, None, env.handset, Profile::default())? })
+    Ok(Rig { session: Session::new_with(env.options, "", env.configure(config), None, env.handset, Profile::default())? })
 }
 
 fn mark(rig: &mut Rig, which: Which) {

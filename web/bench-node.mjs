@@ -15,6 +15,17 @@
 // --expect compares the state digests with a result of `ngc-cli bench --json` taken with the same options
 // (the engine is deterministic: native and WebAssembly runs must be bit-identical).
 //
+// --dive runs the committed dive benchmark instead (DESIGN.md 16.3, the same plan as `ngc-cli bench --dive`) through the
+// browser session ABI (`ngc_session_*`, 10 virtual-ms slices like the worker): a valid-tissue profile is built from a fresh
+// one through firmware routes only (battery wizard, air calibration through the menu, a 150 s NaN dive that saves a
+// decompression date, a +5 day main RTC checkpoint fixture, restart and recalibration), then one dive per depth. It reports
+// the average speed, the speed of the main board's compute bursts and of the quiet periods, and the state digests of the
+// checkpoints. Dive options: --dive-seconds S (60), --dive-depths 20,30, --no-routine-accel (the exact routine acceleration
+// is on by default), --verify-routine-accel (run it on and off, require identical checkpoints), --no-idle-ff, --frames
+// (also call ngc_session_frame() at 60 Hz of virtual time and ngc_session_state() at 5 Hz, like the page does; their wall
+// time is reported separately and never enters the engine factors), --json out.json, and --expect native-dive.json
+// (a result of `ngc-cli bench --dive --json` with the same options: every checkpoint digest must be identical).
+//
 // --slice runs every interval as repeated calls of that many virtual seconds (like a browser worker that
 // paces the engine); the default is one call per interval. Timing is measured with performance.now() around
 // the engine calls only. The state digests printed are comparable with `ngc-cli bench --json`.
@@ -22,6 +33,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Engine as SessionEngine } from './engine.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '..');
@@ -49,6 +61,12 @@ function parseArgs(argv) {
     slice: 0,
     json: null,
     expect: null,
+    routineAccel: true,
+    dive: false,
+    diveSeconds: 60,
+    diveDepths: [20, 30],
+    verifyRoutineAccel: false,
+    frames: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -68,6 +86,12 @@ function parseArgs(argv) {
       case '--expect': options.expect = path.resolve(value()); break;
       case '--no-idle-ff': options.idleFf = false; break;
       case '--no-menu': options.menu = false; break;
+      case '--no-routine-accel': options.routineAccel = false; break;
+      case '--verify-routine-accel': options.verifyRoutineAccel = true; break;
+      case '--dive': options.dive = true; break;
+      case '--frames': options.frames = true; break;
+      case '--dive-seconds': options.diveSeconds = Number(value()); break;
+      case '--dive-depths': options.diveDepths = value().split(',').map((d) => Number(d.trim())); break;
       case '--help':
       case '-h':
         console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').filter((l) => l.startsWith('//')).map((l) => l.slice(3)).join('\n'));
@@ -109,8 +133,9 @@ class Engine {
     this.check(code, role === 0 ? 'main firmware' : 'handset firmware');
   }
 
-  create({ idleFf }) {
-    this.check(this.x.ngc_create(0, idleFf ? 0 : 4, 400), 'create');
+  create({ idleFf, routineAccel = true }) {
+    // flags: bit 2 idle fast-forward off, bit 4 routine acceleration off
+    this.check(this.x.ngc_create(0, (idleFf ? 0 : 4) | (routineAccel ? 0 : 16), 400), 'create');
   }
 
   run(seconds, slice) {
@@ -189,8 +214,302 @@ function measure(engine, label, chunks, press, slice) {
   return result;
 }
 
+// ---- the dive benchmark (DESIGN.md 16.3; the same plan as crates/ngc/src/scenario/dive.rs) ----------------------------------
+
+const SLICE = 0.01; // virtual seconds per run_for call: the browser worker's slice
+const STEP = 0.25; // virtual seconds per speed step
+const BURST_EXECUTED_MIPS = 40; // main-board executed (not idle-skipped) instructions per virtual second, in millions
+const CHECKPOINT_EVERY = 10;
+const NAN_DIVE_SECONDS = 150;
+const CLOCK_JUMP_DAYS = 5;
+const DEPTH_AT = 34;
+const BUBBLE_AT = 42;
+const DEPTHS = { 20: { name: '20 m', mbar: 3013.3 }, 30: { name: '30 m', mbar: 4014.1 } };
+
+const act = (at, request) => ({ at, request });
+const DOWN = { action: 'down' };
+const UP = { action: 'up' };
+const CONFIRM = { action: 'confirm' };
+const inputsRequest = (mbar) => ({ action: 'inputs', inputs: { pressure1Mbar: mbar, pressure2Mbar: mbar, oxygen1Mv: 71.4, oxygen2Mv: 71.4, oxygen3Mv: 71.4 } });
+
+const BATTERY_WIZARD = [act(6.5, DOWN), act(7.15, DOWN), act(7.8, CONFIRM), act(8.45, CONFIRM), act(9.1, DOWN), act(9.75, DOWN), act(10.4, CONFIRM), act(11.05, CONFIRM)];
+const AIR_CALIBRATION = [act(6.5, UP), act(7.2, CONFIRM), act(7.9, DOWN), act(8.6, CONFIRM), act(9.4, DOWN), act(10.1, DOWN), act(10.8, DOWN), act(11.5, CONFIRM), act(12.3, CONFIRM), act(13.1, CONFIRM), act(22.0, CONFIRM)];
+const NAN_DIVE = [act(8.0, inputsRequest(DEPTHS[30].mbar)), act(30.0, UP), act(33.0, DOWN)];
+const RECALIBRATION = [
+  act(6.5, UP), act(7.5, DOWN), act(8.5, DOWN), act(9.5, CONFIRM), act(11.2, DOWN), act(11.9, CONFIRM), act(12.7, DOWN), act(13.4, DOWN),
+  act(14.1, DOWN), act(14.8, CONFIRM), act(15.6, CONFIRM), act(16.4, CONFIRM), act(27.0, CONFIRM),
+];
+
+function profileOf(parts) {
+  return Object.fromEntries(parts.map((part) => [part.name, part.data]));
+}
+
+function checkpointOf(session, name) {
+  const text = session.text(session.x.ngc_session_checkpoint());
+  const c = JSON.parse(text);
+  return { name, virtualNs: c.virtualNs, fingerprint: c.fingerprint, exactMain: c.exactMain, exactHandset: c.exactHandset, instructionsMain: c.instructionsMain, instructionsHandset: c.instructionsHandset, lcdSha256: c.lcdSha256 };
+}
+
+function mainCounters(session) {
+  const s = session.state();
+  return { instr: s.instructions.main, skipped: s.idleSkip.main.skippedInstructions, replaced: s.routineAccel?.main ?? { hits: 0, instructionsReplaced: 0 } };
+}
+
+/** Runs the session to `until` virtual seconds in slices, applying `timeline` between slices. */
+function play(session, timeline, until, options, hooks = {}) {
+  const untilNs = Math.round(until * 1e9);
+  const slicesPerStep = Math.round(STEP / SLICE);
+  let next = 0;
+  let slices = 0;
+  let wallTotal = 0;
+  let wallStep = 0;
+  let frameWall = 0;
+  let stateWall = 0;
+  let stepStart = mainCounters(session);
+  let checkpointAt = CHECKPOINT_EVERY;
+  let nextFrame = 0;
+  let nextState = 0;
+  const nowNs = () => Math.round(session.time() * 1e9);
+  while (nowNs() < untilNs) {
+    const now = nowNs();
+    while (next < timeline.length && Math.round(timeline[next].at * 1e9) <= now) {
+      session.action(timeline[next].request);
+      next++;
+    }
+    const t0 = performance.now();
+    const running = session.runFor(SLICE);
+    const wall = (performance.now() - t0) / 1000;
+    if (!running) throw new Error(`the system stopped at ${session.time().toFixed(3)} s (standby or error)`);
+    wallTotal += wall;
+    wallStep += wall;
+    slices++;
+    if (options.frames) {
+      const t = session.time();
+      if (t >= nextFrame) {
+        const a = performance.now();
+        session.frame();
+        frameWall += (performance.now() - a) / 1000;
+        nextFrame = t + 1 / 60;
+      }
+      if (t >= nextState) {
+        const a = performance.now();
+        session.stateText();
+        stateWall += (performance.now() - a) / 1000;
+        nextState = t + 0.2;
+      }
+    }
+    if (slices === slicesPerStep) {
+      const counters = mainCounters(session);
+      const executed = Math.max(0, counters.instr - stepStart.instr - (counters.skipped - stepStart.skipped));
+      hooks.step?.({ virtualSeconds: STEP, wallSeconds: wallStep, mainExecuted: executed, burst: executed / STEP >= BURST_EXECUTED_MIPS * 1e6 });
+      stepStart = counters;
+      wallStep = 0;
+      slices = 0;
+    }
+    if (session.time() + 1e-9 >= checkpointAt) {
+      hooks.checkpoint?.(checkpointAt);
+      checkpointAt += CHECKPOINT_EVERY;
+    }
+  }
+  return { wallTotal, frameWall, stateWall };
+}
+
+function addDaysBcd(dateRegister, days) {
+  const day = ((dateRegister >> 4) & 3) * 10 + (dateRegister & 15);
+  const newDay = day + days;
+  if (newDay > 28) throw new Error(`the clock jump of ${days} days from day ${day} would leave the month`);
+  return (dateRegister & ~0x3f) | (Math.floor(newDay / 10) << 4) | (newDay % 10);
+}
+
+function openSession(session, options, routineAccel, profile) {
+  session.createSession({ mode: 'dual', bootMode: 'handset-wake', idleFastForward: options.idleFf, routineAccel }, profile);
+}
+
+function runStage(session, options, routineAccel, name, profile, timeline, seconds) {
+  openSession(session, options, routineAccel, profile);
+  const { wallTotal } = play(session, timeline, seconds, options);
+  const checkpoint = checkpointOf(session, name);
+  const result = { name, virtualSeconds: session.time(), wallSeconds: wallTotal, checkpoint };
+  return { result, profile: profileOf(session.shutdown()) };
+}
+
+function speedOf(steps) {
+  const sum = { steps: steps.length, virtualSeconds: 0, wallSeconds: 0 };
+  for (const s of steps) {
+    sum.virtualSeconds += s.virtualSeconds;
+    sum.wallSeconds += s.wallSeconds;
+  }
+  sum.factor = sum.wallSeconds > 0 ? sum.virtualSeconds / sum.wallSeconds : Infinity;
+  return sum;
+}
+
+function worstBurst(steps) {
+  let worst = Infinity;
+  let run = [];
+  const close = () => {
+    if (run.length >= 3) worst = Math.min(worst, speedOf(run).factor);
+    run = [];
+  };
+  for (const s of steps) (s.burst ? run.push(s) : close());
+  close();
+  return worst;
+}
+
+function runDive(session, options, routineAccel, profile, depth) {
+  openSession(session, options, routineAccel, profile);
+  const timeline = [...RECALIBRATION, act(DEPTH_AT, inputsRequest(depth.mbar)), act(BUBBLE_AT, DOWN)];
+  const steps = [];
+  const checkpoints = [];
+  const label = depth.name.replace(' ', '');
+  const { wallTotal, frameWall, stateWall } = play(session, timeline, BUBBLE_AT + options.diveSeconds, options, {
+    step: (step) => steps.push(step),
+    checkpoint: (at) => checkpoints.push(checkpointOf(session, `dive-${label}-${at.toFixed(0)}s`)),
+  });
+  checkpoints.push(checkpointOf(session, `dive-${label}-end`));
+  const state = session.state();
+  const replaced = state.routineAccel?.main ?? { hits: 0, instructionsReplaced: 0, shadowMismatches: 0 };
+  session.shutdown();
+  const burst = speedOf(steps.filter((s) => s.burst));
+  const quiet = speedOf(steps.filter((s) => !s.burst));
+  const all = speedOf(steps);
+  return {
+    depth: depth.name,
+    pressureMbar: depth.mbar,
+    average: all,
+    burst,
+    quiet,
+    worstBurstFactor: worstBurst(steps),
+    replacedCalls: replaced.hits + (replaced.shadowChecks ?? 0),
+    replacedInstructions: replaced.instructionsReplaced,
+    shadowMismatches: replaced.shadowMismatches ?? 0,
+    engineWallSeconds: wallTotal,
+    frameWallSeconds: frameWall,
+    stateWallSeconds: stateWall,
+    screenMode: state.mainApplication?.screenMode ?? null,
+    checkpoints,
+  };
+}
+
+function runWholeDive(engine, options, routineAccel) {
+  const session = engine;
+  const stages = [];
+  let profile = {};
+  let surface = null;
+  for (const [name, timeline, seconds] of [
+    ['battery-wizard', BATTERY_WIZARD, 12.5],
+    ['air-calibration', AIR_CALIBRATION, 27],
+    ['nan-dive', NAN_DIVE, NAN_DIVE_SECONDS],
+  ]) {
+    const stage = runStage(session, options, routineAccel, name, profile, timeline, seconds);
+    stages.push(stage.result);
+    profile = stage.profile;
+    if (name === 'air-calibration') surface = profile['inputs.json'];
+  }
+  // The explicit clock fixture: the saved main RTC calendar moves forward by days; the saved inputs are the surface defaults.
+  const rtc = JSON.parse(new TextDecoder().decode(profile['rtc-state.json']));
+  rtc.boards['ngc-main'].dateRegister = addDaysBcd(rtc.boards['ngc-main'].dateRegister, CLOCK_JUMP_DAYS);
+  profile['rtc-state.json'] = new TextEncoder().encode(`${JSON.stringify(rtc, null, 2)}\n`);
+  if (surface) profile['inputs.json'] = surface;
+  else delete profile['inputs.json'];
+  const dives = options.diveDepths.map((metres) => {
+    const depth = DEPTHS[metres];
+    if (!depth) throw new Error(`--dive-depths takes 20 and/or 30 (got ${metres})`);
+    return runDive(session, options, routineAccel, profile, depth);
+  });
+  return { routineAccel: routineAccel ? 'on' : 'off', idleFastForward: options.idleFf, diveSeconds: options.diveSeconds, stages, dives };
+}
+
+function printDive(run) {
+  console.log(`-- dive benchmark: routine acceleration ${run.routineAccel}, idle fast-forward ${run.idleFastForward ? 'on' : 'off'} --`);
+  for (const s of run.stages) {
+    console.log(`profile stage ${s.name.padEnd(16)} ${s.virtualSeconds.toFixed(1).padStart(6)} virtual s in ${s.wallSeconds.toFixed(2).padStart(6)} s wall = ${(s.virtualSeconds / s.wallSeconds).toFixed(2).padStart(6)}x   fingerprint ${s.checkpoint.fingerprint.slice(0, 16)}`);
+  }
+  for (const d of run.dives) {
+    console.log(
+      `dive ${d.depth}: average ${d.average.factor.toFixed(2)}x (${d.average.virtualSeconds.toFixed(1)} s in ${d.average.wallSeconds.toFixed(2)} s); bursts ${d.burst.factor.toFixed(2)}x ` +
+        `(${d.burst.steps} steps, worst burst ${d.worstBurstFactor.toFixed(2)}x); quiet ${d.quiet.factor.toFixed(2)}x (${d.quiet.steps} steps); replaced ${d.replacedCalls} calls / ${d.replacedInstructions} instructions` +
+        (d.shadowMismatches ? `; SHADOW MISMATCHES ${d.shadowMismatches}` : '') +
+        (d.frameWallSeconds + d.stateWallSeconds > 0 ? `; frame ${d.frameWallSeconds.toFixed(2)} s + state ${d.stateWallSeconds.toFixed(2)} s on top` : ''),
+    );
+    for (const c of d.checkpoints) {
+      console.log(`    ${c.name.padEnd(16)} t ${(c.virtualNs / 1e9).toFixed(3).padStart(8)} s  fingerprint ${c.fingerprint.slice(0, 16)}  exact ${c.exactMain}/${c.exactHandset}`);
+    }
+  }
+}
+
+function checkpointsOf(run) {
+  return [...run.stages.map((s) => s.checkpoint), ...run.dives.flatMap((d) => d.checkpoints)];
+}
+
+function differences(a, b) {
+  const x = checkpointsOf(a);
+  const y = checkpointsOf(b);
+  const out = [];
+  if (x.length !== y.length) out.push(`${x.length} checkpoints against ${y.length}`);
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    const what = [];
+    if (x[i].virtualNs !== y[i].virtualNs) what.push('virtual time');
+    if (x[i].fingerprint !== y[i].fingerprint) what.push('fingerprint');
+    if (x[i].exactMain !== y[i].exactMain || x[i].exactHandset !== y[i].exactHandset) what.push('exactness digest');
+    if (x[i].instructionsMain !== y[i].instructionsMain || x[i].instructionsHandset !== y[i].instructionsHandset) what.push('retire counts');
+    if (x[i].lcdSha256 !== y[i].lcdSha256) what.push('LCD');
+    if (what.length) out.push(`${x[i].name}: ${what.join(', ')}`);
+  }
+  return out;
+}
+
+async function diveMain(options) {
+  const wasm = fs.readFileSync(options.wasm);
+  const engine = await SessionEngine.load(new Uint8Array(wasm));
+  engine.setFirmware('main', new Uint8Array(fs.readFileSync(options.main)));
+  engine.setFirmware('handset', new Uint8Array(fs.readFileSync(options.handset)));
+  console.log(`node ${process.version}, wasm ${path.relative(process.cwd(), options.wasm)} (${wasm.length} bytes), ${engine.name}`);
+  const modes = options.verifyRoutineAccel ? [true, false] : [options.routineAccel];
+  const runs = [];
+  for (const accel of modes) {
+    const run = runWholeDive(engine, options, accel);
+    printDive(run);
+    runs.push(run);
+  }
+  let status = 0;
+  let verification = null;
+  if (options.verifyRoutineAccel) {
+    const diffs = differences(runs[0], runs[1]);
+    verification = { identical: diffs.length === 0, differences: diffs };
+    console.log(`routine acceleration on/off: ${diffs.length === 0 ? 'IDENTICAL' : 'MISMATCH'} (${checkpointsOf(runs[0]).length} checkpoints compared${diffs.length ? `; ${diffs.join('; ')}` : ''})`);
+    runs[0].dives.forEach((on, i) => {
+      const off = runs[1].dives[i];
+      console.log(`dive ${on.depth}: average ${off.average.factor.toFixed(2)}x -> ${on.average.factor.toFixed(2)}x (${(on.average.factor / off.average.factor).toFixed(2)}x faster), bursts ${off.burst.factor.toFixed(2)}x -> ${on.burst.factor.toFixed(2)}x (${(on.burst.factor / off.burst.factor).toFixed(2)}x faster)`);
+    });
+    if (diffs.length) status = 1;
+  }
+  let identicalToNative = null;
+  if (options.expect) {
+    // Native and WebAssembly runs of the same configuration must produce identical checkpoints.
+    const native = JSON.parse(fs.readFileSync(options.expect, 'utf8'));
+    const reference = (native.runs || []).find((r) => r.routineAccel === runs[0].routineAccel) || (native.runs || [])[0];
+    if (!reference) throw new Error(`${options.expect} has no runs`);
+    const asRun = {
+      stages: reference.stages.map((s) => ({ checkpoint: s.checkpoint })),
+      dives: reference.dives.map((d) => ({ checkpoints: d.checkpoints })),
+    };
+    const diffs = differences(runs[0], asRun);
+    identicalToNative = diffs.length === 0;
+    console.log(`native vs wasm checkpoints: ${identicalToNative ? 'IDENTICAL' : 'MISMATCH'} (${checkpointsOf(runs[0]).length} compared${diffs.length ? `; ${diffs.join('; ')}` : ''})`);
+    if (!identicalToNative) status = 1;
+  }
+  if (runs.some((r) => r.dives.some((d) => d.shadowMismatches > 0))) status = 1;
+  if (options.json) {
+    const result = { engine: engine.name, runtime: { node: process.version, platform: process.platform, arch: process.arch }, benchmark: 'dive (DESIGN.md 16.3)', runs, routineAccelVerification: verification, identicalToNativeCheckpoints: identicalToNative };
+    fs.writeFileSync(options.json, `${JSON.stringify(result, null, 2)}\n`);
+    console.log(`result written to ${options.json}`);
+  }
+  process.exit(status);
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.dive) return diveMain(options);
   const wasm = fs.readFileSync(options.wasm);
   const module = await WebAssembly.compile(wasm);
   const imports = WebAssembly.Module.imports(module);
@@ -204,7 +523,7 @@ async function main() {
   engine.setFirmware(0, fs.readFileSync(options.main));
   engine.setFirmware(1, fs.readFileSync(options.handset));
   const created = performance.now();
-  engine.create({ idleFf: options.idleFf });
+  engine.create({ idleFf: options.idleFf, routineAccel: options.routineAccel });
   const setupSeconds = (performance.now() - created) / 1000;
 
   const boot = performance.now();

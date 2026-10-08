@@ -71,14 +71,23 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         if !slot_ok {
             status = 1;
         }
+        let routines = if report.ok() { accelerated_routines(&bytes, slot) } else { Vec::new() };
         if parsed.flag("json") {
             let mut entry = report.to_json();
             entry.insert("path", path);
             entry.insert("slot", slot.name());
             entry.insert("slotOk", slot_ok);
+            entry.insert(
+                "acceleratedRoutines",
+                Json::from_items(routines.iter().map(|m| {
+                    let spec = &armv7m::accel::SPECS[m.spec];
+                    Json::object().with("name", m.name).with("entry", u64::from(m.entry)).with("length", u64::from(m.len)).with("sha256", spec.sha256)
+                })),
+            );
             json.insert(slot.name(), entry);
         } else {
             print_report(out, slot, path, &report, parsed.flag("vectors"));
+            print_routines(out, &routines);
             if let Some(found) = report.identified {
                 if found != slot {
                     let _ = writeln!(out, "  WARNING: this file is the {found} image but was given as --{slot}");
@@ -90,6 +99,27 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         let _ = writeln!(out, "{}", json.to_pretty_string());
     }
     status
+}
+
+/// The runtime-library routines of the image that the exact routine acceleration recognises (by the SHA-256 of their
+/// code bytes, wherever they sit in the image; DESIGN.md 16.2).
+fn accelerated_routines(srec: &[u8], role: Role) -> Vec<armv7m::accel::Match> {
+    match firmware::load(srec, Some(role)) {
+        Ok(image) => armv7m::accel::scan(0x0800_0000, &image.flash_image()),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn print_routines(out: &mut dyn Write, routines: &[armv7m::accel::Match]) {
+    if routines.is_empty() {
+        let _ = writeln!(out, "  accelerated routines: none recognised by code hash");
+        return;
+    }
+    let _ = writeln!(out, "  accelerated routines (exact memoized calls, recognised by the SHA-256 of their code bytes):");
+    for m in routines {
+        let spec = &armv7m::accel::SPECS[m.spec];
+        let _ = writeln!(out, "    {:<10} 0x{:08x}  {:>3} bytes  sha256 {}", m.name, m.entry, m.len, &spec.sha256[..16]);
+    }
 }
 
 fn print_report(out: &mut dyn Write, slot: Role, path: &str, report: &Report, all_vectors: bool) {

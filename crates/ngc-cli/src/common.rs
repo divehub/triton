@@ -2,7 +2,7 @@
 
 use emu_core::Json;
 use ngc::firmware::{self, Firmware, Role};
-use ngc::system::{BootMode, BuildOptions, Mode, System, SystemConfig, Which};
+use ngc::system::{BootMode, BuildOptions, Mode, RoutineAccelMode, System, SystemConfig, Which};
 use std::path::{Path, PathBuf};
 
 /// The TRITON firmware directory (`firmware/TRITON-5.8-65.3`), when it exists.
@@ -166,18 +166,32 @@ pub fn parse_inputs(text: &str) -> Result<Vec<(emu_core::Time, ngc::system::Inpu
     Ok(out)
 }
 
+/// The switches of the exact routine acceleration (DESIGN.md 16.2), shared by `run`, `bench` and `scenario`:
+/// `--no-routine-accel` turns the acceleration off, `--shadow-routine-accel` selects the verification mode (every memo
+/// hit is replayed and interpreted and compared; slow). Default: on.
+pub fn routine_accel_mode(parsed: &crate::args::Args) -> Result<RoutineAccelMode, String> {
+    match (parsed.flag("no-routine-accel"), parsed.flag("shadow-routine-accel")) {
+        (true, true) => Err("--no-routine-accel and --shadow-routine-accel exclude each other".to_string()),
+        (true, false) => Ok(RoutineAccelMode::Off),
+        (false, true) => Ok(RoutineAccelMode::Shadow),
+        (false, false) => Ok(RoutineAccelMode::On),
+    }
+}
+
 /// A system for the given options (no instruction has run). `i2c_idle_high` is the main board's I2C idle-high fixture
 /// (on unless `--no-i2c-idle-high`).
+#[allow(clippy::too_many_arguments)]
 pub fn build_system(
     mode: Mode,
     boot_mode: BootMode,
     simultaneous_start: bool,
     idle_ff: bool,
+    routine_accel: RoutineAccelMode,
     i2c_idle_high: bool,
     main: Option<&Firmware>,
     handset: &Firmware,
 ) -> Result<System, String> {
-    let config = SystemConfig { mode, boot_mode, simultaneous_start, idle_fast_forward: idle_ff, ..SystemConfig::default() };
+    let config = SystemConfig { mode, boot_mode, simultaneous_start, idle_fast_forward: idle_ff, routine_accel, ..SystemConfig::default() };
     System::new_with(config, main, handset, BuildOptions { main_i2c_idle_high: i2c_idle_high })
 }
 
