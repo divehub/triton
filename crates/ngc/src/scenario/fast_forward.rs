@@ -116,7 +116,7 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
     let (png_on, png_off) = (on.png(), off.png());
     rec.check("the final LCD frame is identical with and without the fast-forward", png_on == png_off, png_on.len() as u64);
     rec.image("final-wake.png", png_on);
-    rec.note("The fast-forward (crates/armv7m/src/fastfwd.rs) recognises short backward-branch loops with a pure body whose register snapshot repeats after one iteration and whose loads address plain memory; it then skips whole iterations by advancing the retire count up to the next event or the end of the run budget, which is bit-identical to executing them. failedVerifications counts loop entries that did not reach such a fixed point.");
+    rec.note("The fast-forward (crates/armv7m/src/fastfwd.rs) recognizes short backward-branch loops with a pure body whose register snapshot repeats after one iteration and whose loads address plain memory; it then skips whole iterations by advancing the retire count up to the next event or the end of the run budget, which is bit-identical to executing them. failedVerifications counts loop entries that did not reach such a fixed point.");
     rec.limitation("This is an equivalence proof between two modes of the same engine on the original firmware; it says nothing about the accuracy of either mode against the physical device or Renode beyond the equality of the other scenarios (which run with the fast-forward on).");
     Ok(rec.finish(env))
 }

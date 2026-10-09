@@ -187,7 +187,7 @@ impl PlainMemory {
 
 /// Renode `Memory.ArrayMemory`: a byte array that implements every access width natively,
 /// little-endian, any alignment. Used for the simplified PWR, FLASH-control, FMC and SYSCFG
-/// register blocks (they read back what was written and have no behaviour).
+/// register blocks (they read back what was written and have no behavior).
 ///
 /// Renode parity (`ArrayMemory.IsCorrectOffset`): an access that does not lie entirely inside
 /// the array returns 0 / is dropped and is logged as an error.

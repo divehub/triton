@@ -52,7 +52,7 @@ pub const USAGE: &str = "ngc-cli run [--main <srec>] [--handset <srec>] [--mode 
     results are identical either way, only host speed differs); --shadow-routine-accel replays and interprets every memo hit and\n  \
     compares the two (slow verification mode).\n  \
     --no-deco-storage-fixture and --no-start-at-surface (with --data-dir only: the fixtures act on the saved profile) turn off the\n  \
-    two labelled emulator fixtures of the decompression handling, which are on by default: before every board creation a stored\n  \
+    two labeled emulator fixtures of the decompression handling, which are on by default: before every board creation a stored\n  \
     tissue block that was never saved loses the saved decompression date (so the firmware resets the tissues instead of loading\n  \
     NaN), and every board creation starts at the surface pressure, a new session with the oxygen cells at their defaults.\n  \
     --mode handset runs the handset alone (no CAN peer, like the viewer without --dual).\n  \

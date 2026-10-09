@@ -145,7 +145,7 @@ pub(crate) struct Chan {
     pub signal: bool,
 }
 
-/// Everything except the clock entries that decides the model's future behaviour.
+/// Everything except the clock entries that decides the model's future behavior.
 ///
 /// Two equal values (together with equal entries) at two instants mean identical futures shifted in time:
 /// that is what the planner's cycle detection relies on, so it must hold **all** such state and nothing
@@ -241,7 +241,7 @@ pub struct TimerStats {
     pub engagements: u64,
 }
 
-/// The state of one entry's neighbourhood that the planner compares between instants.
+/// The state of one entry's neighborhood that the planner compares between instants.
 #[derive(Clone, PartialEq, Eq)]
 struct Signature {
     entries: [ClockEntry; N_ENTRIES],
@@ -474,7 +474,7 @@ impl Model {
             }
             let saved = self.emit_return;
             // A limit the stock model would have as an event of its own runs its handler with the setters'
-            // `RequestReturn` calls (a no-op outside CPU accesses, but honoured when a `SyncTime` processes it).
+            // `RequestReturn` calls (a no-op outside CPU accesses, but honored when a `SyncTime` processes it).
             self.emit_return = due >= real_from || self.stock_events();
             self.process_instant(io, t);
             self.emit_return = saved;

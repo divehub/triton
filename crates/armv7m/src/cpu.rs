@@ -1057,7 +1057,7 @@ impl Cpu {
     /// at the cut for the rest of the run. The core reproduces this for the first translation of an
     /// address (`CutEntry`); the effects of tlib's chained blocks, of smaller budgets at already
     /// translated addresses, of the block size limit and of flushes other than a reset or
-    /// `invalidate_code_cache` are not modelled.
+    /// `invalidate_code_cache` are not modeled.
     pub fn run<B: CpuBus>(&mut self, bus: &mut B, now: Time, until: Time) -> RunExit {
         if self.trace.enabled() {
             self.run_impl::<B, true>(bus, now, until)

@@ -1,4 +1,4 @@
-//! Regression test against recorded Renode 1.17.0 behaviour: `golden.txt` holds transcripts of the *unmodified*
+//! Regression test against recorded Renode 1.17.0 behavior: `golden.txt` holds transcripts of the *unmodified*
 //! stock `Timers.STM32_Timer`, `Timers.STM32F4_RTC` and `Timers.STM32_IndependentWatchdog` (recorded on
 //! 2026-10-08 by a probe peripheral; the generator is not part of this repository, see `testdata/README.md`):
 //! scripted and seeded-random sequences of register writes, reads,
@@ -214,7 +214,7 @@ fn first_edge_difference(expected: &[(Time, u32, bool)], actual: &[(Time, u32, b
     for i in 0..common {
         if expected[i] != actual[i] {
             return Some(format!(
-                "edge #{i}: Renode {:?}, Rust {:?} (neighbours: Renode {:?} / Rust {:?})",
+                "edge #{i}: Renode {:?}, Rust {:?} (neighbors: Renode {:?} / Rust {:?})",
                 expected[i],
                 actual[i],
                 &expected[i.saturating_sub(2)..(i + 3).min(expected.len())],

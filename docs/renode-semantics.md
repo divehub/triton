@@ -1,4 +1,4 @@
-# Renode 1.17.0 behavioural semantics for the NGC Rust engine
+# Renode 1.17.0 behavioral semantics for the NGC Rust engine
 
 Work package REF. This document records what the pinned Renode 1.17.0 platform (`emulation/handset.repl`, `emulation/main.repl`, `emulation/models/*.cs` of the analysis workspace) actually does, with source citations, so that the Rust engine can reproduce it, or deviate from it knowingly. It supplements `DESIGN.md` (sections 5-7 are checked against it in section 13).
 
@@ -44,7 +44,7 @@ Short list; details and recommended action in the numbered sections. "Contradict
 - CPU: `CPU.CortexM`, `cpuType "cortex-m4"`, `PerformanceInMips = 100` (default, `BaseCPU.cs:360`), global quantum 100 us (`TimeSourceBase.cs:814`). Both fixed in every run; the runner never changes them. [S+M] (`machine ElapsedVirtualTime` prints `Quantum: 00:00:00.000100000`.)
 - Time domain mode: `EmulationMode.SynchronizedIO` (first enum member, the default) (`M/Core/Emulation.cs:778`). [S]
 - Dual machines have no local time source; both use `Emulation.MasterTimeSource` (`M/Core/Emulation.cs:176-186`). [S] CPUs register as sinks (`M/Core/Machine.cs:1845`).
-- `emulation SetGlobalAdvanceImmediately true` (runner default) only removes host-time sleeping (`BaseCPU.cs:812-852`). It does **not** change virtual-time behaviour. [S]
+- `emulation SetGlobalAdvanceImmediately true` (runner default) only removes host-time sleeping (`BaseCPU.cs:812-852`). It does **not** change virtual-time behavior. [S]
 - Boot fixture: `sysbus WriteDoubleWord 0x40006400 0x10000` (CAN MCR), `VectorTableOffset 0x08004000`, `SP 0x20018000`, `PC` = reset PC (monitor "Patching PC ... for Thumb mode" warning is normal). Initial xPSR reads `0x41000000` (T and Z set) and R0-R14 read 0. [M]
 - Renode prints elapsed virtual time with nanosecond resolution (`00:00:01.050000000`). The runner's `virtual_seconds()` parses exactly that.
 
@@ -233,7 +233,7 @@ Sources: `M/Time/{TimeSourceBase,MasterTimeSource,HandlesCollection,TimeHandle}.
 - `emulation RunFor "s"` -> `MasterTimeSource.RunFor(period)`: `while (period > 0) { InnerExecute(out elapsed, period); period -= elapsed; }` (`MasterTimeSource.cs:60-72`). Each `InnerExecute` advances `NearestSyncPoint` by `min(remaining, Quantum)` and grants that interval to all handles (`TimeSourceBase.cs:372-460`). The quantum grid is aligned to the start of the *emulation* only if every RunFor length is a multiple of the quantum; all runner calls (50 ms) and all REF harness calls (1 ms, 50 ms) are. [S]
 - Parallel execution (default; `ExecuteInSerial` false): all CPU threads run their granted interval concurrently, then `WaitUntilDone` for each; then the **sync phase** (`ExecuteSyncPhase`, `:763-795`): `SyncHook`, then delayed actions whose `when <= now`, ordered by `(When, Id)` (`:1031-1035`), executed on the time-source thread while every CPU is stopped at the barrier. [S]
 - `Machine.HandleTimeDomainEvent(handler, arg, stamp)` in `SynchronizedIO` calls `LocalTimeSource.ExecuteInSyncedState(callback, stamp)`: queued with the sender's stamp (a stamp from another time domain is replaced by "now"), run at the first sync point with `now >= stamp` (`Machine.cs:210-232`, `TimeSourceBase.cs:119-126`). NGCCANLink stamps frames with `TimeDomainsManager.GetEffectiveVirtualTimeStamp()` = the sending CPU handle's last reported total time. **Delivery = the end of the quantum in which the frame was transmitted**; the receiving CPU sees the IRQ from its first instruction of the next quantum (the CAN IRQ goes through NVIC like any other, 9.2). [S]
-- `STMCAN` raises `FrameSent` synchronously from the register write (no timer; `P/CAN/STMCAN.cs:518-520`), so no bus time is modelled; `OnFrameReceived` writes the FIFO and raises IRQs from the sync-phase thread. [S]
+- `STMCAN` raises `FrameSent` synchronously from the register write (no timer; `P/CAN/STMCAN.cs:518-520`), so no bus time is modeled; `OnFrameReceived` writes the FIFO and raises IRQs from the sync-phase thread. [S]
 - **Clock-source advance in dual mode** (`TimeSourceBase.cs:655-677`, `HandlesCollection.cs:133-170`): the master's virtual time and, through `TimePassed`, **every machine's clock source** advance only to the *minimum* `TotalElapsedTime` over all handles (`TryGetCommonElapsedTime`). A faster CPU therefore executes chunks computed from a clock source that does not yet include its own recent progress; its timer events fire later (in host time, at the slow CPU's progress report), i.e. at a later *instruction position* of the fast CPU, by up to roughly one quantum. This is the origin of Renode's run-to-run variation. [S]
 - **[M] Envelope** (two fresh dual runs, identical configuration, `reference/data/dual-wake-run1-vs-dual-wake-run2/diff.json`): handset release 1.05 s in both; checkpoints at 0.5/1.0/1.05 s fully identical; from 1.5 s main PC/R3 differ (idle loop), SRAM1 differs in 8 (1.5 s) to 373 (4.5 s) bytes (exception frames, counters, buffers), handset SRAM1 15-63 bytes, SRAM2 identical, `executedInstructions`, virtual time, SCS/NVIC/GPIO registers, current-TCB words, LCD bytes, UART tails, ADC/EEPROM/QSPI summaries, HAL tick/mode/readiness, EEPROM/NOR/RTC files identical; all 52 CAN frames identical in source, ID, payload, order; CAN stamp differences up to 79.6 us (mean 11.4 us, 38 of 52 frames non-zero).
 
@@ -249,7 +249,7 @@ Sources: `M/Peripherals/Bus/SystemBus.cs`, `SystemBusGenerated.tt` (the generate
 
 - `SystemBus.Read<W>(address, context, cpuState)` (generated template `SystemBusGenerated.tt:~50-95`): (1) permission and locked-range checks (not used here); (2) tag override (not used); (3) `TryFindPeripheralAccessMethods(address)`: if no registered range contains the address, `ReportNonExistingRead`; (4) otherwise `lock(accessMethods.Lock) { methods.Read<W>((address - startAddress) + registrationOffset) }`. The peripheral receives an **offset relative to its registration base** and the **access width as issued** (after the translation of 7.3). Writes mirror this. [S]
 - **Unmapped** (`SystemBus.cs:2505-2590`): default `UnhandledAccessBehaviour = Report` (first enum member): Warning `"[cpu: 0xPC] Read<Byte|Word|DoubleWord|QuadWord> from non existing peripheral at 0x<addr>."` and return **0**; writes: Warning `"... Write<W> to non existing peripheral at 0x<addr>, value 0x<v>."`, ignored. No bus fault; no exception. The log line is emitted for every access (Renode's logger collapses repeated identical lines). [S+M] (monitor and CPU paths; real firmware examples in section 12.)
-- **Sizes/regions.** Every peripheral registers `[address, address + Size)` (`IKnownSize.Size` or the `<base, +size>` form). Addresses inside the range but not defined by the peripheral are the peripheral's problem (register framework: Warning + 0, section 11). `MappedMemory` regions are page-granular and zero-initialised (`MappedMemory.cs`, `Init`), reads/writes outside the declared size log an Error and return 0 / are dropped.
+- **Sizes/regions.** Every peripheral registers `[address, address + Size)` (`IKnownSize.Size` or the `<base, +size>` form). Addresses inside the range but not defined by the peripheral are the peripheral's problem (register framework: Warning + 0, section 11). `MappedMemory` regions are page-granular and zero-initialized (`MappedMemory.cs`, `Init`), reads/writes outside the declared size log an Error and return 0 / are dropped.
 - **Plain memory fast path.** CPU loads/stores to `MappedMemory` (flash, SRAM1, SRAM2) go straight to host memory through the tlib TLB and never reach the bus, so no warnings, no hooks. Flash is ordinary writable RAM from the CPU's view. `sysbus LoadBinary file 0x08004000` writes the file through the bus into the flash `MappedMemory`; bytes outside the image stay 0x00 (`M/Core/Extensions/FileLoaderExtensions.cs`). [S]
 - The monitor commands `sysbus ReadByte/ReadWord/ReadDoubleWord/WriteDoubleWord/ReadBytes` use the same bus path with `context = null`: **they have the register side effects of a real read/write** (e.g. clearing NVIC COUNTFLAG, popping a UART FIFO). The REF harness restricts itself to side-effect-free registers (`reference/checkpoint.py`).
 
@@ -272,7 +272,7 @@ The bus chooses, **per peripheral and per width**, the methods it will call (`Fi
 
 Translation implementations (`ReadWriteExtensions.cs`, little-endian bus):
 
-| Requested | Peripheral native | Behaviour |
+| Requested | Peripheral native | Behavior |
 | --- | --- | --- |
 | byte read | dword | `(byte)(ReadDoubleWord(addr & ~3) >> ((addr & 3) * 8))` (`:636-643`) |
 | halfword read | dword | `(ushort)(ReadDoubleWord(addr & ~3) >> ((addr & 3) * 8))` (`:732-739`); at offset 3 only the top byte survives |
@@ -373,7 +373,7 @@ See 5.5 for entry/return, tail-chaining and the TB-end latency. Synchronous faul
 
 ### 9.6 Quirks worth knowing
 
-- `ICSR.RETTOBASE` is computed as `activeIRQs ∩ SystemException enum <= 1` (counts only *system* exception numbers in the active stack), not "exactly one exception active" (`NVIC.cs:1076-1090`). `VECTPENDING` = `FindPendingInterrupt()`; `VECTACTIVE` = top of the active stack (0 if empty). `ISRPENDING` is a tagged (unmodelled) flag.
+- `ICSR.RETTOBASE` is computed as `activeIRQs ∩ SystemException enum <= 1` (counts only *system* exception numbers in the active stack), not "exactly one exception active" (`NVIC.cs:1076-1090`). `VECTPENDING` = `FindPendingInterrupt()`; `VECTACTIVE` = top of the active stack (0 if empty). `ISRPENDING` is a tagged (unmodeled) flag.
 - WFI wake-up and `PendingMaskedIRQ` use the PRIMASK-ignoring condition (9.2).
 - Priority/enable writes re-run `FindPendingInterrupt()` immediately (the `IRQ` level can change inside the write).
 
@@ -402,7 +402,7 @@ Used by every `Basic*Peripheral`-derived model and by most STM32 models (timers,
 
 ---
 
-## 12. Observed behaviour in the reference boots
+## 12. Observed behavior in the reference boots
 
 All from `reference/data/{handset-trace,dual-wake-run1,dual-wake-run2}/.../renode.log` (grep of `[WARNING]`/`[ERROR]`), identical in both dual runs.
 
@@ -454,7 +454,7 @@ All from `reference/data/{handset-trace,dual-wake-run1,dual-wake-run2}/.../renod
 
 - SysTick spacing and the TIM6 phase artifacts were derived from source and the 200 ms handset trace; the dual reference has no instruction trace (only checkpoints).
 - The exact TB partition of the NGC firmware (which instructions end a Renode TB) was not extracted; it only matters if the engine chooses to emulate TB-end interrupt latency or the clock-source lag.
-- IT-skipped instruction counting, exclusive monitors, FPU lazy-stacking behaviour in tlib were not re-verified; see `tlib/arch/arm/helper.c` and the CPU work package.
+- IT-skipped instruction counting, exclusive monitors, FPU lazy-stacking behavior in tlib were not re-verified; see `tlib/arch/arm/helper.c` and the CPU work package.
 - STM32 peripheral models (USART, CAN, I2C, DMA, RTC, IWDG, RNG, CRC) were not re-documented here: port them from the upstream sources (the file list with hashes was `reference/README.md` of the harness, which is not part of this repository).
 - Physical-device accuracy is not claimed anywhere.
 

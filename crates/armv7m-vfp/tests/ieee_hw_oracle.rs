@@ -107,7 +107,7 @@ fn sqrt_vs_hardware() {
     let mut t_fast = Tally::new("fsqrt-fast");
     for _ in 0..cases(8_000_000, 400_000) {
         let mut a = gen_f32(&mut rng);
-        // Favour non-negative operands and perfect squares.
+        // Favor non-negative operands and perfect squares.
         match rng.below(6) {
             0 | 1 => a &= 0x7FFF_FFFF,
             2 => {

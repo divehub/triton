@@ -1,4 +1,4 @@
-/* NGC system emulator (WebAssembly). Layout follows emulation/viewer.html of the analysis workspace; colours are theme tokens:
+/* NGC system emulator (WebAssembly). Layout follows emulation/viewer.html of the analysis workspace; colors are theme tokens:
    dark by default, light when the system asks for it (prefers-color-scheme). */
 :root {
   color-scheme: dark;
@@ -337,19 +337,32 @@ footer { margin-top: 20px; color: var(--text-dim); font-size: 12px; line-height:
 .url-progress { width: 100%; height: 8px; accent-color: var(--accent); }
 #url-status { min-height: 18px; margin-top: 10px; color: var(--text-lead); }
 #url-proxy-note { margin-top: 6px; overflow-wrap: anywhere; }
-.slots { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
-.slot { padding: 16px; border: 1px solid var(--border-soft); border-radius: 12px; background: var(--surface-inset); min-width: 0; }
+/* Firmware cards. Waiting: heading and state on one line, the expected names below. Verified: one line (check mark, release and
+   board, file name and size, Remove); the hash and the checks sit in a closed <details>; a failed check is always visible. */
+.slots { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; align-items: start; }
+.slot { padding: 12px 14px; border: 1px solid var(--border-soft); border-radius: 12px; background: var(--surface-inset); min-width: 0; }
+.slot:not(.ok) { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
 .slot.ok { border-color: var(--ok-border); }
 .slot.bad { border-color: var(--danger-border); }
-.slot .expected { font-size: 12px; color: var(--text-faint); margin-bottom: 10px; overflow-wrap: anywhere; }
+.slot h3 { margin: 0; }
+.slot.ok h3 { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; } /* the verified line names the board; the heading stays for screen readers */
+.slot .expected { flex-basis: 100%; font-size: 12px; color: var(--text-faint); overflow-wrap: anywhere; }
 .slot.ok .expected { display: none; } /* the verified file's own name is shown instead */
 .slot .state { font-size: 13px; color: var(--text-lead); overflow-wrap: anywhere; }
-.slot .hash { display: block; margin-top: 7px; font-size: 11px; color: var(--text-muted); word-break: break-all; }
+.slot-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 10px; }
+.slot-title { grid-column: 1; grid-row: 1; font-weight: 600; overflow-wrap: anywhere; }
+.slot-file { grid-column: 1 / -1; grid-row: 2; margin-top: 2px; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+.slot .slot-remove { grid-column: 2; grid-row: 1; padding: 4px 11px; font-size: 12px; text-align: center; }
+.slot .hash { display: block; margin-top: 6px; font-size: 11px; color: var(--text-muted); word-break: break-all; }
 .slot .check-list { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: var(--text-muted); }
+.slot .check-list.failed { margin-top: 6px; }
 .slot .check-list .fail { color: var(--notice-text); }
-.slot details { margin-top: 10px; padding: 0; border: 0; }
+.slot details { margin-top: 4px; padding: 0; border: 0; }
+.slot details > summary { padding: 4px 0; font-size: 12px; color: var(--text-muted); }
+.slot .source { margin-top: 6px; overflow-wrap: anywhere; }
 .release-line { margin-top: 14px; font-size: 13px; color: var(--link-soft); }
 .rejected { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; }
+.rejected:empty { margin: 0; } /* a live region: kept in the page, only without its gap while empty */
 .rejected li { padding: 11px 13px; border: 1px solid var(--notice-border); border-radius: 9px; background: var(--notice-bg); color: var(--notice-text); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
 .remember { margin-top: 20px; display: grid; gap: 10px; }
 .banner { margin-top: 20px; padding: 12px 14px; border: 1px solid var(--info-border); border-radius: 9px; background: var(--info-bg); color: var(--info-text); font-size: 13px; line-height: 1.5; }
@@ -379,7 +392,12 @@ footer { margin-top: 20px; color: var(--text-dim); font-size: 12px; line-height:
   .buttons { grid-template-columns: 1fr 1fr 1fr; }
   button small { display: none; }
   .controls dl { grid-template-columns: 1fr 1fr; }
-  .slots { grid-template-columns: 1fr; }
+  .slots { grid-template-columns: 1fr; gap: 10px; margin-top: 14px; }
+  /* Entry screen: tighter vertical rhythm so the Boot button stays close to the fold with both files verified. */
+  .release-line { margin-top: 10px; }
+  .firmware-sources, .start-options { margin-top: 12px; padding: 11px 14px; }
+  .remember { margin-top: 14px; }
+  .entry-actions { margin-top: 16px; }
   .card { padding: 18px; }
   .advanced-panel { padding: 16px; }
 }

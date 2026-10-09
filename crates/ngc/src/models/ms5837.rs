@@ -28,7 +28,7 @@
 //!   not reproduced electrically;
 //! * `0xA0..=0xAE` (even) select PROM words 0..7; `Read(2)` returns the word big-endian (further bytes read 0).
 //!
-//! Electrical noise, supply effects, reset settling, clock stretching and sensor errors are not modelled.
+//! Electrical noise, supply effects, reset settling, clock stretching and sensor errors are not modeled.
 //!
 //! # Wiring (`main.repl`)
 //!

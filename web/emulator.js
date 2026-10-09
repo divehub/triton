@@ -77,7 +77,7 @@ class ConditionsDom {
   setStatus(text) {
     const status = byId('basic-input-status');
     status.textContent = text;
-    // A second cue besides the words: a refused edit and an unapplied draft are coloured.
+    // A second cue besides the words: a refused edit and an unapplied draft are colored.
     status.dataset.state = text === 'Not applied' ? 'rejected' : text === 'Raw edits pending' ? 'pending' : 'ok';
   }
 
@@ -440,7 +440,7 @@ export class EmulatorView {
     if (output.kind === 'led') {
       color = h('select', { onchange: () => { if (!this.connectionError) this.sendAction('led-colors', { colors: { [output.id]: color.value } }); } },
         [['unknown', 'Unknown'], ['red', 'Red'], ['white', 'White']].map(([value, text]) => h('option', { value }, text)));
-      row.append(h('label', { class: 'output-color' }, h('span', {}, 'LED colour'), color));
+      row.append(h('label', { class: 'output-color' }, h('span', {}, 'LED color'), color));
     }
     return { row, indicator, name, status, detail, replay, activity, history, historyBody, color, kind: output.kind };
   }
@@ -510,7 +510,7 @@ export class EmulatorView {
       if (row.color) {
         // A select is only written where something changed (an open dropdown reacts to any write; see syncUartSelect).
         const color = ['red', 'white'].includes(output.color) ? output.color : 'unknown';
-        const label = `Colour for ${output.label || output.id}`;
+        const label = `Color for ${output.label || output.id}`;
         if (row.color.getAttribute('aria-label') !== label) row.color.setAttribute('aria-label', label);
         if (document.activeElement !== row.color && row.color.value !== color) row.color.value = color;
         const disabled = !!this.connectionError;
@@ -746,8 +746,8 @@ export class EmulatorView {
       const high = typeof state.i2cIdleHigh === 'boolean' ? state.i2cIdleHigh : options.i2cIdleHigh !== false;
       if (unsupported && typeof state.i2cIdleHigh !== 'boolean') lines.push('Main I2C idle lines: this engine build has no idle-high fixture option; the lines keep the engine default.');
       else if (high && typeof state.i2cFixture === 'string') lines.push(`Fixture: ${state.i2cFixture}.`);
-      else lines.push(`Main I2C idle lines PB6/PB7/PB10/PB11: ${high ? 'driven high before the firmware runs' : 'left at their default (low)'}. This is an idle-line fixture, not electrical I2C modelling.`);
-      // The decompression handling: the engine's read-only report and what its two labelled fixtures did at the last start.
+      else lines.push(`Main I2C idle lines PB6/PB7/PB10/PB11: ${high ? 'driven high before the firmware runs' : 'left at their default (low)'}. This is an idle-line fixture, not electrical I2C modeling.`);
+      // The decompression handling: the engine's read-only report and what its two labeled fixtures did at the last start.
       const health = healthLine(state);
       if (health) lines.push(health);
       lines.push(...fixtureLines(state));
@@ -868,7 +868,7 @@ export class EmulatorView {
     const release = this.currentRelease();
     const ok = await confirmDialog({
       title: 'Reset the profile?',
-      message: `This erases the emulated EEPROM, log flash, clock checkpoint, sensor inputs and LED colour labels of the ${release ? `${release.name} ` : ''}profile (in this browser) and restarts the boards from factory-fresh storage. Export the profile first if you may need it again.`,
+      message: `This erases the emulated EEPROM, log flash, clock checkpoint, sensor inputs and LED color labels of the ${release ? `${release.name} ` : ''}profile (in this browser) and restarts the boards from factory-fresh storage. Export the profile first if you may need it again.`,
       confirm: 'Erase profile',
       danger: true,
     });

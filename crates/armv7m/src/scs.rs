@@ -71,7 +71,7 @@ impl Cpu {
     }
 
     /// True for addresses with a register model (everything else warns once).
-    pub(crate) fn ppb_modelled(a: u32) -> bool {
+    pub(crate) fn ppb_modeled(a: u32) -> bool {
         (0xE000_E000..=0xE000_EFFF).contains(&a) || (0xE000_1000..=0xE000_1FFF).contains(&a)
     }
 
@@ -256,7 +256,7 @@ impl Cpu {
                 }
                 _ => {}
             },
-            _ => self.warn_once(a, || format!("PPB write to unmodelled address 0x{a:08x} ignored")),
+            _ => self.warn_once(a, || format!("PPB write to unmodeled address 0x{a:08x} ignored")),
         }
     }
 

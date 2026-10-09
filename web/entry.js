@@ -33,12 +33,13 @@ export class EntryView {
     };
     this.proxy = deps.proxy || proxyEndpoint(window.location, window.location.search || '', deps.proxyUrl !== undefined ? deps.proxyUrl : FIRMWARE_PROXY_URL);
     this.slots = { main: null, handset: null };
+    this.shownSlots = { main: undefined, handset: undefined }; // what each card was last rebuilt for (renderSlot)
     this.rejected = [];
     this.busy = 0;
     this.booting = false;
     this.init = null;
     this.remembered = null; // the firmware pair kept in this browser, by role (the worker's `rememberedInfo`), or null
-    this.urlLoading = null; // {controller, timer, cancelled, timedOut, phase} while "Load from URLs" runs
+    this.urlLoading = null; // {controller, timer, canceled, timedOut, phase} while "Load from URLs" runs
     this.urlResult = { main: null, handset: null }; // the last outcome per field: {kind: 'ok'|'bad'|'busy', text}
     this.root = byId('screen-entry');
     this.slotEls = { main: byId('slot-main'), handset: byId('slot-handset') };
@@ -235,7 +236,7 @@ export class EntryView {
     const name = (RELEASES[releaseId] && RELEASES[releaseId].name) || releaseId;
     const ok = await confirmDialog({
       title: `Reset the saved ${name} profile?`,
-      message: `This erases the emulated EEPROM, log flash, clock checkpoint, sensor inputs and LED colour labels of the ${name} profile stored in this browser. Export the profile first if you may need it again.`,
+      message: `This erases the emulated EEPROM, log flash, clock checkpoint, sensor inputs and LED color labels of the ${name} profile stored in this browser. Export the profile first if you may need it again.`,
       confirm: 'Erase profile',
       danger: true,
     });
@@ -362,7 +363,7 @@ export class EntryView {
   cancelUrls() {
     const run = this.urlLoading;
     if (!run || run.phase !== 'fetch') return;
-    run.cancelled = true;
+    run.canceled = true;
     run.controller.abort();
   }
 
@@ -390,7 +391,7 @@ export class EntryView {
       return;
     }
 
-    const run = { controller: new AbortController(), timer: null, cancelled: false, timedOut: false, phase: 'fetch' };
+    const run = { controller: new AbortController(), timer: null, canceled: false, timedOut: false, phase: 'fetch' };
     this.urlLoading = run;
     this.urlStatus.textContent = 'Fetching…';
     this.problem.hidden = true;
@@ -432,9 +433,9 @@ export class EntryView {
       this.urlLoading = null; // whatever happened, the form is usable again
       this.urlStatus.textContent = accepted === jobs.length
         ? `Loaded and verified ${accepted === 1 ? 'the file' : 'both files'}.`
-        : run.cancelled ? 'Cancelled.' : `${accepted} of ${jobs.length} loaded; see the messages above.`;
+        : run.canceled ? 'Canceled.' : `${accepted} of ${jobs.length} loaded; see the messages above.`;
       this.refresh();
-      // Synchronised only after a clean load: a failed field keeps its message in view.
+      // Synchronized only after a clean load: a failed field keeps its message in view.
       if (accepted === jobs.length) this.syncSources();
     }
   }
@@ -456,7 +457,7 @@ export class EntryView {
       });
       return { job, bytes, source: source || job.parsed.url };
     } catch (error) {
-      if (error.code === 'aborted') return { job, error: run.timedOut ? `Timed out after ${Math.round(this.deps.timeoutMs / 1000)} s without a complete file.` : 'Cancelled.' };
+      if (error.code === 'aborted') return { job, error: run.timedOut ? `Timed out after ${Math.round(this.deps.timeoutMs / 1000)} s without a complete file.` : 'Canceled.' };
       return { job, error: error.message || String(error) };
     } finally {
       this.setUrlProgress(job.role, null);
@@ -569,23 +570,37 @@ export class EntryView {
     const slot = this.slots[role];
     const element = this.slotEls[role];
     element.classList.toggle('ok', !!slot);
+    // refresh() runs on every option change: rebuild a card only when what it shows changed, so an opened <details> (and
+    // the keyboard focus inside the card) survives.
+    const shown = slot || (this.busy ? 'busy' : 'waiting');
+    if (this.shownSlots[role] === shown) return;
+    this.shownSlots[role] = shown;
     const state = element.querySelector('[data-part="state"]');
     state.replaceChildren();
     if (!slot) {
       state.append(this.busy ? 'Verifying…' : 'Waiting for the file.');
       return;
     }
+    // A verified file is one line (check mark, release and board, file name and size, Remove). The hash, the source address
+    // and the checks are in a <details> that starts closed; a failed check is never folded away.
     const report = slot.report;
-    const passed = report.checks.filter((check) => check.ok).length;
+    const failed = report.checks.filter((check) => !check.ok);
+    const passed = report.checks.length - failed.length;
+    const checkItem = (check) => h('li', { class: check.ok ? '' : 'fail' }, `${check.ok ? '✓' : '✗'} ${check.name}: ${check.detail}`);
+    const file = [slot.name, formatBytes(slot.size), slot.remembered ? 'remembered in this browser' : null].filter(Boolean).join(' · ');
     state.append(
-      h('div', { class: 'ok-text' }, `✓ Verified ${slot.release ? `${slot.release.name} ` : ''}${ROLE_LABEL[role]}`),
-      h('div', {}, `${slot.name} · ${formatBytes(slot.size)}${slot.remembered ? ' · remembered in this browser' : ''}`),
-      ...(slot.source ? [h('div', { class: 'small muted source' }, `Loaded from ${slot.source}`)] : []), // append() would print a null
-      h('code', { class: 'hash' }, `SHA-256 ${report.srecSha256}`),
-      h('details', {},
-        h('summary', {}, `${passed} of ${report.checks.length} checks passed`),
-        h('ul', { class: 'check-list' }, report.checks.map((check) => h('li', { class: check.ok ? '' : 'fail' }, `${check.ok ? '✓' : '✗'} ${check.name}: ${check.detail}`)))),
-      h('div', { class: 'actions-row' }, h('button', { type: 'button', onclick: () => this.removeSlot(role) }, 'Remove')),
+      h('div', { class: 'slot-line' },
+        h('div', { class: 'slot-title ok-text' },
+          h('span', { role: 'img', 'aria-label': 'Verified' }, '✓'),
+          ` ${slot.release ? `${slot.release.name} ` : ''}${ROLE_LABEL[role]}`),
+        h('div', { class: 'slot-file' }, file),
+        h('button', { type: 'button', class: 'slot-remove', 'aria-label': `Remove the ${ROLE_LABEL[role]} file`, onclick: () => this.removeSlot(role) }, 'Remove')),
+      ...(failed.length ? [h('ul', { class: 'check-list failed' }, failed.map(checkItem))] : []), // state.append() would print a null
+      h('details', { class: 'slot-details' },
+        h('summary', {}, `${passed} of ${report.checks.length} checks passed · SHA-256`),
+        h('code', { class: 'hash' }, `SHA-256 ${report.srecSha256}`),
+        slot.source ? h('div', { class: 'small muted source' }, `Loaded from ${slot.source}`) : null,
+        h('ul', { class: 'check-list' }, report.checks.map(checkItem))),
     );
   }
 

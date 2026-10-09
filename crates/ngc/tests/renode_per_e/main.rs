@@ -1,4 +1,4 @@
-//! Regression test against recorded Renode 1.17.0 behaviour: replays the operation lists recorded on 2026-10-08
+//! Regression test against recorded Renode 1.17.0 behavior: replays the operation lists recorded on 2026-10-08
 //! (scripted and seeded-random sequences against the unmodified C# `NGCParallelLCD`, `NGCMainADC`, `NGCMS5837`
 //! and `NGCQuadSPI` models, which were driven through a CPU-less Renode machine; the generator is not part of
 //! this repository, see `testdata/README.md`) on `ngc::models::{lcd, adc_main, ms5837, qspi}` and requires

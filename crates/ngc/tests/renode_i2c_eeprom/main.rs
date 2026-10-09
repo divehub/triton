@@ -1,4 +1,4 @@
-//! Regression test against recorded Renode 1.17.0 behaviour: replays the operation lists recorded on
+//! Regression test against recorded Renode 1.17.0 behavior: replays the operation lists recorded on
 //! 2026-10-07 (scripted flows and seeded random register traffic against the unmodified C# `STM32F7_I2C`
 //! and `NGCEeprom` models; the generator is not part of this repository, see `testdata/README.md`) on
 //! `stm32::i2c::Stm32F7I2c` / `ngc::models::eeprom` and requires identical register reads,

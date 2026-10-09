@@ -1,12 +1,12 @@
 // Ported from emulation/models/NGCCANLink.cs of the analysis workspace (Renode 1.17.0 external, see that file for its
-// licence), which in turn follows Renode's `Antmicro.Renode.Core.CAN` types (MIT License, Copyright (c) Antmicro).
+// license), which in turn follows Renode's `Antmicro.Renode.Core.CAN` types (MIT License, Copyright (c) Antmicro).
 
 //! `NGCCANLink`: the functional CAN link between the main and handset controllers.
 //!
 //! The Renode external subscribes to `ICAN.FrameSent` of both `STMCAN` instances and, for every frame,
 //! counts it, appends a trace line, optionally discards it (link not started, `Connected` false or the frame's
 //! identifier equals `DropId`) and otherwise schedules `OnFrameReceived` on every other endpoint at the sender's
-//! time stamp; Renode runs those at the synchronisation point at the end of the quantum, ordered by
+//! time stamp; Renode runs those at the synchronization point at the end of the quantum, ordered by
 //! `(stamp, scheduling order)`. No bus timing, arbitration or synthetic replies exist.
 //!
 //! This port is a plain system-level object (not memory mapped): the system drains each board's CAN out-queue

@@ -7,7 +7,7 @@
 //! keeps its own clock source and, like Renode, its own chunk lag), then at the boundary
 //!
 //! 1. `CanLink::pump` drains both CAN controllers and delivers the frames to the other board, ordered by
-//!    `(sender stamp, main before handset, transmit order)` - Renode's end-of-quantum synchronisation
+//!    `(sender stamp, main before handset, transmit order)` - Renode's end-of-quantum synchronization
 //!    phase; the receiving CPU sees the interrupt from its first instruction of the next quantum;
 //! 2. host inputs that are due (`schedule_input`) are applied - after the pump, so a link control change
 //!    never reclassifies a frame that was already transmitted;
@@ -33,7 +33,7 @@
 //!   the bus before the first instruction (after the host restored its RTC checkpoint, if any); cold leaves
 //!   the flags zero.
 //!
-//! Full electrical power, standby and reset behaviour and CAN wire timing are not modelled.
+//! Full electrical power, standby and reset behavior and CAN wire timing are not modeled.
 
 use crate::board::{Board, RunReport};
 use crate::bus;
@@ -638,7 +638,7 @@ impl System {
 
     /// The runner's serial-number fixture: writes the 32-bit serial at EEPROM offset 0 (little endian, a
     /// synthetic fixture: it does not identify a physical unit) and restarts. The EEPROM must have been
-    /// initialised by a first boot (validity marker `0xA3` at offset 254).
+    /// initialized by a first boot (validity marker `0xA3` at offset 254).
     pub fn set_serial_number(&mut self, serial: u32) -> Result<(), String> {
         let main = self.main.as_ref().ok_or("Serial fixture requires the dual system")?;
         let marker = main.eeprom.get_byte(fixtures::EEPROM_VALIDITY_OFFSET).map_err(|e| e.to_string())?;

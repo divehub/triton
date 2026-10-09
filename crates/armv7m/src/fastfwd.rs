@@ -309,9 +309,9 @@ impl Cpu {
         self.ff.verify = Some(Verify { head, tail, snap: self.ff_snapshot(), start_icount: self.icount, tries: 0 });
     }
 
-    fn ff_abort(&mut self, penalise: bool) {
+    fn ff_abort(&mut self, penalize: bool) {
         if let Some(v) = self.ff.verify.take() {
-            if penalise {
+            if penalize {
                 let idx = ((v.tail >> 1) & 63) as usize;
                 let e = &mut self.ff.table[idx];
                 if e.valid && e.tail == v.tail {

@@ -1,4 +1,4 @@
-//! STM32 peripheral models. Behavioural reference: the pinned Renode 1.17.0
+//! STM32 peripheral models. Behavioral reference: the pinned Renode 1.17.0
 //! sources (infrastructure commit 066a7f13c052215632d469c995c89aea37c573b1),
 //! including firmware-visible quirks. See `DESIGN.md` section 8.
 //! Module files are owned by the peripheral work packages; this list is

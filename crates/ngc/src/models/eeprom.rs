@@ -685,7 +685,7 @@ mod tests {
         // firmware wrapper (0x08010430) rejects before any I2C traffic: only the valid request reaches here.
         mem_write(&mut rig.h, I2C_BASE, dev(0), 0x1D, &[0x01]);
         assert_eq!(rig.store.get_byte(0x1D), Ok(0x01));
-        assert_eq!(rig.store.get_byte(0x1E), Ok(0xFF), "the neighbouring setting is untouched");
+        assert_eq!(rig.store.get_byte(0x1E), Ok(0xFF), "the neighboring setting is untouched");
         assert_eq!(rig.store.write_count(), 1);
         // The bank itself has no size validation: a two-byte write that did reach it is stored in full.
         mem_write(&mut rig.h, I2C_BASE, dev(0), 0x1D, &[0x02, 0x03]);

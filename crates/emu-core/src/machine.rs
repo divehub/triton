@@ -1,5 +1,5 @@
 // Signal semantics (change-only delivery, connect pushes the current level) follow Renode 1.17.0
-// src/Emulator/Main/Core/GPIO.cs; unmapped-access behaviour follows SystemBus.ReportNonExistingRead/Write;
+// src/Emulator/Main/Core/GPIO.cs; unmapped-access behavior follows SystemBus.ReportNonExistingRead/Write;
 // the clock registry follows src/Emulator/Main/Time/BaseClockSource.cs (MIT License, Copyright (c) Antmicro).
 
 //! The CPU-independent machine: plain memories, peripheral slots, the MMIO map, signal
@@ -1371,7 +1371,7 @@ impl<'a> Ctx<'a> {
         self.schedule_at(self.core.clock_time.saturating_add(delay), token)
     }
 
-    /// Cancels a queued event; `false` if it already fired, was cancelled, or is `NONE`.
+    /// Cancels a queued event; `false` if it already fired, was canceled, or is `NONE`.
     #[inline]
     pub fn cancel(&mut self, id: EventId) -> bool {
         self.core.events.cancel(id)

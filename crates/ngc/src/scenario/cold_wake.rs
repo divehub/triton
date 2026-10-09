@@ -40,7 +40,7 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
     rec.compare("initial state: boot mode, time, running, handset gate", Json::from_items([state.get("bootMode").cloned().unwrap_or(Json::Null), state.get("virtualTime").cloned().unwrap_or(Json::Null), state.get("running").cloned().unwrap_or(Json::Null), state.get("handsetPowered").cloned().unwrap_or(Json::Null)]), Json::from_items([Json::from("cold"), Json::from(0.0f64), Json::from(false), Json::from(false)]), SOURCE, true, "paused, handset held by the PE3 gate");
     rec.compare("initial main PC is the reset vector", state.get("mainPC").and_then(Json::as_u64), Some(134_353_848u64), SOURCE, true, "0x080213B8");
     rec.compare("initial handset PC is its reset vector", state.get("pc").and_then(Json::as_u64), Some(134_251_536u64), SOURCE, true, "0x08008410");
-    rec.compare("initial LCD summary (not initialised)", state.get("lcdSummary").and_then(Json::as_str).map(str::to_string), Some("240x320; panelOn=False; sleeping=True; MADCTL=0x00; COLMOD=0x05; commands=0; data=0; pixels=0; nonBlackGRAM=0; reads=0; TE=0".to_string()), SOURCE, true, "");
+    rec.compare("initial LCD summary (not initialized)", state.get("lcdSummary").and_then(Json::as_str).map(str::to_string), Some("240x320; panelOn=False; sleeping=True; MADCTL=0x00; COLMOD=0x05; commands=0; data=0; pixels=0; nonBlackGRAM=0; reads=0; TE=0".to_string()), SOURCE, true, "");
     rec.check("wake fixture not applied on a cold boot (PWR.SR1 = 0)", rig.u32(Which::Main, 0x4000_7010) == 0, u64::from(rig.u32(Which::Main, 0x4000_7010)));
     let state = rig.advance(2.0)?;
     rec.step("cold standby", &state, Json::object().with("hardware", hardware(&rig)));
@@ -73,7 +73,7 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
     let adc = state.get("adcSummary").and_then(Json::as_str).unwrap_or("").to_string();
     rec.compare("cold ADC (conversions, sequences, calibrations, last channel)", Json::from_items([summary_number(&adc, "conversions"), summary_number(&adc, "sequences"), summary_number(&adc, "calibrations"), summary_number(&adc, "lastChannel")]), Json::from_items([15_464u64, 2_577, 1, 2]), SOURCE, true, "");
     let storage = state.get("storageSummary").and_then(Json::as_str).unwrap_or("").to_string();
-    rec.compare("cold EEPROM write count", summary_number(&storage, "writes"), Some(195u64), SOURCE, true, "first initialisation of the settings");
+    rec.compare("cold EEPROM write count", summary_number(&storage, "writes"), Some(195u64), SOURCE, true, "first initialization of the settings");
     rec.compare("serial number of an erased EEPROM", state.get("serialNumber").and_then(Json::as_u64), Some(4_294_967_295u64), SOURCE, true, "");
     let png = rig.png();
     rec.image("cold-standby.png", png);
@@ -117,7 +117,7 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
         "cause 3, surface mode 1, state 0x22",
     );
     rec.compare("wake: handset release time", state.get("handsetReleaseTime").and_then(Json::as_f64), Some(1.05f64), SOURCE, true, "");
-    rec.compare("wake: LCD summary at 4.5 s", state.get("lcdSummary").and_then(Json::as_str).map(str::to_string), Some("320x240; panelOn=True; sleeping=False; MADCTL=0x60; COLMOD=0x05; commands=169; data=461246; pixels=460800; nonBlackGRAM=18179; reads=4; TE=189".to_string()), SOURCE, true, "initialised settings: a shorter first screen than a fresh profile");
+    rec.compare("wake: LCD summary at 4.5 s", state.get("lcdSummary").and_then(Json::as_str).map(str::to_string), Some("320x240; panelOn=True; sleeping=False; MADCTL=0x60; COLMOD=0x05; commands=169; data=461246; pixels=460800; nonBlackGRAM=18179; reads=4; TE=189".to_string()), SOURCE, true, "initialized settings: a shorter first screen than a fresh profile");
     let can = state.get("canSummary").and_then(Json::as_str).unwrap_or("").to_string();
     rec.compare("wake: CAN traffic (transmitted, last identifier)", Json::object().with("transmitted", summary_number(&can, "transmitted")).with("lastId", summary_field(&can, "lastId").map(str::to_string)), Json::object().with("transmitted", 48u64).with("lastId", "0x83"), SOURCE, true, "");
     let adc = state.get("adcSummary").and_then(Json::as_str).unwrap_or("").to_string();
@@ -147,6 +147,6 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
     rec.compare("automatic run: CAN transmitted", summary_number(&can, "transmitted"), Some(1u64), SOURCE_AUTO, true, "");
     let outcome = auto.session.run_for(1.0);
     rec.check("a stopped session does not advance (run_for returns without progress)", outcome.advanced_ns == 0 && outcome.standby && !outcome.running, outcome.advanced_ns);
-    rec.limitation("Standby is observed on the host (PWR LPMS = 3 with SLEEPDEEP, polled every 50 virtual ms): full rail removal, wake and reset electrical behaviour are not modelled; PWR/FLASH/FMC are ArrayMemory stores.");
+    rec.limitation("Standby is observed on the host (PWR LPMS = 3 with SLEEPDEEP, polled every 50 virtual ms): full rail removal, wake and reset electrical behavior are not modeled; PWR/FLASH/FMC are ArrayMemory stores.");
     Ok(rec.finish(env))
 }

@@ -17,6 +17,7 @@ The paired inputs are **main 5.8 / handset 65.3**, in two releases (TRITON, NEPT
 - Use a private cargo target directory when several people or agents build at once: `./cargo test -p <crate> --release --target-dir target/<name>`.
 - Keep every crate compiling at every save point; write new code in new files and add the `mod` line last.
 - Measure performance before and after a change to a hot path (CPU loop, memory access, MMIO dispatch, event queue): `ngc-cli bench` natively and `web/bench-node.mjs` in V8. Read the performance sections of `DESIGN.md` (9, 13) before proposing a change.
+- Use American English spelling in UI text, docs, comments and messages.
 
 ## Repository content
 
@@ -35,13 +36,13 @@ The recorded test data (`testdata/`, `crates/*/tests/**`) contains register-leve
 - Fixture assumptions are explicit and stay explicit: handset ADC sample 400 gives the inferred board code `0x0201`; main analog reference 2500 mV, battery divider 1.68, oxygen gain 10, pressure PROM coefficients, the 60 Hz display TE and fixed clocks; the main I2C idle-high lines (PB6/PB7/PB10/PB11, on by default); the synthetic serial number (EEPROM offset 0 is synthetic storage and never identifies a physical unit); the two decompression fixtures (on by default, switchable, named in the state): the pre-boot EEPROM consistency repair of a never-saved tissue block (it erases only the saved decompression date) and the start at the surface (both pressure inputs at the surface pressure plus the sensor offsets at every board creation, a new session also with default oxygen cells). They repair what the original firmware does with a restarted profile (it loads NaN tissues and keeps the no-decompression limit at 99); `decoHealth` reports the state read-only. The scenario suite pins both off (`scenario::recorded_config`).
 - The page's Confirm button uses two overlapping 204.8 ms pulses staggered by 50 virtual ms, so the guest receives separate key events inside its 250-tick combination window. This offset is a functional fixture, not measured switch skew. If a menu confirmation fails, do not patch the guest key handler or inject RAM events to work around it.
 - Oxygen calibration goes through the documented firmware protocol; never set application calibration flags or ppO2 RAM directly.
-- Boot and power: the default dual boot restores saved RTC domains, then overrides main `RTC.BKP1R` with `0x32f0`, `PWR.SR1` with `0x104` and `RCC.CSR` with `0` to represent a handset wake from standby; the inferred main PE3 supply enable is polled every 50 virtual ms to release the handset CPU. Cold mode keeps the RTC calendar and backup words but supplies zero wake flags. Full electrical power, standby and reset behaviour and CAN wire timing are not modelled; PWR, FLASH and FMC are simplified. Preserve these boundaries when interpreting concurrency or cold-boot symptoms.
+- Boot and power: the default dual boot restores saved RTC domains, then overrides main `RTC.BKP1R` with `0x32f0`, `PWR.SR1` with `0x104` and `RCC.CSR` with `0` to represent a handset wake from standby; the inferred main PE3 supply enable is polled every 50 virtual ms to release the handset CPU. Cold mode keeps the RTC calendar and backup words but supplies zero wake flags. Full electrical power, standby and reset behavior and CAN wire timing are not modeled; PWR, FLASH and FMC are simplified. Preserve these boundaries when interpreting concurrency or cold-boot symptoms.
 - Profiles: EEPROM, sparse NOR and the per-board RTC checkpoint survive Restart, cold boot, Wake and reopening; RAM is recreated. The calendar advances in virtual time only (paused or closed means frozen). An invalid checkpoint stops startup and is never silently erased or replaced.
 
 ## Engine invariants
 
-- Timing follows `DESIGN.md` section 5. Do not silently disable guest-visible timer counters or flags, slow ADC acquisition, lower the CPU MIPS or coarsen the synchronisation quantum to make a test pass or run faster.
-- Optimisations must be exact: the idle-loop fast-forward on and off, and native and WebAssembly builds, must produce identical state digests.
+- Timing follows `DESIGN.md` section 5. Do not silently disable guest-visible timer counters or flags, slow ADC acquisition, lower the CPU MIPS or coarsen the synchronization quantum to make a test pass or run faster.
+- Optimizations must be exact: the idle-loop fast-forward on and off, and native and WebAssembly builds, must produce identical state digests.
 - New observation features (histories, summaries, tracing) must not perturb guest execution: no new clock entries, limit timers or chunk splits in a board's clock; sample at the system's quantum boundaries instead.
 - Ported files keep their attribution header (`// Ported from Renode 1.17.0 <path> (MIT License, Copyright (c) Antmicro).`), and `licenses/` carries the notice. Do not copy tlib (LGPL) code.
 
@@ -61,4 +62,4 @@ The recorded test data (`testdata/`, `crates/*/tests/**`) contains register-leve
 
 ## Device scope
 
-Static analysis and local emulation do not authorise flashing or changing a physical device. This project never flashes firmware, switches a device into a programming mode or applies a generated patch to hardware. Keep original firmware bytes unchanged; store any proposed modification as a separately identified artifact outside the firmware.
+Static analysis and local emulation do not authorize flashing or changing a physical device. This project never flashes firmware, switches a device into a programming mode or applies a generated patch to hardware. Keep original firmware bytes unchanged; store any proposed modification as a separately identified artifact outside the firmware.

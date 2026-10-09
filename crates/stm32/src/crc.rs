@@ -701,8 +701,8 @@ mod tests {
     }
 
     #[test]
-    fn catalogue_check_values_for_every_polynomial_size_and_reversal() {
-        // Values from the CRC catalogue / an independent bit-serial implementation: CRC of "123456789".
+    fn catalog_check_values_for_every_polynomial_size_and_reversal() {
+        // Values from the CRC catalog / an independent bit-serial implementation: CRC of "123456789".
         check_vector(CR_POLY_32 | CR_REV_IN_BYTE | CR_REV_OUT, 0x04C1_1DB7, 0xFFFF_FFFF, 0x340B_C6D9, "CRC-32/JAMCRC (zlib CRC-32 without the final xor)");
         check_vector(CR_POLY_32 | CR_REV_IN_BYTE | CR_REV_OUT, 0x1EDC_6F41, 0xFFFF_FFFF, 0x1CF9_6D7C, "CRC-32C without the final xor");
         check_vector(CR_POLY_16, 0x1021, 0xFFFF, 0x29B1, "CRC-16/CCITT-FALSE");

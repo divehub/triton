@@ -1,7 +1,7 @@
-//! Renode/tlib timing behaviour of the core that the REF micro vectors do not pin down:
+//! Renode/tlib timing behavior of the core that the REF micro vectors do not pin down:
 //! translation-block boundaries (branch, page, chunk end), chunk rounding, stop requests, MMIO
 //! notifications, WFI / WFE / sleep-on-exit, SysTick and DWT as clock entries (lagging writes,
-//! exact-time reads, COUNTFLAG, the FreeRTOS initialisation order), `advance_idle`, halting and
+//! exact-time reads, COUNTFLAG, the FreeRTOS initialization order), `advance_idle`, halting and
 //! the exactness of idle-loop fast-forward. All times use the 1 ns base (10 ns per instruction).
 
 mod common;
@@ -464,7 +464,7 @@ fn cyccnt_read_sees_the_start_of_its_translation_block() {
 }
 
 #[test]
-fn systick_and_dwt_reads_synchronise_the_board_clock_first() {
+fn systick_and_dwt_reads_synchronize_the_board_clock_first() {
     struct Recording {
         inner: TestBus,
         syncs: Vec<u64>,
@@ -534,7 +534,7 @@ fn countflag_is_read_to_clear() {
 }
 
 #[test]
-fn the_freertos_initialisation_order_expires_immediately_without_pending_the_exception() {
+fn the_freertos_initialization_order_expires_immediately_without_pending_the_exception() {
     // CSR = 0 ; CVR = 0 ; RVR = n ; CSR = ENABLE | TICKINT | CLKSOURCE. CVR was written while
     // RELOAD was still 0 (so the counter reads 0); enabling the counter reaches its limit in the
     // zero-time update, but TICKINT is applied after ENABLE in the same register write.

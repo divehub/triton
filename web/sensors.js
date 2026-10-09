@@ -78,7 +78,7 @@ function density(waterType) {
   return WATER_DENSITIES[waterType];
 }
 
-/** Absolute pressure (mbar) at `depthM` metres: surface + density * g * depth / 100. */
+/** Absolute pressure (mbar) at `depthM` meters: surface + density * g * depth / 100. */
 export function pressureMbar(surfacePressureMbar, depthM, waterType) {
   const surface = number(surfacePressureMbar, 'surfacePressureMbar', BASE_LIMITS.surfacePressureMbar);
   const depth = number(depthM, 'depthM', BASE_LIMITS.depthM);

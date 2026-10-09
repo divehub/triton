@@ -6,7 +6,7 @@
 //! `FPSqrt`, `FPMulAdd`, `FPCompare`, `FPToFixed`, `FixedToFP`,
 //! `FPHalfToSingle`, `FPSingleToHalf`) using integer arithmetic only: the host
 //! floating-point unit, the host rounding mode and the host NaN payload
-//! behaviour are never consulted, so results are identical on every target
+//! behavior are never consulted, so results are identical on every target
 //! (including WebAssembly).
 //!
 //! All functions take and return raw bit patterns and update the cumulative
@@ -19,7 +19,7 @@
 //! * `FZ` flushes denormal inputs (setting IDC) and results whose unrounded
 //!   exponent is below the minimum normal exponent (setting UFC, not IXC);
 //! * overflow sets OFC and IXC;
-//! * NaN propagation: first signalling NaN operand (quietened), else first
+//! * NaN propagation: first signaling NaN operand (quietened), else first
 //!   quiet NaN, else the default NaN `0x7FC00000`; `DN` forces the default NaN.
 
 use crate::fpscr::*;
@@ -47,7 +47,7 @@ enum Kind {
 
 /// An unpacked binary32 operand. For `Num`, the value is
 /// `sig * 2^(exp - 23)` with `sig` in `[2^23, 2^24)` (subnormals are
-/// normalised), i.e. `exp` is the unbiased exponent of the leading bit.
+/// normalized), i.e. `exp` is the unbiased exponent of the leading bit.
 #[derive(Clone, Copy, Debug)]
 struct Unp {
     kind: Kind,
@@ -187,7 +187,7 @@ fn round_pack(sign: u32, exp: i32, sig: u64, fpscr: &mut u32) -> u32 {
     sign | bits
 }
 
-/// Normalises `m * 2^e` (non-zero `m`, optional sticky bit in bit 0) and rounds it.
+/// Normalizes `m * 2^e` (non-zero `m`, optional sticky bit in bit 0) and rounds it.
 #[inline]
 fn norm_round_pack(sign: u32, m: u64, e: i32, fpscr: &mut u32) -> u32 {
     debug_assert!(m != 0);
@@ -683,7 +683,7 @@ pub fn f16_to_f32(h: u16, fpscr: &mut u32) -> u32 {
         if f == 0 {
             return sign;
         }
-        // Subnormal half: f * 2^-24, normalised.
+        // Subnormal half: f * 2^-24, normalized.
         let sh = f.leading_zeros() - 21;
         let m = (f << sh) & 0x3FF;
         return sign | ((127 - 14 - sh) << 23) | (m << 13);

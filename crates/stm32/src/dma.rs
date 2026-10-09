@@ -1,7 +1,7 @@
 // Ported from Renode 1.17.0 src/Emulator/Peripherals/Peripherals/DMA/STM32LDMA.cs and the copy logic of
 // src/Emulator/Main/Peripherals/DMA/DmaEngine.cs (MIT License, Copyright (c) Antmicro).
 
-//! STM32L4 DMA controller as modelled by Renode's `DMA.STM32LDMA`.
+//! STM32L4 DMA controller as modeled by Renode's `DMA.STM32LDMA`.
 //!
 //! The model moves **one data unit per request edge**: a rising level on request input `n` (Renode
 //! `OnGPIO(n, true)`, e.g. `adc DMARequest -> dma1@0`) performs one transfer on channel `n` through the system
@@ -12,7 +12,7 @@
 //!
 //! Output lines `0..7` are the channel interrupts (`IRQ` of each channel, `.repl` `[0-6] -> nvic@[11-17]` and
 //! `[0-4] -> nvic@[56-60]`, `[5-6] -> nvic@[68-69]`). Renode instantiates **eight** channels but the register map
-//! decodes only seven (`0x08..=0x8C`); `CSELR` (0xA8) is not modelled and logs as unhandled.
+//! decodes only seven (`0x08..=0x8C`); `CSELR` (0xA8) is not modeled and logs as unhandled.
 //!
 //! Renode quirks reproduced (`// Renode parity`): the destination address of a transfer advances by the
 //! *source* data size; the interrupt-status `GIF` bit reports the channel's interrupt *line* (flag AND enable),
@@ -39,7 +39,7 @@ pub mod offset {
     pub const CNDTR: u32 = 0x4;
     pub const CPAR: u32 = 0x8;
     pub const CMAR: u32 = 0xC;
-    /// Channel selection register: not modelled by Renode.
+    /// Channel selection register: not modeled by Renode.
     pub const CSELR: u32 = 0xA8;
 }
 
@@ -690,7 +690,7 @@ mod tests {
     #[test]
     fn unhandled_bits_and_reserved_sizes_warn() {
         let (mut h, _dma, _src) = rig(0);
-        h.write32(ch(0, offset::CCR), (1 << 14) | MSIZE_16); // MEM2MEM is not modelled
+        h.write32(ch(0, offset::CCR), (1 << 14) | MSIZE_16); // MEM2MEM is not modeled
         h.write32(ch(0, offset::CCR), 3 << 8); // reserved PSIZE
         assert_eq!(
             h.warnings(),

@@ -1,6 +1,6 @@
 //! Engine contract of the main-viewer parity (DESIGN 15.3) with the real firmware images, skipped when the gitignored SREC
 //! files are not available: output activity histories in a session (a vibrator and a HUD pulse appear, the epoch changes
-//! when the histories start over, fast-forward on and off agree), the HUD colour defaults, the I2C idle-high fixture, the
+//! when the histories start over, fast-forward on and off agree), the HUD color defaults, the I2C idle-high fixture, the
 //! nine-digit serial and the firmware releases (identification, mixed pairs, NEPTUN state, cold boot refusal, smoke check).
 
 use emu_core::{Json, Width};
@@ -213,10 +213,10 @@ fn histories_do_not_perturb_the_guest() {
     assert_eq!(plain, observed);
 }
 
-// ---- HUD colours, I2C fixture, serial --------------------------------------------------------------------------------
+// ---- HUD colors, I2C fixture, serial --------------------------------------------------------------------------------
 
 #[test]
-fn hud_colour_defaults_and_saved_choices() {
+fn hud_color_defaults_and_saved_choices() {
     let (main, handset) = images_or_skip!(&TRITON);
     let s = session(SessionConfig::default(), &main, &handset);
     let colors = |state: &Json| ["main-hud-1", "main-hud-2", "main-hud-3"].map(|id| output(state, id).get("color").and_then(Json::as_str).unwrap_or("?").to_string());

@@ -178,14 +178,14 @@ export class PulseQueue {
 
 // ---- presentation (pure functions, shared by the page and the tests) -----------------------------------------
 
-/** Outputs shown in the basic status strip: the colour is fixed by channel (HUD 3 red, HUD 2 white). */
+/** Outputs shown in the basic status strip: the color is fixed by channel (HUD 3 red, HUD 2 white). */
 export const STATUS_STRIP = Object.freeze({
   'handset-vibrator': Object.freeze({ color: 'neutral', vibrator: true }),
   'main-hud-3': Object.freeze({ color: 'red', vibrator: false }),
   'main-hud-2': Object.freeze({ color: 'white', vibrator: false }),
 });
 
-/** CSS class of the colour label the engine reports for an LED (`neutral` while unassigned). */
+/** CSS class of the color label the engine reports for an LED (`neutral` while unassigned). */
 export function colorClass(output) {
   return output && ['red', 'white'].includes(output.color) ? output.color : 'neutral';
 }

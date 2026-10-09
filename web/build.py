@@ -28,7 +28,7 @@ TRIPLE = "wasm32-unknown-unknown"
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--target-dir", default="target/web", help="cargo target directory relative to the repository root (default: target/web)")
-    parser.add_argument("--debug", action="store_true", help="build the unoptimised dev profile instead of release (much slower in the browser)")
+    parser.add_argument("--debug", action="store_true", help="build the unoptimized dev profile instead of release (much slower in the browser)")
     parser.add_argument("--no-build", action="store_true", help="skip cargo and copy the module that is already in the target directory")
     parser.add_argument("--no-copy", action="store_true", help="build only; do not copy to web/pkg/")
     args = parser.parse_args()

@@ -4,7 +4,7 @@
 // them only on power-down, so a profile that was booted once and restarted holds a decompression date but no tissues; the
 // next start loads 32 erased words as NaN and the no-decompression limit stays at 99. With the oxygen cells uncalibrated in
 // the measured-ppO2 mode its ppO2 is NaN and the limit stays at 99 as well. The engine reports both (`decoHealth`, from
-// side-effect-free peeks) and, with two labelled emulator fixtures that are on by default, repairs the first before a start
+// side-effect-free peeks) and, with two labeled emulator fixtures that are on by default, repairs the first before a start
 // (`decoStorageFixture`) and starts every board creation at the surface (`startAtSurface`). Nothing here changes the guest.
 //
 // No DOM: the Node tests import it.
@@ -45,7 +45,7 @@ export function decoWarnings(state) {
     warnings.push({
       id: 'tissues',
       text: off
-        ? 'Decompression state invalid: the repair fixture is off. Close the session, tick "Repair the stored decompression state" under Start options and boot again.'
+        ? 'Decompression state invalid: the repair fixture is off. Close the session, check "Repair the stored decompression state" under Start options and boot again.'
         : 'Decompression state invalid: restart the boards to let the firmware reset it.',
     });
   }
@@ -64,7 +64,7 @@ export function healthLine(state) {
   return `Decompression state (read-only report): ${parts.join(', ')}.${reasons.length ? ` ${reasons.join(' ')}` : ''}`;
 }
 
-/** Lines for the session information about the two labelled emulator fixtures (empty for an engine without them). */
+/** Lines for the session information about the two labeled emulator fixtures (empty for an engine without them). */
 export function fixtureLines(state) {
   const lines = [];
   const storage = state && state.decoStorageFixture;

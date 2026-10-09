@@ -166,7 +166,7 @@ impl NgcAdc {
         }
         if offset == reg::CR {
             // ADEN is set by writing one; writing zero does not disable an enabled ADC. HAL starts a
-            // conversion with CR.ADSTART=1 and ADEN=0 in the write value, relying on this behaviour.
+            // conversion with CR.ADSTART=1 and ADEN=0 in the write value, relying on this behavior.
             let mut control = value | (self.values.get(reg::CR) & CR_ADEN);
             if value & CR_ADCAL != 0 {
                 self.calibrations += 1;

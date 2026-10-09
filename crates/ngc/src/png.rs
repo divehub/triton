@@ -1,7 +1,7 @@
 //! A small PNG encoder (no external crates): `lcd.png` captures of the handset display.
 //!
 //! The runner converts the Renode PPM to an 8-bit RGB PNG with unfiltered scanlines and `zlib.compress`. This
-//! encoder produces the same image (colour type 2, filter type 0 on every row) with its own deflate stream:
+//! encoder produces the same image (color type 2, filter type 0 on every row) with its own deflate stream:
 //! stored blocks (`level 0`) or LZ77 matches with the fixed Huffman code (`level >= 1`, hash chains over a
 //! 32 KiB window). Both are plain RFC 1951 streams inside a zlib wrapper (RFC 1950, Adler-32) and PNG chunks with
 //! CRC-32, so any PNG reader decodes them to the identical pixels. [`decode_rgb`] and [`zlib_decompress`] are a
@@ -504,7 +504,7 @@ pub fn zlib_decompress(data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// Decodes an 8-bit RGB (colour type 2) PNG to `(width, height, rgb)`: every filter type is supported, only
+/// Decodes an 8-bit RGB (color type 2) PNG to `(width, height, rgb)`: every filter type is supported, only
 /// non-interlaced images with one or more IDAT chunks. Checks the chunk CRCs.
 pub fn decode_rgb(png: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     if png.len() < 8 || png[..8] != SIGNATURE {

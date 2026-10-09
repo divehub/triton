@@ -47,7 +47,7 @@ pub const HANDSET_CURRENT_TCB_ADDRESS: u32 = 0x2000_13FC;
 /// `ICSR`, `CFSR`, `HFSR`.
 pub const FAULT_REGISTERS: [(&str, u32); 3] = [("ICSR", 0xE000_ED04), ("CFSR", 0xE000_ED28), ("HFSR", 0xE000_ED2C)];
 
-/// Serial-number fixture: the EEPROM must be initialised (validity marker) before the serial is changed.
+/// Serial-number fixture: the EEPROM must be initialized (validity marker) before the serial is changed.
 pub const EEPROM_VALIDITY_OFFSET: u32 = 254;
 pub const EEPROM_VALIDITY_MARKER: u8 = 0xA3;
 

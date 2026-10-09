@@ -17,7 +17,7 @@
 //!   (setter by setter, including which setters ask the CPU to return).
 //!
 //! See `docs/framework.md` section 5 for usage and `docs/renode-semantics.md` sections 3-4 for the
-//! reference behaviour.
+//! reference behavior.
 
 use crate::event::EventId;
 use crate::machine::Ctx;

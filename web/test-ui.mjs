@@ -61,7 +61,7 @@ test('sensors: default physical readings, and defaults() never shares its arrays
   assert.equal(sensors.GRAVITY, 9.80665);
 });
 
-test('sensors: depth converts metres to absolute mbar with each adopted water density', () => {
+test('sensors: depth converts meters to absolute mbar with each adopted water density', () => {
   near(pressureMbar(1013.25, 10, 'fresh'), 1993.915, 'Fresh water at 10m');
   near(pressureMbar(1013.25, 10, 'salt'), 2018.431625, 'Salt water at 10m');
   near(pressureMbar(1013.25, 10, 'en13319'), 2013.5283, 'EN13319 at 10m');
@@ -937,7 +937,7 @@ test('uart page: while the console is closed the page neither reads nor writes i
   assert.equal(h.pre.textContent, 'text of main.uart4\n');
 });
 
-test('replay page: the LED colour selects are not written again while nothing changed', async () => {
+test('replay page: the LED color selects are not written again while nothing changed', async () => {
   const h = await replayHarness();
   h.show([vibratorOrLed(pulses(0))]);
   const color = h.row().color;
@@ -949,7 +949,7 @@ test('replay page: the LED colour selects are not written again while nothing ch
   assert.deepEqual(writes, { value: 0, disabled: 0 });
   assert.deepEqual(attributes, [], 'neither is its label rewritten');
   assert.equal(color.value, 'white');
-  // A new colour from the engine still arrives.
+  // A new color from the engine still arrives.
   h.show([{ ...vibratorOrLed(pulses(0)), color: 'red' }], 30);
   assert.equal(color.value, 'red');
 });
@@ -1460,7 +1460,7 @@ test('page: Restart, Cold boot, Wake and a new serial number start the output hi
 
 // ---- the page itself ---------------------------------------------------------------------------------
 
-test('structure: every element the scripts look up exists in index.html, and the page honours its CSP', () => {
+test('structure: every element the scripts look up exists in index.html, and the page honors its CSP', () => {
   const ids = new Set([...html.matchAll(/\bid="([\w-]+)"/g)].map((match) => match[1]));
   for (const file of ['emulator.js', 'entry.js', 'app.js']) {
     const source = fs.readFileSync(path.join(here, file), 'utf8');
@@ -1481,7 +1481,7 @@ test('structure: every element the scripts look up exists in index.html, and the
   assert.match(html, /<input type="checkbox" id="start-i2c-idle" checked>/, 'the I2C idle-high fixture is a start option, on by default');
   assert.match(html, /<input type="checkbox" id="start-deco-fixture" checked>/, 'the stored decompression state repair is a start option, on by default');
   assert.match(html, /<input type="checkbox" id="start-surface" checked>/, 'the start at the surface is a start option, on by default');
-  assert.match(html, /<input type="checkbox" id="remember" checked>/, 'Remember these files starts ticked');
+  assert.match(html, /<input type="checkbox" id="remember" checked>/, 'Remember these files starts checked');
 });
 
 test('structure: the raw sensor fields keep the engine ranges and accept any decimal', () => {
@@ -1513,7 +1513,7 @@ test('keys: arrows and Enter drive the handset except where the key belongs to t
   assert.equal(press('ArrowDown', target('BODY'), { defaultPrevented: true }), null);
 });
 
-test('conditions: the action queue serialises, coalesces adjacent pending basic updates and reports every outcome', async () => {
+test('conditions: the action queue serializes, coalesces adjacent pending basic updates and reports every outcome', async () => {
   const calls = [];
   const queue = new ActionQueue({
     perform: (payload) => new Promise((resolve, reject) => calls.push({ payload, resolve, reject })),
@@ -1711,7 +1711,7 @@ test('runtime (fake engine): both releases are accepted in either order and a mi
   await h.request('clear-firmware', { role: 'handset' });
   assert.equal((await h.inspect('main', 'TRITON-5.8-65.3')).accepted, true);
   assert.equal((await h.inspect('handset', 'TRITON-5.8-65.3')).accepted, true);
-  // An unrecognised file and an engine report without a release (older engine) behave as before.
+  // An unrecognized file and an engine report without a release (older engine) behave as before.
   const bad = await h.request('inspect', { name: 'x.txt', bytes: new TextEncoder().encode('hello') });
   assert.equal(bad.accepted, false);
   assert.equal(bad.release, null);
@@ -2016,7 +2016,7 @@ test('urls: the committed config.js configures no proxy; the proxy is the config
     const result = at('127.0.0.1', `?firmware-proxy=${encodeURIComponent(bad)}`, null);
     assert.equal(result.kind, 'none', `${bad} is ignored`);
     assert.match(result.warning, /ignored/);
-    assert.equal(at('127.0.0.1', `?firmware-proxy=${encodeURIComponent(bad)}`).endpoint, PROXY, `${bad} is ignored in favour of the configured proxy`);
+    assert.equal(at('127.0.0.1', `?firmware-proxy=${encodeURIComponent(bad)}`).endpoint, PROXY, `${bad} is ignored in favor of the configured proxy`);
   }
   // On any other page the parameter is ignored altogether, even with a loopback address.
   const hosted = at('triton.divehub.ai', '?firmware-proxy=http://127.0.0.1:8775/api/firmware');
@@ -2253,7 +2253,7 @@ test('urls (page): two fetched files take the same verification path as chosen f
   assert.equal(m.view.slots.handset.release.id, 'TRITON-5.8-65.3');
   assert.equal(m.view.slots.main.name, 'pvlL3Iilv4o_Tu5lggngZAUt.srec');
   assert.equal(m.view.slots.main.source, MAIN_FETCHED);
-  assert.match(m.slotText('main'), /Verified TRITON main controller 5\.8/);
+  assert.match(m.slotText('main'), /✓ TRITON main controller 5\.8/);
   assert.match(m.slotText('main'), /Loaded from https:\/\/web\.archive\.org\/web\/20261008041333id_\//);
   assert.match(m.slotText('handset'), /SHA-256 sha-handset-TRITON-5\.8-65\.3/);
   assert.match(m.info('main'), /^Fetched https:\/\/web\.archive\.org\/web\/20261008041333id_\/\S+ \(22 bytes\) and verified as TRITON main controller 5\.8\.$/, 'the size is read before the buffer is transferred');
@@ -2280,12 +2280,12 @@ test('urls (page): the content decides the slot; a single address is enough; the
   assert.equal(m.view.slots.handset.release.name, 'NEPTUN');
   assert.match(m.info('main'), /It is the handset 65\.3 image, so it went to that slot \(the file's content decides, not the field\)\./);
   assert.equal(m.calls.length, 1, 'the empty field was not fetched');
-  assert.equal(m.el('remember').checked, false, 'loading from a URL does not tick the remember option');
+  assert.equal(m.el('remember').checked, false, 'loading from a URL does not check the remember option');
   assert.match(m.el('boot-hint').textContent, /Still needed: the NEPTUN main controller 5\.8 firmware file\./);
 });
 
-test('entry: "Remember these files" is on by default, unticking it boots without remembering, Forget removes them, and without the origin-private file system it is off and explained', async () => {
-  // The markup starts the box ticked and no longer says "off by default".
+test('entry: "Remember these files" is on by default, unchecking it boots without remembering, Forget removes them, and without the origin-private file system it is off and explained', async () => {
+  // The markup starts the box checked and no longer says "off by default".
   assert.match(html, /<input type="checkbox" id="remember" checked><span>Remember these files in this browser/);
   assert.doesNotMatch(/<input type="checkbox" id="remember"[^>]*><span>[^<]*/.exec(html)[0], /off by default/);
   const answers = () => proxyFor({
@@ -2295,7 +2295,7 @@ test('entry: "Remember these files" is on by default, unticking it boots without
   const fill = async (m) => { m.type('main', MAIN_EXAMPLE); m.type('handset', HANDSET_EXAMPLE); await m.view.loadUrls(); };
   const remembered = (m) => m.runtime.storage.list('firmware').then((files) => files.map((file) => file.name).sort());
 
-  // With the origin-private file system: ticked, enabled, no warning; booting stores the pair.
+  // With the origin-private file system: checked, enabled, no warning; booting stores the pair.
   const booted = [];
   const m = await mountEntry({ storageKind: 'opfs', respond: answers(), booted: (result) => booted.push(result) });
   assert.equal(m.el('remember').checked, true, 'on by default');
@@ -2305,7 +2305,7 @@ test('entry: "Remember these files" is on by default, unticking it boots without
   assert.equal(m.el('remember').checked, true, 'loading from URLs leaves it as it was');
   await m.view.boot('stored');
   assert.equal(booted.length, 1);
-  assert.deepEqual(await remembered(m), ['handset.srec', 'index.json', 'main.srec'], 'the verified pair is remembered without the user having ticked anything');
+  assert.deepEqual(await remembered(m), ['handset.srec', 'index.json', 'main.srec'], 'the verified pair is remembered without the user having checked anything');
   assert.deepEqual(m.runtime.messages.filter((message) => message.type === 'notice'), [], 'and nothing is warned about');
   // Forget keeps working: it removes the files and unticks the box.
   await m.view.forget();
@@ -2313,13 +2313,13 @@ test('entry: "Remember these files" is on by default, unticking it boots without
   assert.equal(m.el('remember').checked, false);
   await m.runtime.request('close-session');
 
-  // Unticked before booting: the session starts and nothing is stored.
-  const unticked = await mountEntry({ storageKind: 'opfs', respond: answers(), booted: () => {} });
-  await fill(unticked);
-  unticked.el('remember').checked = false;
-  await unticked.view.boot('stored');
-  assert.deepEqual(await remembered(unticked), []);
-  await unticked.runtime.request('close-session');
+  // Unchecked before booting: the session starts and nothing is stored.
+  const unchecked = await mountEntry({ storageKind: 'opfs', respond: answers(), booted: () => {} });
+  await fill(unchecked);
+  unchecked.el('remember').checked = false;
+  await unchecked.view.boot('stored');
+  assert.deepEqual(await remembered(unchecked), []);
+  await unchecked.runtime.request('close-session');
 
   // Without the origin-private file system (IndexedDB or memory only): off, disabled and explained, and booting works as before.
   const memory = await mountEntry({ storageKind: 'memory', respond: answers(), booted: () => {} });
@@ -2495,9 +2495,9 @@ test('urls (page): the form submits on Enter, shows progress while fetching and 
   assert.match(m.info('main'), /^Fetching https:\/\/web\.archive\.org\/web\/20261008041333id_\//);
   m.el('url-cancel').dispatch('click');
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(m.info('main'), 'Cancelled.');
-  assert.equal(m.info('handset'), 'Cancelled.');
-  assert.equal(m.el('url-status').textContent, 'Cancelled.');
+  assert.equal(m.info('main'), 'Canceled.');
+  assert.equal(m.info('handset'), 'Canceled.');
+  assert.equal(m.el('url-status').textContent, 'Canceled.');
   assert.equal(m.el('url-cancel').hidden, true);
   assert.equal(m.el('url-load').disabled, false);
   assert.equal(m.el('url-main').disabled, false);
@@ -2578,7 +2578,7 @@ test('urls (page): the progress bar follows the download, indeterminate when the
 test('page: a verified slot and the session information never print "null" (append() turns a null child into text), with or without a source address', async () => {
   const m = await mountEntry();
   await m.view.addFiles([{ name: 'ngc_main_5.8_TRITON.srec', size: 22, arrayBuffer: async () => text(srec('main', 'TRITON-5.8-65.3')).buffer }]);
-  assert.match(m.slotText('main'), /Verified TRITON main controller 5\.8/);
+  assert.match(m.slotText('main'), /✓ TRITON main controller 5\.8/);
   assert.doesNotMatch(m.slotText('main'), /null|undefined|Loaded from/, 'a chosen or dropped file has no source address');
   // The session information of a handset-only session (no main slot) and of a release the page could not name.
   const session = await mount();
@@ -2593,7 +2593,65 @@ test('page: a verified slot and the session information never print "null" (appe
   }
 });
 
-test('structure: the URL form is a real form with labelled fields, and the CSP only gained the loopback dev proxies in connect-src (the built site adds the configured proxy origin)', () => {
+test('entry: a waiting card is short, a verified card is one line with the hash and the checks in a closed <details>, and a failed check is never folded away', async () => {
+  const m = await mountEntry();
+  const card = (role) => m.document.getElementById(`slot-${role}`);
+  // Waiting: no verified line, no details, only the state text (the expected file names stay in the markup).
+  assert.equal(card('main').querySelector('.slot-line'), null);
+  assert.equal(card('main').querySelector('details'), null);
+  assert.equal(m.slotText('main'), 'Waiting for the file.');
+  assert.equal(card('main').classList.contains('ok'), false);
+
+  await m.view.addFiles([{ name: 'ngc_main_5.8_TRITON.srec', size: 22, arrayBuffer: async () => text(srec('main', 'TRITON-5.8-65.3')).buffer }]);
+  assert.equal(card('main').classList.contains('ok'), true);
+  const line = card('main').querySelector('.slot-line');
+  assert.ok(line, 'one line: check mark, release and board, file, Remove');
+  assert.match(line.querySelector('.slot-title').textContent, /^✓ TRITON main controller 5\.8$/);
+  assert.equal(line.querySelector('.slot-title span').getAttribute('aria-label'), 'Verified', 'the check mark has a text for screen readers');
+  assert.match(line.querySelector('.slot-file').textContent, /^ngc_main_5\.8_TRITON\.srec · \d+ bytes$/);
+  const remove = line.querySelector('button.slot-remove');
+  assert.equal(remove.textContent, 'Remove');
+  assert.equal(remove.getAttribute('aria-label'), 'Remove the main controller 5.8 file', 'two Remove buttons need distinct names');
+  // The hash, the checks and the source address are inside a <details> that starts closed; nothing else shows them.
+  const details = card('main').querySelector('details');
+  assert.equal(details.open, false, 'closed by default');
+  assert.equal(details.querySelector('summary').textContent, '1 of 1 checks passed · SHA-256');
+  assert.match(details.textContent, /SHA-256 sha-main-TRITON-5\.8-65\.3/);
+  assert.match(details.querySelector('.check-list').textContent, /✓ check: ok/);
+  assert.equal(line.textContent.includes('sha-main'), false, 'the line itself carries no hash');
+  assert.equal(card('main').querySelector('.check-list.failed'), null, 'no failed check, no extra list');
+
+  // A refresh (every start option change calls it) keeps the card, its opened details and the focus inside it.
+  details.open = true;
+  m.view.refresh();
+  assert.equal(card('main').querySelector('details'), details, 'the card is not rebuilt for an unchanged file');
+  assert.equal(details.open, true);
+
+  // A failed check is shown outside the closed details, in the failure color class.
+  const slot = m.view.slots.main;
+  m.view.slots.main = { ...slot, report: { ...slot.report, checks: [{ ok: true, name: 'a', detail: 'fine' }, { ok: false, name: 'b', detail: 'broken' }] } };
+  m.view.refresh();
+  const failed = card('main').querySelector('.check-list.failed');
+  assert.ok(failed, 'a failed check is listed');
+  assert.match(failed.textContent, /^✗ b: broken$/);
+  assert.notEqual(failed.parent.tagName, 'DETAILS', 'not folded away');
+  assert.equal(card('main').querySelector('details').open, false, 'a new rendering starts with a closed details');
+  assert.equal(card('main').querySelector('summary').textContent, '1 of 2 checks passed · SHA-256');
+
+  // Remove returns the card to the short waiting state.
+  card('main').querySelector('button.slot-remove').click();
+  await settle();
+  assert.equal(m.view.slots.main, null);
+  assert.equal(card('main').querySelector('.slot-line'), null);
+  assert.equal(m.slotText('main'), 'Waiting for the file.');
+  assert.equal(card('main').classList.contains('ok'), false);
+  // The markup keeps the heading, the state and the expected names in that order, and the verified card is styled one line.
+  assert.match(html, /<h3>Main controller 5\.8<\/h3>\s*<div class="state" data-part="state">Waiting for the file\.<\/div>\s*<p class="expected">ngc_main_5\.8_TRITON\.srec or ngc_main_5\.8_NEPTUN\.srec<\/p>/);
+  const css = fs.readFileSync(path.join(here, 'style.css'), 'utf8');
+  assert.match(css, /\.slot-line \{[^}]*display: grid/);
+});
+
+test('structure: the URL form is a real form with labeled fields, and the CSP only gained the loopback dev proxies in connect-src (the built site adds the configured proxy origin)', () => {
   assert.match(html, /<form id="url-form"[^>]*novalidate/);
   assert.match(html, /<button type="submit" id="url-load"/, 'Enter in a field submits the form');
   assert.match(html, /<label>Main controller 5\.8 URL<input id="url-main" type="text"/);
@@ -2638,7 +2696,7 @@ test('deco: only a proven bad state warns, and each warning names the next step'
   assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'invalid', oxygen: 'calibrated' } }), [{ id: 'tissues', text: restart }]);
   assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'invalid', oxygen: 'uncalibrated' }, decoStorageFixture: { enabled: true } }).map((w) => w.id), ['tissues']);
   const off = deco.decoWarnings({ decoHealth: { tissues: 'invalid', oxygen: 'calibrated' }, decoStorageFixture: { enabled: false } });
-  assert.match(off[0].text, /^Decompression state invalid: the repair fixture is off\. Close the session, tick .* under Start options and boot again\.$/);
+  assert.match(off[0].text, /^Decompression state invalid: the repair fixture is off\. Close the session, check .* under Start options and boot again\.$/);
   // The surface pressure setting: a finite number inside the engine's range, else null; a blank text is not zero.
   assert.equal(deco.parseSurfacePressure('900'), 900);
   assert.equal(deco.parseSurfacePressure(1013.25), 1013.25);
@@ -2702,7 +2760,7 @@ test('page: the cold boot hint sits at the Cold boot button and appears in the s
 
 test('entry and runtime: the decompression fixtures are start options, on by default, with the remembered surface pressure', async () => {
   const m = await mountEntry();
-  assert.equal(m.el('start-deco-fixture').checked && m.el('start-surface').checked, true, 'both fixtures start ticked');
+  assert.equal(m.el('start-deco-fixture').checked && m.el('start-surface').checked, true, 'both fixtures start checked');
   assert.deepEqual(plain(m.view.options()), { ...plain(m.view.options()), decoStorageFixture: true, startAtSurface: true, surfacePressureMbar: null });
   m.el('start-deco-fixture').checked = false;
   m.el('start-surface').checked = false;

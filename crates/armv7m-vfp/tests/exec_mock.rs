@@ -418,7 +418,7 @@ fn vcmp_sets_fpscr_flags_and_vmrs_transfers_them() {
     assert_eq!(exec(&mut h, vcmp(0, 2, false)), VfpExec::Ok);
     assert_eq!(nzcv(&h), Z | C); // equal
     assert_eq!(h.fp.fpscr & FLAGS_MASK, 0);
-    // Quiet NaN: unordered; only VCMPE (and any signalling NaN) raise IOC.
+    // Quiet NaN: unordered; only VCMPE (and any signaling NaN) raise IOC.
     assert_eq!(exec(&mut h, vcmp(0, 3, false)), VfpExec::Ok);
     assert_eq!(nzcv(&h), C | V);
     assert_eq!(h.fp.fpscr & FLAGS_MASK, 0);
@@ -466,7 +466,7 @@ fn conversions_through_execute() {
     assert_eq!(exec(&mut h, vcvt_f32_u32(3, 2)), VfpExec::Ok);
     assert_eq!(h.fp.s[3], 0x4F80_0000); // 4294967296.0 (rounded)
     assert_eq!(h.fp.fpscr & FLAGS_MASK, IXC);
-    // VCVTR honours FPSCR.RMode: 2.5 -> RN 2, RP 3, RM 2, RZ 2
+    // VCVTR honors FPSCR.RMode: 2.5 -> RN 2, RP 3, RM 2, RZ 2
     for (rm, expect) in [(0, 2), (1, 3), (2, 2), (3, 2)] {
         h.fp.fpscr = rm << RMODE_SHIFT;
         h.fp.s[4] = 0x4020_0000; // 2.5

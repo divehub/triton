@@ -10,8 +10,8 @@
 //! * **ordinary events** (`schedule`) use `1 << 63 | insertion counter`, so they
 //!   sort after every clock event of the same time and keep scheduling order.
 //!
-//! Cancelling removes the entry from the heap immediately (no tombstones), and
-//! `EventId`s carry a generation so stale ids (already fired or cancelled, slot
+//! Canceling removes the entry from the heap immediately (no tombstones), and
+//! `EventId`s carry a generation so stale ids (already fired or canceled, slot
 //! reused) are rejected.
 
 use crate::peripheral::PeriphId;
@@ -183,7 +183,7 @@ impl EventQueue {
         true
     }
 
-    /// True while the event is queued (not yet fired and not cancelled).
+    /// True while the event is queued (not yet fired and not canceled).
     pub fn is_pending(&self, id: EventId) -> bool {
         if id.is_none() {
             return false;

@@ -1,4 +1,4 @@
-//! Runner-parity behaviour of the dual `System` (work package SYS-CORE): quantum scheduling, the handset
+//! Runner-parity behavior of the dual `System` (work package SYS-CORE): quantum scheduling, the handset
 //! power gate with its one-quantum release delay, the standby request, restarts and determinism against host
 //! chunking. These tests use the real firmware images and are skipped when the (gitignored) SREC files are not
 //! available.
@@ -161,14 +161,14 @@ fn restart_recreates_the_boards_and_keeps_the_eeprom() {
     system.restart(None).unwrap();
     assert_eq!(system.boot_mode(), BootMode::HandsetWake, "a plain restart uses the configured default");
     assert_eq!(system.main.as_ref().unwrap().board.peek(0x4000_7010, Width::Word), Some(0x104));
-    // The serial fixture needs an initialised EEPROM and restarts.
+    // The serial fixture needs an initialized EEPROM and restarts.
     system.set_serial_number(0x1234_5678).unwrap();
     assert_eq!(system.serial_number(), Some(0x1234_5678));
     assert_eq!(system.time(), 0);
 }
 
 #[test]
-fn serial_fixture_rejects_an_uninitialised_eeprom() {
+fn serial_fixture_rejects_an_uninitialized_eeprom() {
     let Some(mut system) = dual(SystemConfig::dual()) else {
         eprintln!("skipping: firmware not available");
         return;

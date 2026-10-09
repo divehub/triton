@@ -1,6 +1,6 @@
-//! Exception entry and return (ARMv7-M ARM B1.5) with Renode/tlib behaviour:
+//! Exception entry and return (ARMv7-M ARM B1.5) with Renode/tlib behavior:
 //! the exception frame is always 8-byte aligned (see `Cpu::stkalign_always`),
-//! entry and return cost no instructions, tail-chaining is realised as
+//! entry and return cost no instructions, tail-chaining is realized as
 //! "return, then immediately take the pending exception" which is
 //! architecturally indistinguishable.
 

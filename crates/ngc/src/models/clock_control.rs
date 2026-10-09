@@ -240,7 +240,7 @@ mod tests {
             h.write32(BASE + offset, 0x0000_0102);
             assert_eq!(h.read32(BASE + offset), 0x0000_0100, "ready follows the on bit down");
         }
-        // The neighbouring registers have no derived bits.
+        // The neighboring registers have no derived bits.
         h.write32(BASE + 0x8C, 1);
         h.write32(BASE + 0x9C, 1);
         assert_eq!(h.read32(BASE + 0x8C), 1);

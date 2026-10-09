@@ -177,7 +177,7 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
     let later = snapshot(&rig);
     compare_record(&mut rec, "101 ms after reset", &later, &records[3]);
     rec.check("virtual time keeps running through the reset and no error is raised", rig.session.error().is_none() && rig.session.virtual_ns() == before_time + QUANTUM + 1_000_000 + 100_000_000, rig.session.virtual_ns());
-    rec.note("Renode literal start: the supplied images omit the manufacturer bootloader, so the stock platform has no vector table at address 0 and its core locks up (PC 0xEFFFFFFE, CFSR 0x20000, measured). The engine holds the core halted at PC = SP = VTOR = 0 instead of modelling the lockup; the firmware does not run again in either.");
+    rec.note("Renode literal start: the supplied images omit the manufacturer bootloader, so the stock platform has no vector table at address 0 and its core locks up (PC 0xEFFFFFFE, CFSR 0x20000, measured). The engine holds the core halted at PC = SP = VTOR = 0 instead of modeling the lockup; the firmware does not run again in either.");
 
     // ---- 2. the same on the dual system with the default start (application vectors): the firmware reboots -------------------------------------
     let mut rig = Rig::new(env, SessionConfig::default(), Profile::default())?;
@@ -288,6 +288,6 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
     rec.extra("machineResets", after_main.get("machineResets").cloned().unwrap_or(Json::Null));
     let main_text = rig.state().get("uartConsole").and_then(Json::as_array).and_then(|c| c.first().and_then(|s| s.get("text")).and_then(Json::as_str).map(str::to_string)).unwrap_or_default();
     rec.note(format!("main console tail after the watchdog reset: {}", main_text.chars().rev().take(160).collect::<Vec<_>>().into_iter().rev().collect::<String>().replace('\r', "").replace('\n', " | ")));
-    rec.limitation("The reset is modelled at the machine level only (peripheral reset values, kept memories, restarted counters). No reset-cause flags are set in RCC.CSR or PWR (Renode does not either), the IWDG itself restarts disabled, and the application start state stands in for the omitted bootloader. Physical reset behaviour of the device is not established.");
+    rec.limitation("The reset is modeled at the machine level only (peripheral reset values, kept memories, restarted counters). No reset-cause flags are set in RCC.CSR or PWR (Renode does not either), the IWDG itself restarts disabled, and the application start state stands in for the omitted bootloader. Physical reset behavior of the device is not established.");
     Ok(rec.finish(env))
 }

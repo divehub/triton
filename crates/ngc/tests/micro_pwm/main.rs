@@ -10,7 +10,7 @@
 //! every step, the CYCCNT samples and the total instruction count must equal Renode's.
 //!
 //! * the default scheduling (`Scheduling::NgcArithmeticPwm`) must reproduce the arithmetic-mode recording;
-//! * `Scheduling::Stock` must reproduce the recording of the same program with both optimisations off;
+//! * `Scheduling::Stock` must reproduce the recording of the same program with both optimizations off;
 //! * `Scheduling::Observable`, which elides every event nobody can see, must differ (the test has teeth).
 //!
 //! Skipped when the vector file is absent.
@@ -175,7 +175,7 @@ fn arithmetic_ngc_timer_has_renodes_chunk_boundaries() {
     check("arithmetic", None, &[]);
 }
 
-/// The plain `STM32_Timer` (both optimisations off in the recording). One sample is 2 cycles (25 ns) off, a
+/// The plain `STM32_Timer` (both optimizations off in the recording). One sample is 2 cycles (25 ns) off, a
 /// known limit of the timer-local model: after a one-shot compare timer expired, Renode's `nearestLimitIn` keeps a
 /// phantom limit one compare period later (reproduced), but ANY later update pass of the machine's clock source
 /// removes it, including the limit event of another timer. Here TIM6's interrupt arrives 3 instructions before the

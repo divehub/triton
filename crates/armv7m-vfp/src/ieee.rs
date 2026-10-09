@@ -6,8 +6,8 @@
 //! fast path is taken instead:
 //!
 //! * the FPSCR selects round-to-nearest-even with flush-to-zero off, and
-//! * every operand is a finite number (so no NaN payload, signalling NaN or
-//!   invalid-operation behaviour is involved).
+//! * every operand is a finite number (so no NaN payload, signaling NaN or
+//!   invalid-operation behavior is involved).
 //!
 //! WebAssembly's `f32.add/sub/mul/div/sqrt`, `f64.mul/add`, `f64.trunc` and
 //! conversions are correctly rounded round-to-nearest-even operations, so the

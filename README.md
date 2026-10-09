@@ -12,7 +12,7 @@ A hosted copy runs at **<https://triton.divehub.ai>**.
 | Browser app | [web/README.md](web/README.md) |
 | Publishing: GitHub Pages site and Vercel firmware proxy | [deploy/README.md](deploy/README.md) |
 | Supported releases and per-release addresses | [docs/releases.md](docs/releases.md) |
-| Renode behaviour the engine reproduces | [docs/renode-semantics.md](docs/renode-semantics.md) |
+| Renode behavior the engine reproduces | [docs/renode-semantics.md](docs/renode-semantics.md) |
 | Peripheral framework | [docs/framework.md](docs/framework.md) |
 | Recorded test data | [testdata/README.md](testdata/README.md) |
 | Toolchain provisioning | [tools/README.md](tools/README.md) |
@@ -40,9 +40,9 @@ The page has two views:
   - temperature: a base plus two sensor offsets.
 
   The two pressure/temperature sensors are numbered as the firmware numbers them, which is the reverse of the engine's input names: **sensor 1 is the MS5837 on I2C2** (`pressure2Mbar`, `temperature2C` in `inputs.json`), **sensor 2 the one on I2C1** (`pressure1Mbar`, `temperature1C`). The engine keys and `inputs.json` are unchanged; the page maps them (P1/T1 are sensor 1), and Advanced names the bus on each raw field.
-- **Advanced.** Holds the raw inputs (applied with Apply inputs), output command histories, HUD colour labels, the UART console and the technical controls.
+- **Advanced.** Holds the raw inputs (applied with Apply inputs), output command histories, HUD color labels, the UART console and the technical controls.
 
-**Decompression warnings.** The basic view warns, with the next step, when the engine's read-only report shows invalid stored tissues: "Decompression state invalid: restart the boards to let the firmware reset it." (Uncalibrated oxygen cells are reported in Advanced but not shown as a warning.) Both conditions are behaviours of the original firmware (it loads NaN tissues from a restarted profile, and its ppO2 is NaN with uncalibrated cells, which keeps the no-decompression limit at 99), not defects of the engine. Two labelled emulator fixtures, on by default and switchable under Start options, work around the first and make every start begin at the surface (depth 0; a new session also resets the oxygen cells to their defaults); see [DESIGN.md](DESIGN.md) section 17. A cold boot makes the firmware clear the oxygen calibration; the page says so.
+**Decompression warnings.** The basic view warns, with the next step, when the engine's read-only report shows invalid stored tissues: "Decompression state invalid: restart the boards to let the firmware reset it." (Uncalibrated oxygen cells are reported in Advanced but not shown as a warning.) Both conditions are behaviors of the original firmware (it loads NaN tissues from a restarted profile, and its ppO2 is NaN with uncalibrated cells, which keeps the no-decompression limit at 99), not defects of the engine. Two labeled emulator fixtures, on by default and switchable under Start options, work around the first and make every start begin at the surface (depth 0; a new session also resets the oxygen cells to their defaults); see [DESIGN.md](DESIGN.md) section 17. A cold boot makes the firmware clear the oxygen calibration; the page says so.
 
 **Replay pulses** (on by default) flashes HUD and vibrator activations that happened between status updates. It only animates the display and does not change firmware timing.
 
@@ -76,7 +76,7 @@ python3 web/build.py                                                            
 ./cargo test --workspace --release                 # about 960 tests; those that need firmware skip without it
 NGC_FIRMWARE_DIR=/path/to/firmware ./cargo test --workspace --release   # with your firmware: the whole suite
 
-node web/test-ui.mjs                               # page behaviour on a minimal DOM (no engine, no firmware)
+node web/test-ui.mjs                               # page behavior on a minimal DOM (no engine, no firmware)
 node web/test-node.mjs                             # browser-app logic against the real module (needs web/pkg/ngc_wasm.wasm and firmware)
 node deploy/test-proxy.mjs                         # the firmware proxy (stubbed upstream, no network)
 python3 deploy/test_build_site.py                  # Pages site assembly
@@ -128,7 +128,7 @@ Steps, commands and checks: [deploy/README.md](deploy/README.md).
   - Main-board diagnostics that are proven only for TRITON (battery ready, mode, HAL tick and others) show as unavailable; the decompression report is `unknown` with the reason, and the decompression storage fixture is skipped.
   - Cold boot is refused, because NEPTUN's main board does not request standby on that route.
   - The scenario suite runs only on TRITON.
-  - Its main board spends steady state in loops the idle fast-forward does not recognise (the FreeRTOS idle task with a call, and a UART5 status poll). It runs at about 1.5× real time in Node and 2.4× natively. Improving this is deferred.
+  - Its main board spends steady state in loops the idle fast-forward does not recognize (the FreeRTOS idle task with a call, and a UART5 status poll). It runs at about 1.5× real time in Node and 2.4× natively. Improving this is deferred.
 - **Dual-mode clock progress** follows each board's own CPU, which is deterministic. Renode advances both machines to their minimum progress, which is not. Expect dual-mode differences inside Renode's run-to-run envelope, for example a constant handset DWT_CYCCNT offset after 1.5 s in dual mode only.
 - **Resets:** after a firmware-requested or watchdog reset the engine restarts the application at its vector table. Renode locks up, because the manufacturer bootloader is absent; `ResetStart::RenodeLiteral` reproduces that.
 - **Fixtures:**

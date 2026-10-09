@@ -33,7 +33,7 @@
 //! * `decoHealth` is `{tissues: "valid"|"invalid"|"unknown", oxygen: "calibrated"|"uncalibrated"|"unknown", details}`, a
 //!   read-only report from side-effect-free peeks ([`crate::deco::health`]); `decoStorageFixture` is `{enabled, applied,
 //!   reason, previousDateRecord}` and `startAtSurface` `{enabled, surfacePressureMbar, applied, oxygenReset,
-//!   changedInputs, note}`: what the two labelled emulator fixtures did at the last board creation.
+//!   changedInputs, note}`: what the two labeled emulator fixtures did at the last board creation.
 
 use crate::firmware::Firmware;
 use crate::fixtures::{self, UART_CHANNELS};
@@ -228,7 +228,7 @@ pub fn build(view: &StateView<'_>) -> Json {
     state.insert("routineAccel", routine_accel(system));
     state.insert("machineResets", machine_resets(system));
     state.insert("realtimeFactor", view.realtime_factor);
-    // Decompression state handling (DESIGN.md): the read-only health report and the two labelled emulator fixtures.
+    // Decompression state handling (DESIGN.md): the read-only health report and the two labeled emulator fixtures.
     state.insert("decoHealth", crate::deco::health(system).to_json());
     state.insert("decoStorageFixture", view.deco_storage.to_json());
     state.insert("startAtSurface", view.surface_start.to_json());

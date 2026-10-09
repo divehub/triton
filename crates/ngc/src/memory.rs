@@ -11,7 +11,7 @@
 //! Everything else on the 32-bit bus is memory-mapped I/O dispatched through `emu_core`'s MMIO
 //! table, except `0xE000_0000..=0xE00F_FFFF` (the private peripheral bus: NVIC, SCB, SysTick,
 //! MPU registers, FPU control and DWT), which the CPU core handles itself and never forwards.
-//! Unmapped addresses read 0 and ignore writes (Renode behaviour), warning once per address.
+//! Unmapped addresses read 0 and ignore writes (Renode behavior), warning once per address.
 
 pub use emu_core::{MemoryLayout, PlainMemory};
 

@@ -26,7 +26,7 @@ fn r(h: &mut Harness, offset: u32) -> u32 {
     h.read32(BASE + offset)
 }
 
-/// ARR/PSC/DIER/CEN as the HAL tick initialisation does it.
+/// ARR/PSC/DIER/CEN as the HAL tick initialization does it.
 fn start_tick(h: &mut Harness, arr: u32, psc: u32, dier: u32) {
     w(h, reg::ARR, arr);
     w(h, reg::PSC, psc);

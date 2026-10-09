@@ -38,7 +38,7 @@
 //!                                      both pressure inputs at the surface pressure plus the sensor offsets, a new session
 //!                                      also with the oxygen cells at their defaults; `surfacePressureMbar` (100 to 30000,
 //!                                      default 1013.25) is the surface pressure that fixture uses (the `reset`, `cold`,
-//!                                      `wake` and `serial` actions may carry a new value). Both are labelled emulator
+//!                                      `wake` and `serial` actions may carry a new value). Both are labeled emulator
 //!                                      fixtures, named in the state (`decoStorageFixture`, `startAtSurface`).
 //!                                      Fails with a clear message when the main and handset images are of different
 //!                                      releases, and for `bootMode` "cold" on a release without a cold-boot route (NEPTUN)
@@ -854,7 +854,7 @@ mod tests {
     #[test]
     fn the_decompression_fixtures_are_on_by_default_and_switchable() {
         let defaults = HostConfig::from_json("{}").unwrap();
-        assert!(defaults.deco_storage_fixture && defaults.start_at_surface, "both labelled fixtures are on by default");
+        assert!(defaults.deco_storage_fixture && defaults.start_at_surface, "both labeled fixtures are on by default");
         assert_eq!(defaults.surface_pressure_mbar, 1013.25);
         let config = HostConfig::from_json(r#"{"decoStorageFixture":false,"startAtSurface":false,"surfacePressureMbar":900}"#).unwrap();
         assert!(!config.deco_storage_fixture && !config.start_at_surface);

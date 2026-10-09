@@ -9,7 +9,7 @@ Inputs:
 
 Instructions are compared at the addresses of the Ghidra listing (which excludes data). Only
 addresses where objdump decoded the same bytes at the same address are compared (a linear
-disassembly desynchronises after literal pools). Both texts are normalised to a canonical
+disassembly desynchronizes after literal pools). Both texts are normalized to a canonical
 operand form before comparing. Standard library only.
 
 Usage: compare_objdump.py <mine> <objdump> [--show N]

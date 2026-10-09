@@ -1,7 +1,7 @@
 //! `Timers.STM32_Timer` beyond the plain counter: output-compare pulse shapes, input capture, the slave modes, the
 //! repetition counter, run-time pin observation, side-effect-free peeks and the guards for configurations on which
 //! the stock model hangs. Expected values are derived from `STM32_Timer.cs` (not from the Rust code); the
-//! transcripts replayed by `tests/renode_timer` check the same behaviour against the real Renode 1.17.0.
+//! transcripts replayed by `tests/renode_timer` check the same behavior against the real Renode 1.17.0.
 
 use emu_core::testing::Harness;
 use emu_core::{PeriphId, Time, Width, TICKS_PER_MICROSECOND};

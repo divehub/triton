@@ -1,7 +1,7 @@
-//! System control space behaviour (Renode NVIC.cs / DWT.cs semantics): NVIC enable / pending /
+//! System control space behavior (Renode NVIC.cs / DWT.cs semantics): NVIC enable / pending /
 //! priority registers including lane-wise byte and halfword stores, SCB registers and their
 //! write masks, fault status registers, MPU register file, FPU control registers, ICSR fields
-//! and Renode's quirks, the DWT identification registers, and unmodelled addresses.
+//! and Renode's quirks, the DWT identification registers, and unmodeled addresses.
 
 mod common;
 #[path = "generated/snippets.rs"]
@@ -314,7 +314,7 @@ fn icsr_fields_and_renode_quirks() {
 }
 
 #[test]
-fn unmodelled_private_peripheral_bus_addresses_read_zero_with_one_warning() {
+fn unmodeled_private_peripheral_bus_addresses_read_zero_with_one_warning() {
     let mut s = S::new();
     // ldr r1, [r0] ; ldr r2, [r0] ; b .   (FPB_CTRL at 0xE0002000 has no model in Renode)
     s.h.load(MAIN, &[0x6801, 0x6802, 0xE7FE]);

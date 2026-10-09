@@ -57,10 +57,10 @@ const okUpstream = (body = SREC_TEXT, headers = {}) => upstream(() => reply(body
 
 /**
  * A body of `total` bytes (starting with S0) delivered in `chunk`-sized pieces; `state` shows how much was read and
- * whether the consumer cancelled (the proxy must stop reading as soon as it has seen enough).
+ * whether the consumer canceled (the proxy must stop reading as soon as it has seen enough).
  */
 function bigBody(total, { chunk = 65536, first = 'S00600004844521B\r\n' } = {}) {
-  const state = { pulled: 0, cancelled: false };
+  const state = { pulled: 0, canceled: false };
   const head = new TextEncoder().encode(first);
   let sent = 0;
   const body = new ReadableStream({
@@ -73,7 +73,7 @@ function bigBody(total, { chunk = 65536, first = 'S00600004844521B\r\n' } = {}) 
       state.pulled += size;
       return controller.enqueue(piece);
     },
-    cancel() { state.cancelled = true; },
+    cancel() { state.canceled = true; },
   }, { highWaterMark: 0 }); // nothing is read ahead: `pulled` counts what the consumer asked for
   return { body, state };
 }
@@ -379,7 +379,7 @@ test('upstream status: anything but 200 is a 502 with the status', async () => {
   }
 });
 
-test('size cap: refused by Content-Length first, and while streaming; the upstream body is cancelled', async () => {
+test('size cap: refused by Content-Length first, and while streaming; the upstream body is canceled', async () => {
   assert.equal(MAX_BYTES, 4 * 1024 * 1024);
   // By header: the body is never read.
   const header = bigBody(MAX_BYTES + 1);
@@ -388,7 +388,7 @@ test('size cap: refused by Content-Length first, and while streaming; the upstre
   assert.equal(refused.status, 502);
   assert.equal((await json(refused)).error, 'upstream_too_large');
   assert.equal(header.state.pulled, 0, 'nothing was read');
-  assert.equal(header.state.cancelled, true);
+  assert.equal(header.state.canceled, true);
   // While streaming: no Content-Length, or a lying one.
   for (const headers of [{}, { 'content-length': '1000' }]) {
     const stream = bigBody(MAX_BYTES * 3);
@@ -397,7 +397,7 @@ test('size cap: refused by Content-Length first, and while streaming; the upstre
     assert.equal(response.status, 502);
     assert.equal((await json(response)).error, 'upstream_too_large');
     assert.ok(stream.state.pulled <= MAX_BYTES + 3 * 65536, `stopped reading at ${stream.state.pulled} bytes`);
-    assert.equal(stream.state.cancelled, true);
+    assert.equal(stream.state.canceled, true);
   }
   // Exactly the cap is fine (and a Content-Length of exactly the cap too).
   const exact = bigBody(MAX_BYTES);
@@ -435,7 +435,7 @@ test('SREC check: the body must start with ASCII S0', async () => {
   const early = await handle(call(ORIGIN_URL), { fetch: upstream(() => reply(html.body)).fetch });
   assert.equal((await json(early)).error, 'not_srec');
   assert.ok(html.state.pulled <= 65536 * 2, `stopped after ${html.state.pulled} bytes`);
-  assert.equal(html.state.cancelled, true);
+  assert.equal(html.state.canceled, true);
 });
 
 test('failures: timeouts are 504, a broken connection is 502, a throwing stub never leaks', async () => {

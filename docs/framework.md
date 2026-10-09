@@ -4,8 +4,8 @@ Guide for authors of peripheral models (`crates/stm32`, `crates/ngc/src/models`)
 assembles boards. The framework lives in `crates/emu-core` (CPU independent, usable from unit tests
 without a CPU) and `crates/ngc/src/{board,bus,memory}.rs` (the per-board run loop and the CPU bus).
 Design context: `DESIGN.md` sections 5 and 7 (timing is normative there), Renode semantics in
-`docs/renode-semantics.md` (sections 2-6 and 15 for time). Renode was the behavioural reference
-(fidelity to Renode is no longer a gate for new features, `DESIGN.md` 15.1, but existing behaviour must
+`docs/renode-semantics.md` (sections 2-6 and 15 for time). Renode was the behavioral reference
+(fidelity to Renode is no longer a gate for new features, `DESIGN.md` 15.1, but existing behavior must
 not change); where this framework differs from it, the difference is listed in section 15.
 
 > **Note (2026-10-08).** `renode-src/...` citations in this document and in
@@ -65,7 +65,7 @@ pub const QUANTUM: Time = 100_000;            // 100 us, Renode default global q
 
 `from_micros`, `from_millis`, `from_secs_f64`, `to_secs_f64` convert. `ticks_per_cycle(hz)` is
 `Some(1e9 / hz)` only when that is an exact integer (`None` for 80 MHz, 32 768 Hz, 120 Hz...): **do
-not use it for timing**. Clocks that do not divide 1 ns are modelled with clock entries (section 5),
+not use it for timing**. Clocks that do not divide 1 ns are modeled with clock entries (section 5),
 which keep the exact fractional residue like Renode does. Do all arithmetic in integers.
 
 ### 2.2 Two times: clock time and CPU time
@@ -95,7 +95,7 @@ accessing them. This lag is observable by firmware and the framework reproduces 
   `cpu.SyncTime()` (timer `CNT`) is declared with `sync_registers()`; code that Renode syncs
   conditionally calls `ctx.sync_time()`. Everything else deliberately sees the lagged time, e.g. a
   status flag set by a timer event inside the current chunk is not visible to a polling loop until
-  the chunk ends. Do not "fix" this lag; it is part of the reference behaviour.
+  the chunk ends. Do not "fix" this lag; it is part of the reference behavior.
 
 ### 2.3 Prefer time-derived state
 
@@ -219,7 +219,7 @@ ports both faithfully (`docs/renode-semantics.md` sections 3-4). Use the Renode-
 
 ### 5.1 `ClockEntry` semantics
 
-An entry counts **entry ticks** at `frequency` Hz, from `Value` towards `Period` (the limit):
+An entry counts **entry ticks** at `frequency` Hz, from `Value` toward `Period` (the limit):
 
 | field | meaning |
 | --- | --- |
@@ -456,13 +456,13 @@ chunk is ignored. `ctx.request_cpu_stop()` is a deprecated alias.
 
 ## 7. Ordinary events
 
-For behaviour that has no Renode clock entry behind it (frames delivered by the host or the other board,
+For behavior that has no Renode clock entry behind it (frames delivered by the host or the other board,
 fixtures). Renode-derived timers use section 5.
 
 ```rust
 let id: EventId = ctx.schedule_at(time, token);   // absolute
 let id = ctx.schedule_in(delay, token);           // relative to ctx.now() = the *clock* time (lags inside a chunk)
-ctx.cancel(id);                                    // false if already fired/cancelled/NONE
+ctx.cancel(id);                                    // false if already fired/canceled/NONE
 ctx.replace_event(&mut slot, time, token);         // cancel *slot, schedule, store the new id
 fn on_event(&mut self, token: u64, scheduled: Time, ctx: &mut Ctx<'_>)
 ```
@@ -675,19 +675,19 @@ h.end_chunk(time);                         // the board's advance_clock at the e
 ```
 
 * `h.read/write` are *host* accesses at the harness (clock) time: no lag. Use `cpu_read/cpu_write` to
-  test sync registers, `ctx.sync_time()` and chunk-lag behaviour. `exact_time` must not decrease between
+  test sync registers, `ctx.sync_time()` and chunk-lag behavior. `exact_time` must not decrease between
   CPU accesses of one chunk, and `end_chunk(t)` needs `t >= ` the last exact time.
 * `request_return` shows up as `take_stop_request()`.
 * `IrqChange.time` is the clock time at which the change happened (the event's own time), also when one
   `advance_to` fires several events (`MachineCore::drain_irq_changes_timed`).
 * `core_mut()` exposes the `MachineCore` (`events`, `log`, `advance_clock`, `bus_read`, `clock_entry_count`).
-* Board-level behaviour (assembly, `with_peripheral`, `run_until` with events and interrupt wiring) can be
+* Board-level behavior (assembly, `with_peripheral`, `run_until` with events and interrupt wiring) can be
   tested without a core through `Board::headless` (`NullCpu`), or with an executing core by loading a few
   hand-assembled Thumb instructions (see `real_core_takes_an_interrupt_raised_by_a_peripheral_event` in
   `crates/ngc/src/board.rs`).
 * Test checklist for a model: reset values, every register's read/write at the widths the access policy
   allows, a not-allowed width, timing (exact event times with ceil-ns rounding, the first firing after
-  start/enable, behaviour after reconfiguration, same-instant ordering), CPU-lag behaviour of declared and
+  start/enable, behavior after reconfiguration, same-instant ordering), CPU-lag behavior of declared and
   undeclared registers, interrupt line transitions (including no change when the level is unchanged), DMA
   requests, `peek` equals `read` without side effects, `summary` text.
 

@@ -73,7 +73,7 @@ const BENCH: [u32; 17] = [
 
 /// Runs `iters` executions of benchmark instruction `kind` (see `BENCH`) on operands
 /// drawn from a pool of ordinary normal numbers; returns a checksum so nothing is
-/// optimised away. `kind == 16` runs vadd in round-toward-plus-infinity (exact path).
+/// optimized away. `kind == 16` runs vadd in round-toward-plus-infinity (exact path).
 #[no_mangle]
 pub extern "C" fn vfp_bench(kind: u32, iters: u32) -> u32 {
     let mut pool = [0u32; 1024];

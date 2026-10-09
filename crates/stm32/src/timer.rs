@@ -7,7 +7,7 @@
 //! Parameters (`.repl`): `frequency` (the prescaler input, 80 MHz) and `initialLimit` (0xFFFF or 0xFFFFFFFF,
 //! which also fixes the counter width). Region size 0x400.
 //!
-//! # Behaviour (all of it Renode's, see `docs/renode-semantics.md` sections 3.5 and 11)
+//! # Behavior (all of it Renode's, see `docs/renode-semantics.md` sections 3.5 and 11)
 //!
 //! * the counter is a `LimitTimer`: **period = ARR ticks** (it wraps at ARR, not ARR + 1), the entry runs at
 //!   `frequency / (PSC + 1)` (integer division), a limit is reported at the **ceil-nanosecond** time and the
@@ -87,7 +87,7 @@ pub struct PwmChannel {
     pub output_mode: bool,
     /// `CCER.CCxP`.
     pub polarity_inverted: bool,
-    /// ARR, the modelled period in timer ticks.
+    /// ARR, the modeled period in timer ticks.
     pub period: u32,
     /// CCR (the compare value; in capture mode the captured value, not consumed).
     pub compare: u32,

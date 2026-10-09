@@ -81,7 +81,7 @@ impl Cpu {
 
     /// Interprets the call that starts at the current instruction (a translation-block start) with the slow
     /// path, block by block like the run loop, until it returns to `ret` with SP back at `sp0`. With a tracker
-    /// every instruction is accounted; without one the return is recognised by value.
+    /// every instruction is accounted; without one the return is recognized by value.
     ///
     /// `held_flags`: the FPSCR cumulative flags the caller took out of the FPSCR for the duration of the recording
     /// (`Some` only for floating-point routines). They are put back before an instruction that accesses the whole FPSCR

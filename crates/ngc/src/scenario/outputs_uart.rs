@@ -1,11 +1,11 @@
-//! `outputs-uart`: the passive HUD / vibrator / UART observation and the LED colour labels
+//! `outputs-uart`: the passive HUD / vibrator / UART observation and the LED color labels
 //! (`emulation/probe_outputs.py` of the pinned scripts, `emulation/outputs-validation.md`, `emulation/console-map.md`,
 //! `emulation/handset-outputs.md`; Renode evidence `emulation/runtime/outputs/20261007T113732983860Z/result.json`).
 //!
 //! The boot is the original firmware; the fixtures afterwards are explicit register stimuli through the system bus (HUD PWM
 //! on main TIM4, the vibrator enable PB15 on the handset, a TIM15 capture edge, 17 000 bytes into the main UART4 transmit data
 //! register), testing the observation plumbing only. The state document must not disturb the guest (reading it is
-//! side-effect free), the UART capture keeps 16 KiB tails with exact hex and escaped text, and the colour labels persist.
+//! side-effect free), the UART capture keeps 16 KiB tails with exact hex and escaped text, and the color labels persist.
 
 use super::*;
 use crate::persistence::LedColors;
@@ -116,7 +116,7 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
             source(&hud, "activity").as_deref() == Some("sampled-pwm-command") && hud.get("pwmActivity").is_some_and(Json::is_null)
         });
     rec.check("output histories after the boot: backlight none, vibrator enable edges + sampled PWM, HUD sampled commands", histories_ok, Json::from_items(outputs(&rig).iter().filter_map(|o| o.get("activity").and_then(|a| a.get("eventCount")).cloned())));
-    rec.check("LED colour labels default to unknown / white / red (HUD1 / HUD2 / HUD3)", ["unknown", "white", "red"].iter().enumerate().all(|(i, c)| output(&rig, &format!("main-hud-{}", i + 1)).get("color").and_then(Json::as_str) == Some(c)), Json::from_items(outputs(&rig).iter().filter_map(|o| o.get("color").cloned())));
+    rec.check("LED color labels default to unknown / white / red (HUD1 / HUD2 / HUD3)", ["unknown", "white", "red"].iter().enumerate().all(|(i, c)| output(&rig, &format!("main-hud-{}", i + 1)).get("color").and_then(Json::as_str) == Some(c)), Json::from_items(outputs(&rig).iter().filter_map(|o| o.get("color").cloned())));
     let png = rig.png();
     rec.image("boot.png", png);
 
@@ -197,10 +197,10 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
     rec.compare("UART4: tail SHA-256", sha256_hex(&tail), "acf08e9aa91aa1a3437c1112304f0e65cbc33ca76be4382965b2a2b8a8a61cc9".to_string(), SOURCE, true, "");
     rec.compare("UART4: time of the last byte (virtual s)", console.get("lastTxVirtualTime").and_then(Json::as_f64), Some(4.5f64), SOURCE, true, "the bus writes happen at the paused time");
 
-    // ---- LED colour labels: validation, persistence across Restart and reopen -----------------------------------------------------------------------
+    // ---- LED color labels: validation, persistence across Restart and reopen -----------------------------------------------------------------------
     rig.act("{\"action\":\"led-colors\",\"colors\":{\"main-hud-1\":\"red\",\"main-hud-2\":\"white\"}}")?;
     for bad in ["{\"action\":\"led-colors\"}", "{\"action\":\"led-colors\",\"colors\":{\"handset-backlight\":\"red\"}}", "{\"action\":\"led-colors\",\"colors\":{\"main-hud-1\":\"blue\"}}"] {
-        rec.compare("an invalid colour mapping is refused", rig.act(bad).err(), Some("LED colors must map HUD channel IDs to unknown, red or white".to_string()), "emulation/run_emulator.py validated_led_colors", true, bad.to_string().as_str());
+        rec.compare("an invalid color mapping is refused", rig.act(bad).err(), Some("LED colors must map HUD channel IDs to unknown, red or white".to_string()), "emulation/run_emulator.py validated_led_colors", true, bad.to_string().as_str());
     }
     let epoch_before = rig.state().get("outputHistoryEpoch").cloned();
     rig.act("{\"action\":\"reset\"}")?;
@@ -210,7 +210,7 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
         epoch_before.as_ref().and_then(Json::as_str) == Some("0-1") && after_reset.get("outputHistoryEpoch").and_then(Json::as_str) == Some("0-2"),
         after_reset.get("outputHistoryEpoch").cloned().unwrap_or(Json::Null),
     );
-    rec.check("Restart keeps the colour assignments", output(&rig, "main-hud-1").get("color").and_then(Json::as_str) == Some("red") && output(&rig, "main-hud-2").get("color").and_then(Json::as_str) == Some("white"), Json::from_items(outputs(&rig).iter().filter_map(|o| o.get("color").cloned())));
+    rec.check("Restart keeps the color assignments", output(&rig, "main-hud-1").get("color").and_then(Json::as_str) == Some("red") && output(&rig, "main-hud-2").get("color").and_then(Json::as_str) == Some("white"), Json::from_items(outputs(&rig).iter().filter_map(|o| o.get("color").cloned())));
     rec.compare("Restart recreates the UART capture history (txBytes of every channel)", Json::from_items(after_reset.get("uartConsole").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(|s| s.get("txBytes").cloned())), Json::from_items([0u64, 0, 0, 0, 0]), SOURCE, true, "reset snapshot");
     let reset_output = output(&rig, "handset-vibrator");
     rec.compare("Restart resets the output history (vibrator details text)", reset_output.get("details").cloned().unwrap_or(Json::Null), Json::from("TIM15 CH1; CEN=0; CCR=65535; ARR=65535; MOE unmodeled; commanded enable, not motor current; pin/PWM configuration not ready or unsupported; enable activations=0; last enable=none"), SOURCE, true, "");
@@ -220,7 +220,7 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
     let colors = LedColors::from_file_text(profile.led_colors.as_deref().unwrap_or("{}"))?;
     rec.check("led-colors.json written by the session reads back", colors.get("main-hud-1") == "red" && colors.get("main-hud-2") == "white", profile.led_colors.clone().unwrap_or_default());
     rec.compare(
-        "colour labels after reopening the profile (HUD1, HUD2, HUD3)",
+        "color labels after reopening the profile (HUD1, HUD2, HUD3)",
         Json::from_items((1..=3).map(|n| output(&reopened, &format!("main-hud-{n}")).get("color").cloned().unwrap_or(Json::Null))),
         Json::from_items(["red", "white", "unknown"]),
         SOURCE,

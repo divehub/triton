@@ -21,7 +21,7 @@
 //! * Semantics are the Arm ARM pseudocode (FPUnpack/FPRound/FPProcessNaNs/...):
 //!   underflow is detected before rounding, `FZ` flushes inputs (IDC) and
 //!   results (UFC), overflow sets OFC and IXC, NaN propagation is first
-//!   signalling NaN else first quiet NaN else the default NaN, `DN` forces the
+//!   signaling NaN else first quiet NaN else the default NaN, `DN` forces the
 //!   default NaN. The results are cross-checked bit-for-bit (NaN payloads and
 //!   all cumulative flags) against the AArch64 hardware FPU, which implements
 //!   the same pseudocode, in every rounding mode / FZ / DN combination.

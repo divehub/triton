@@ -110,8 +110,8 @@ impl Cpu {
     pub(crate) fn ppb_read<B: CpuBus>(&mut self, bus: &mut B, addr: u32, size: u32) -> u32 {
         let aligned = addr & !3;
         let shift = (addr & 3) * 8;
-        if !Cpu::ppb_modelled(aligned) {
-            self.warn_once(aligned, || format!("PPB read from unmodelled address 0x{aligned:08x} returns 0"));
+        if !Cpu::ppb_modeled(aligned) {
+            self.warn_once(aligned, || format!("PPB read from unmodeled address 0x{aligned:08x} returns 0"));
         }
         // Renode calls `cpu.SyncTime()` before returning SysTick CVR or DWT CYCCNT: the machine
         // clock catches up with the start of this instruction.

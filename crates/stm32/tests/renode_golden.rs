@@ -7,7 +7,7 @@
 // NVIC's `ISPR`/`ICPR` (clearing a pending interrupt is a no-op while its line is still high); `log` lists
 // the WARNING (`W|`) and ERROR (`E|`) lines Renode printed for the step, with later repeats of the same
 // message removed because these models log each message once. This is the evidence that the models
-// reproduce Renode's register-level behaviour, quirks included; it says nothing about physical devices.
+// reproduce Renode's register-level behavior, quirks included; it says nothing about physical devices.
 // Generated from the recorded data by a script; regenerate rather than edit by hand.
 
 

@@ -1,4 +1,4 @@
-//! Decompression state handling: a read-only health report and a labelled storage fixture (DESIGN.md "Decompression
+//! Decompression state handling: a read-only health report and a labeled storage fixture (DESIGN.md "Decompression
 //! state handling").
 //!
 //! The original TRITON main 5.8 firmware keeps 16 tissue records (N2 and He pressure floats) in RAM and loads them from
@@ -7,7 +7,7 @@
 //! route (handset CAN `0x149`, or a queue case), never at start-up. A profile that was booted once and then restarted
 //! therefore holds a date and an erased tissue block: the next start loads 32 erased words as NaN, keeps them (the
 //! elapsed time is under four days) and the no-decompression limit stays at 99 minutes for good. With the oxygen cells
-//! uncalibrated in the measured-ppO2 mode the ppO2 is NaN and the limit stays at 99 as well. Both are behaviours of the
+//! uncalibrated in the measured-ppO2 mode the ppO2 is NaN and the limit stays at 99 as well. Both are behaviors of the
 //! original firmware, not of this engine.
 //!
 //! This module adds two things, both for the TRITON main image only (the addresses are in
@@ -20,7 +20,7 @@
 //!   record so that the firmware takes its own four-day reset path. It touches no other byte: not the oxygen
 //!   calibration, not the tissue words, no RAM.
 //!
-//! Evidence class: the layout and the firmware behaviour were established on this engine with Renode-hooked runs of the
+//! Evidence class: the layout and the firmware behavior were established on this engine with Renode-hooked runs of the
 //! unchanged TRITON images (a synthetic reproduction, not a physical observation); the engine's decompression arithmetic
 //! equals Renode's bit for bit.
 
@@ -104,7 +104,7 @@ fn unknown_reason(entry: &AddressEntry) -> Option<&'static str> {
 /// Reads the decompression state of the running main application with side-effect-free peeks.
 ///
 /// * **tissues**: all 32 words (N2 and He of the 16 records) finite means *valid*; any NaN or infinity means *invalid*.
-///   Words that are all exactly zero mean the firmware has not initialised the state yet (RAM is zero until then):
+///   Words that are all exactly zero mean the firmware has not initialized the state yet (RAM is zero until then):
 ///   *unknown*.
 /// * **oxygen**: only in the measured-ppO2 mode (breathing-mode byte 2). A non-finite ppO2 means *uncalibrated* (the
 ///   original firmware computes NaN from cells without a valid calibration); a finite non-zero ppO2 means *calibrated*.
@@ -149,7 +149,7 @@ fn tissue_health(system: &System, entry: &AddressEntry) -> (String, TissueHealth
         let text = format!("Invalid: {non_finite} of {TISSUE_WORDS} tissue words are not finite numbers (NaN); the no-decompression limit stays at 99.");
         (text, TissueHealth::Invalid, detail)
     } else if zero == TISSUE_WORDS {
-        ("Unknown: the firmware has not initialised the tissue state yet.".to_string(), TissueHealth::Unknown, detail)
+        ("Unknown: the firmware has not initialized the tissue state yet.".to_string(), TissueHealth::Unknown, detail)
     } else {
         ("Valid: all tissue words are finite.".to_string(), TissueHealth::Valid, detail)
     }

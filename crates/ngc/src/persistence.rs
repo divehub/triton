@@ -9,7 +9,7 @@
 //! | `nor.ngc` | the sparse QSPI NOR image | `NGCNOR01`, capacity, page count, `{page, 4096 bytes}` records (`NgcQuadSpi::serialize_backing`) |
 //! | `rtc-state.json` | per-board RTC calendar, prescaler, hour format and the 20 backup words | `json.dump(indent=2)` plus a newline, version 1 |
 //! | `inputs.json` | the viewer's sensor controls (dual runs) | `json.dumps(indent=2)` plus a newline |
-//! | `led-colors.json` | the HUD colour labels | `json.dumps(indent=2)` plus a newline |
+//! | `led-colors.json` | the HUD color labels | `json.dumps(indent=2)` plus a newline |
 //!
 //! The RTC checkpoint code is a port of `emulation/rtc_persistence.py`: the same strict validation (exact field
 //! sets, unsigned 32-bit integers that are not booleans, BCD digits, reserved bits, real calendar dates, the
@@ -194,13 +194,13 @@ pub fn inputs_file_text(inputs: &Inputs) -> String {
 
 // ---- led-colors.json ----------------------------------------------------------------------------------------
 
-/// HUD channel ids of the main board and the colour labels the viewer assigns (`LED_IDS`,
+/// HUD channel ids of the main board and the color labels the viewer assigns (`LED_IDS`,
 /// `LED_DEFAULT_COLORS`).
 pub const LED_IDS: [&str; 3] = ["main-hud-1", "main-hud-2", "main-hud-3"];
 pub const LED_DEFAULT_COLORS: [(&str, &str); 3] = [("main-hud-1", "unknown"), ("main-hud-2", "white"), ("main-hud-3", "red")];
 pub const LED_COLOR_NAMES: [&str; 3] = ["unknown", "red", "white"];
 
-/// The HUD colour labels, kept in the runner's dictionary order (defaults first).
+/// The HUD color labels, kept in the runner's dictionary order (defaults first).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LedColors {
     colors: Vec<(String, String)>,
@@ -247,7 +247,7 @@ impl LedColors {
         Ok(colors)
     }
 
-    /// The colour label of a HUD channel (`unknown` when the channel is not listed).
+    /// The color label of a HUD channel (`unknown` when the channel is not listed).
     pub fn get(&self, id: &str) -> &str {
         self.colors.iter().find(|(k, _)| k == id).map_or("unknown", |(_, v)| v.as_str())
     }

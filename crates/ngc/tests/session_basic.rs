@@ -195,7 +195,7 @@ fn sensor_inputs_round_through_f32_and_are_reported_once_as_profile_changes() {
     // A failed update changes nothing and reports the runner's message.
     let error = session.action("{\"action\":\"inputs\",\"inputs\":{\"pressure1Mbar\":\"high\"}}").unwrap_err();
     assert!(!error.is_empty());
-    // LED colours are written once, and only after an assignment.
+    // LED colors are written once, and only after an assignment.
     assert!(session.take_profile_changes().is_none());
     act(&mut session, "{\"action\":\"led-colors\",\"colors\":{\"main-hud-1\":\"red\"}}");
     let changes = session.take_profile_changes().expect("led-colors.json");
@@ -208,7 +208,7 @@ fn the_profile_survives_shutdown_and_reopen() {
     let (main, handset) = firmware_or_skip!();
     let mut session = dual(SessionConfig::default(), Profile::default(), &main, &handset);
     act(&mut session, "{\"action\":\"advance\",\"seconds\":6}");
-    // The first boot initialises the EEPROM and the NOR flash; the RTC checkpoint only exists after a save point.
+    // The first boot initializes the EEPROM and the NOR flash; the RTC checkpoint only exists after a save point.
     let changes = session.take_profile_changes().expect("the first boot writes the EEPROM, the NOR flash and inputs.json");
     assert!(changes.eeprom.as_ref().is_some_and(|e| e.len() == 2048 && e[254] == 0xA3));
     assert!(changes.nor.is_some() && changes.inputs.is_some());
@@ -226,7 +226,7 @@ fn the_profile_survives_shutdown_and_reopen() {
     let profile = session.shutdown();
     assert_eq!(profile.eeprom.as_deref(), Some(&eeprom[..]));
     assert!(profile.inputs.is_some());
-    assert!(profile.led_colors.is_none(), "no colour was assigned");
+    assert!(profile.led_colors.is_none(), "no color was assigned");
 
     let reopened = dual(SessionConfig::default(), profile.clone(), &main, &handset);
     let state = reopened.state();
@@ -295,7 +295,7 @@ fn the_can_controls_apply_connected_before_validating_drop_id() {
 }
 
 #[test]
-fn the_serial_fixture_needs_an_initialised_eeprom_and_restarts_the_system() {
+fn the_serial_fixture_needs_an_initialized_eeprom_and_restarts_the_system() {
     let (main, handset) = firmware_or_skip!();
     let mut session = dual(SessionConfig::default(), Profile::default(), &main, &handset);
     assert_eq!(
@@ -385,7 +385,7 @@ fn a_firmware_system_reset_request_resets_the_machine_and_the_firmware_boots_aga
     let after = system.instructions(Which::Handset).unwrap();
     assert!(after < 100_000, "the instruction counter restarted: {after}");
     assert!(session.error().is_none());
-    // The application runs again from its reset vector: the LCD is re-initialised and the UI comes back.
+    // The application runs again from its reset vector: the LCD is re-initialized and the UI comes back.
     session.run_for(3.0);
     let state = Json::parse(&session.state_json()).unwrap();
     assert!(state.get("lcdSummary").and_then(Json::as_str).is_some_and(|s| s.contains("panelOn=True")), "{:?}", state.get("lcdSummary"));

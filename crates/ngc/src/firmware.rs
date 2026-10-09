@@ -412,7 +412,7 @@ pub fn identify_release(srec_bytes: &[u8]) -> Option<(&'static Release, Role)> {
 }
 
 /// The release a main and a handset image have in common, or the refusal text of a mixed pair (DESIGN 15.3e: the
-/// engine never combines images of different releases, because every release has its own addresses and behaviour).
+/// engine never combines images of different releases, because every release has its own addresses and behavior).
 pub fn common_release(main: &Firmware, handset: &Firmware) -> Result<&'static Release, String> {
     if main.role != Role::Main {
         return Err(format!("the main slot holds the {} image of {}", main.role, main.release.id));

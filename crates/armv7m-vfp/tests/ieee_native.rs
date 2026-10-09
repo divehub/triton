@@ -5,7 +5,7 @@
 //!
 //! Native NaN payloads are not architectural, so for NaN results the native
 //! oracle only checks that a NaN is produced; the exact Arm propagation rules
-//! (first signalling NaN quietened, else first quiet NaN, else default NaN) are
+//! (first signaling NaN quietened, else first quiet NaN, else default NaN) are
 //! checked against a small independent model below.
 //!
 //! The heavy version runs with `cargo test -p armv7m-vfp --release`.

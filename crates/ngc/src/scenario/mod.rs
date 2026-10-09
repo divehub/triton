@@ -79,7 +79,7 @@ pub const SCENARIOS: [ScenarioInfo; 10] = [
     ScenarioInfo { name: "battery-setup", summary: "B1/B2 battery commits with the staggered confirm, handset CAN frames, EEPROM persistence across Restart" },
     ScenarioInfo { name: "diluent-menu", summary: "Diluent gases menu: staggered confirm edits and leaves, exactly simultaneous Press 3 does not" },
     ScenarioInfo { name: "clock-storage", summary: "CAN clock setter, calendar and storage retention across Restart, cold, wake and close/reopen" },
-    ScenarioInfo { name: "outputs-uart", summary: "HUD/vibrator outputs, LED colour labels, UART capture tails, output epoch on restart" },
+    ScenarioInfo { name: "outputs-uart", summary: "HUD/vibrator outputs, LED color labels, UART capture tails, output epoch on restart" },
     ScenarioInfo { name: "can-loss", summary: "CAN disconnect and selective identifier loss with restore" },
     ScenarioInfo { name: "cold-wake", summary: "cold boot to the observed standby request, then Wake" },
     ScenarioInfo { name: "machine-reset", summary: "Renode-style machine reset: SYSRESETREQ and IWDG expiry keep RAM/PWR/EEPROM, reset peripherals, reboot" },

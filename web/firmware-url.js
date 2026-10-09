@@ -113,7 +113,7 @@ export function configuredProxyUrl(value) {
 /**
  * Which proxy this page uses (see deploy/README.md):
  *   * a page served from localhost / 127.0.0.1 (serve.py) may name a loopback dev proxy with
- *     `?firmware-proxy=http://127.0.0.1:<port>/api/firmware` (honoured only on a loopback page, and only for
+ *     `?firmware-proxy=http://127.0.0.1:<port>/api/firmware` (honored only on a loopback page, and only for
  *     loopback addresses);
  *   * otherwise the proxy the site was built with (`configured`, from config.js: FIRMWARE_PROXY_URL);
  *   * otherwise none: "Load from URLs" is not available. A relative /api/firmware (same origin) is never assumed,

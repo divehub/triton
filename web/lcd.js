@@ -1,4 +1,4 @@
-// LCD canvas: draws RGBA frames from the worker and scales them crisply (nearest neighbour, optionally by whole
+// LCD canvas: draws RGBA frames from the worker and scales them crisply (nearest neighbor, optionally by whole
 // device-pixel multiples so every emulated pixel has the same size).
 
 const INTEGER_FILL = 0.85;
@@ -63,7 +63,7 @@ export class LcdView {
     const fit = Math.min((bounds.width * ratio) / this.canvas.width, (bounds.height * ratio) / this.canvas.height);
     const scale = Math.floor(fit);
     // Whole device-pixel multiples when they use at least 85% of the available size; otherwise (a phone, a small
-    // window) fit the container with nearest-neighbour scaling rather than showing a much smaller picture.
+    // window) fit the container with nearest-neighbor scaling rather than showing a much smaller picture.
     if (scale < 1 || scale < fit * INTEGER_FILL) {
       this.canvas.style.width = '100%';
       this.canvas.style.height = '100%';

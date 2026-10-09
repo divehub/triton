@@ -97,7 +97,7 @@ fn offsets_are_relative_to_the_region_base_and_widths_pass_through() {
         *log.borrow(),
         ["a:w4@4=11223344@0", "b:w1@3=55@0", "a:r4@4@0", "a:r2@5@0", "b:r1@3@0"]
     );
-    // Region boundaries: first and last byte hit, neighbours miss.
+    // Region boundaries: first and last byte hit, neighbors miss.
     log.borrow_mut().clear();
     h.read8(0x4000_0400);
     h.read8(0x4000_07FF);
@@ -767,7 +767,7 @@ fn accesses_straddling_plain_memory_are_split() {
     assert_eq!(h.read(0x1000_7FFE, Width::Word), 0xABCD, "bytes past the end read as zero");
     assert_eq!(h.read(0x1000_7FFE, Width::Half), 0xABCD);
     // Spanning two adjacent plain regions is impossible with this layout; a straddling write
-    // must not corrupt the in-range part's neighbours.
+    // must not corrupt the in-range part's neighbors.
     h.write(0x1000_7FFF, Width::Half, 0xFFFF);
     assert_eq!(h.read8(0x1000_7FFF), 0xFF);
     assert_eq!(h.read8(0x1000_7FFE), 0xCD);

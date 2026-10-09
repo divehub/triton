@@ -70,9 +70,9 @@ pub const SPECIALS: &[u32] = &[
     0x8000_0001,
     0x7FC0_0000, // default NaN
     0xFFC0_0000, // negative quiet NaN
-    0x7F80_0001, // signalling NaN
+    0x7F80_0001, // signaling NaN
     0xFF80_0001,
-    0x7FBF_FFFF, // largest signalling NaN
+    0x7FBF_FFFF, // largest signaling NaN
     0x7FFF_FFFF, // quiet NaN, all-ones payload
     0x7FC0_1234,
     0x7F80_5678,
@@ -89,7 +89,7 @@ pub const SPECIALS: &[u32] = &[
     0x3380_0000,
 ];
 
-/// A random binary32 pattern biased towards the edges of the format.
+/// A random binary32 pattern biased toward the edges of the format.
 pub fn gen_f32(rng: &mut Rng) -> u32 {
     let r = rng.next();
     let sign = ((r >> 40) as u32 & 1) << 31;

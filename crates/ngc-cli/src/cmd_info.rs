@@ -101,7 +101,7 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     status
 }
 
-/// The runtime-library routines of the image that the exact routine acceleration recognises (by the SHA-256 of their
+/// The runtime-library routines of the image that the exact routine acceleration recognizes (by the SHA-256 of their
 /// code bytes, wherever they sit in the image; DESIGN.md 16.2).
 fn accelerated_routines(srec: &[u8], role: Role) -> Vec<armv7m::accel::Match> {
     match firmware::load(srec, Some(role)) {
@@ -112,10 +112,10 @@ fn accelerated_routines(srec: &[u8], role: Role) -> Vec<armv7m::accel::Match> {
 
 fn print_routines(out: &mut dyn Write, routines: &[armv7m::accel::Match]) {
     if routines.is_empty() {
-        let _ = writeln!(out, "  accelerated routines: none recognised by code hash");
+        let _ = writeln!(out, "  accelerated routines: none recognized by code hash");
         return;
     }
-    let _ = writeln!(out, "  accelerated routines (exact memoized calls, recognised by the SHA-256 of their code bytes):");
+    let _ = writeln!(out, "  accelerated routines (exact memoized calls, recognized by the SHA-256 of their code bytes):");
     for m in routines {
         let spec = &armv7m::accel::SPECS[m.spec];
         let _ = writeln!(out, "    {:<10} 0x{:08x}  {:>3} bytes  sha256 {}", m.name, m.entry, m.len, &spec.sha256[..16]);

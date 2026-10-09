@@ -445,7 +445,7 @@ test('runtime: profile persistence, export and import round trip', async () => {
   await h.ready();
   await h.request('boot', { options: { mode: 'dual', startPaused: true } });
   await h.action({ action: 'advance', seconds: 5 });
-  // The serial fixture needs the first boot to have initialised the EEPROM.
+  // The serial fixture needs the first boot to have initialized the EEPROM.
   const withSerial = await h.action({ action: 'serial', serialNumber: 123456789 });
   assert.equal(withSerial.serialNumber, 123456789);
   await h.action({ action: 'inputs', inputs: { temperature1C: 31.5 } });
@@ -563,7 +563,7 @@ test('runtime: handset-only mode, remembered firmware and forgetting it', async 
   assert.equal((await storage.list('firmware')).length, 0);
 });
 
-test('runtime: pacing publishes frames and state, honours pause, speed and background policy', async () => {
+test('runtime: pacing publishes frames and state, honors pause, speed and background policy', async () => {
   const h = new Harness();
   await h.ready();
   await h.request('boot', { options: { mode: 'dual' }, profile: 'none' });

@@ -1,5 +1,5 @@
 //! The decompression state handling with the real firmware images (skipped when the gitignored SREC files are not
-//! available): the read-only `decoHealth` report and the two labelled emulator fixtures, the pre-boot EEPROM consistency
+//! available): the read-only `decoHealth` report and the two labeled emulator fixtures, the pre-boot EEPROM consistency
 //! fixture and the start at the surface (`crates/ngc/src/deco.rs`, `surface_start.rs`; DESIGN.md "Decompression state
 //! handling").
 //!
@@ -178,7 +178,7 @@ fn a_restart_after_a_first_boot_gives_finite_tissues_and_an_ndl_below_99_with_th
             assert!(ndl < 99, "{label}: the no-decompression limit falls below 99 at depth, was {ndl}");
             assert!(ndl > 0, "{label}: and is a plausible number of minutes, was {ndl}");
         } else {
-            // The original firmware's own behaviour, reproduced: 32 NaN words, kept (the elapsed time is under four days).
+            // The original firmware's own behavior, reproduced: 32 NaN words, kept (the elapsed time is under four days).
             assert_eq!(health(&deep, "tissues"), "invalid", "{label}: {:?}", deep.get("decoHealth"));
             let details = deep.get("decoHealth").and_then(|h| h.get("details")).expect("details");
             assert_eq!(details.get("nonFiniteTissueWords").and_then(Json::as_u64), Some(32), "{label}: {details:?}");

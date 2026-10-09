@@ -60,7 +60,7 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
         "320x240; panelOn=True; sleeping=False; MADCTL=0x60; COLMOD=0x05; commands=241; data=615038; pixels=614400; nonBlackGRAM=18179; reads=4; TE=189".to_string(),
         SOURCE_WAKE,
         false,
-        "TE counts the 120 Hz tear pulses since the panel was initialised; the CPU phase of the init differs slightly between Renode runs",
+        "TE counts the 120 Hz tear pulses since the panel was initialized; the CPU phase of the init differs slightly between Renode runs",
     );
     let flash = state.get("flashSummary").and_then(Json::as_str).unwrap_or("").to_string();
     for (key, renode) in [("pages", 4u64), ("commands", 1790), ("read", 15920), ("programmed", 2304), ("erases", 5)] {

@@ -1,7 +1,7 @@
 // Ported from Renode 1.17.0 src/Emulator/Peripherals/Peripherals/Timers/STM32_Timer.cs
 // (MIT License, Copyright (c) Antmicro).
 
-//! Behaviour of `Timers.STM32_Timer` on top of the clock entries of [`Model`]: the `LimitReached` handlers of
+//! Behavior of `Timers.STM32_Timer` on top of the clock entries of [`Model`]: the `LimitReached` handlers of
 //! the counter and of the compare timers, interrupt outputs, compare-timer scheduling (`UpdateTimer`), input
 //! capture (`OnGPIO`) and the slave modes. Every function mirrors the C# member it is named after; deliberate
 //! quirks of Renode are kept and marked `// Renode parity`.

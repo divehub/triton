@@ -6,7 +6,7 @@
 //! `armv7m-vfp` crate (work package FPU), re-exported here as `vfp`.
 //! Keep the public items below source-compatible; extend rather than rename.
 //!
-//! Timing follows Renode 1.17.0 single-machine behaviour (see `docs/renode-semantics.md` and
+//! Timing follows Renode 1.17.0 single-machine behavior (see `docs/renode-semantics.md` and
 //! the `cpu` module documentation): 1 ns time base, chunked execution, interrupt arbitration at
 //! tlib translation-block boundaries, SysTick / DWT as Renode clock entries.
 //!
@@ -57,7 +57,7 @@ pub const BUS_STOP_REQUESTED: u32 = 1 << 1;
 /// board and monomorphized into `Cpu::run`, so keep implementations `#[inline]`.
 ///
 /// `icount` is the core's monotonic executed-instruction count the board turns into the time of a
-/// synchronised MMIO access. Precisely: it is the number of instructions retired before the
+/// synchronized MMIO access. Precisely: it is the number of instructions retired before the
 /// *translation block* of the accessing instruction started - what tlib's
 /// `tlib_get_executed_instructions` reports to Renode's `SyncTime()`, because tlib adds a block to
 /// the executed count only when the next block starts. The access therefore happens at

@@ -131,7 +131,7 @@ impl HandsetBoard {
     }
 
     fn boot(&mut self, firmware: &Firmware, options: HandsetOptions) -> Result<(), String> {
-        // `sysbus LoadBinary ... 0x08004000`: the span goes into the zero-initialised flash.
+        // `sysbus LoadBinary ... 0x08004000`: the span goes into the zero-initialized flash.
         self.board.load(firmware.span_base, firmware.bin()).map_err(|e| format!("{NAME}: {e}"))?;
         debug_assert_eq!(firmware.span_base, VECTOR_TABLE);
         if options.can_link {

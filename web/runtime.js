@@ -701,7 +701,7 @@ export class Runtime {
     return job;
   }
 
-  /** Serialises writes so two saves never interleave. */
+  /** Serializes writes so two saves never interleave. */
   writeProfile(area, files, { replace = false } = {}) {
     const job = this.saving.then(async () => {
       try {

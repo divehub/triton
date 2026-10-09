@@ -13,9 +13,9 @@
 //!
 //! A channel is *supported* when its pin is in alternate-function mode with the expected function, the channel
 //! is an output with PWM mode 1 or 2, `CR1` has no center-aligned/direction bits (`CR1 & 0x70 == 0`) and ARR is
-//! not zero. The duty is the commanded one, `CCR / ARR` clamped to 1 (the modelled period is ARR ticks), inverted
+//! not zero. The duty is the commanded one, `CCR / ARR` clamped to 1 (the modeled period is ARR ticks), inverted
 //! for PWM mode 2 and for `CCxP`, and is reported as 0 while the counter or the channel is disabled. A capture-mode
-//! `CCR` is never read (a stock read would clear its flag). `BDTR.MOE` is unmodelled, which the details text states.
+//! `CCR` is never read (a stock read would clear its flag). `BDTR.MOE` is unmodeled, which the details text states.
 //!
 //! The JSON text is byte-compatible with the C# model: member order, no whitespace, numbers in .NET's "R" format
 //! ([`dotnet_round_trip`]), virtual seconds in "F6".

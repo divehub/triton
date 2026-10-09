@@ -594,7 +594,7 @@ mod tests {
         SysReset,
     }
 
-    /// A scripted core that honours the `Cpu` contract: whole instructions of `TPI` ticks,
+    /// A scripted core that honors the `Cpu` contract: whole instructions of `TPI` ticks,
     /// `run` stops once its time reaches `until`, MMIO accesses pass the executed-instruction
     /// count, notifications are polled after every access (a stop request ends the chunk right
     /// after the accessing instruction), WFI is an executed instruction that puts the core to sleep.

@@ -24,7 +24,7 @@
 //! * branches: `imm` = absolute target (`Bcc`: `x` = condition).
 
 /// Instruction kinds. `Undecoded` must stay zero: the predecode cache is
-/// initialised with zeroed slots.
+/// initialized with zeroed slots.
 ///
 /// The kinds from [`Kind::B`] to the end of the enum are exactly the
 /// instructions after which Renode's translator (tlib) ends the current

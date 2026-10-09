@@ -117,7 +117,7 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
     rec.check("handset without faults", rig.u32(Which::Handset, 0xE000_ED28) == 0 && rig.u32(Which::Handset, 0xE000_ED2C) == 0, rig.faults(Which::Handset));
     let png = rig.png();
     rec.image("after-pulses.png", png);
-    rec.limitation("Synthetic pulse generator: physical electrical filters, switch bounce, timing variance and complete device behaviour are not reproduced.");
+    rec.limitation("Synthetic pulse generator: physical electrical filters, switch bounce, timing variance and complete device behavior are not reproduced.");
     rec.limitation("The first/second CCR values depend on the free-running TIM3 phase and are shown for information only.");
     Ok(rec.finish(env))
 }

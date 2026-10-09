@@ -10,7 +10,7 @@
 //! 3. **Short NaN dive** (150 s): with the saved calibration but without a stored decompression date, the firmware's tissue
 //!    state is NaN (the main board then takes a cheap path); the dive makes it save a *last decompression date* in EEPROM.
 //! 4. **Clock fixture**: the main board's saved RTC checkpoint is advanced by 5 days (an explicit profile fixture: four or
-//!    more days make the original firmware reinitialise its tissue pressures through its own start-up path) and the saved
+//!    more days make the original firmware reinitialize its tissue pressures through its own start-up path) and the saved
 //!    sensor inputs are the surface defaults.
 //! 5. **Restart and recalibration**: the aged-calibration notification, "LOW PPO2! On the loop?" answered NO, the menu and a
 //!    second air calibration (the calibration age expired with the clock jump), then the depth is applied.
@@ -49,7 +49,7 @@ pub const BURST_EXECUTED_MIPS: f64 = 40.0;
 pub const CHECKPOINT_SECONDS: f64 = 10.0;
 
 const NAN_DIVE_SECONDS: f64 = 150.0;
-/// Days the main RTC checkpoint is advanced by (>= 4 triggers the firmware's own tissue reinitialisation).
+/// Days the main RTC checkpoint is advanced by (>= 4 triggers the firmware's own tissue reinitialization).
 const CLOCK_JUMP_DAYS: u32 = 5;
 /// Seconds into a dive session at which the depth is applied and the bubble check acknowledged.
 const DEPTH_AT: f64 = 34.0;
@@ -67,13 +67,13 @@ const CONFIRM: &str = r#"{"action":"confirm"}"#;
 #[derive(Clone, Copy, Debug)]
 pub struct Depth {
     pub name: &'static str,
-    pub metres: f64,
-    /// Pressure of both sensors in mbar (1013.25 + 1020 * 9.80665 * metres / 100, rounded to 0.1 mbar).
+    pub meters: f64,
+    /// Pressure of both sensors in mbar (1013.25 + 1020 * 9.80665 * meters / 100, rounded to 0.1 mbar).
     pub mbar: f64,
 }
 
-pub const DEPTH_20M: Depth = Depth { name: "20 m", metres: 20.0, mbar: 3013.3 };
-pub const DEPTH_30M: Depth = Depth { name: "30 m", metres: 30.0, mbar: 4014.1 };
+pub const DEPTH_20M: Depth = Depth { name: "20 m", meters: 20.0, mbar: 3013.3 };
+pub const DEPTH_30M: Depth = Depth { name: "30 m", meters: 30.0, mbar: 4014.1 };
 
 /// What to run.
 #[derive(Clone, Debug)]
@@ -300,7 +300,7 @@ impl DiveReport {
                     let (all, burst, quiet) = d.speeds();
                     Json::object()
                         .with("depth", d.depth.name)
-                        .with("depthMetres", d.depth.metres)
+                        .with("depthMetres", d.depth.meters)
                         .with("pressureMbar", d.depth.mbar)
                         .with("average", all.to_json())
                         .with("burst", burst.to_json())
@@ -568,7 +568,7 @@ pub fn run(env: &ScenarioEnv<'_>, config: &DiveConfig, clock: Clock<'_>) -> Resu
     for depth in &config.depths {
         let run = dive(env, config, &profile, *depth, clock)?;
         if !run.tissues_finite {
-            return Err(format!("the {} dive started with NaN tissues ({:#010x}): the profile did not take the firmware's own tissue initialisation", depth.name, run.tissue_word));
+            return Err(format!("the {} dive started with NaN tissues ({:#010x}): the profile did not take the firmware's own tissue initialization", depth.name, run.tissue_word));
         }
         dives.push(run);
     }

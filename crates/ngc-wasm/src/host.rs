@@ -2,7 +2,7 @@
 //!
 //! The browser worker talks to one [`Host`]: a running emulation session (dual or handset-only system with
 //! its runner fixtures, profile persistence and evidence capture). The ABI layer only moves bytes, JSON
-//! text and numbers; everything behavioural lives behind this trait.
+//! text and numbers; everything behavioral lives behind this trait.
 
 use emu_core::Json;
 

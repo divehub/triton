@@ -1,8 +1,8 @@
 // Ported from Renode 1.17.0 src/Emulator/Peripherals/Peripherals/UART/STM32F7_USART.cs, the UARTBase
-// behaviour in src/Emulator/Main/Peripherals/UART/UARTBase.cs and the register framework of
+// behavior in src/Emulator/Main/Peripherals/UART/UARTBase.cs and the register framework of
 // src/Emulator/Main/Core/Structure/Registers/ (MIT License, Copyright (c) Antmicro).
 
-//! STM32 USART/UART as modelled by Renode's `UART.STM32F7_USART` (non low-power mode), with a passive
+//! STM32 USART/UART as modeled by Renode's `UART.STM32F7_USART` (non low-power mode), with a passive
 //! transmit observer hook.
 //!
 //! What the model does, exactly as Renode does it:
@@ -12,10 +12,10 @@
 //!   interrupt line recomputed. Nothing models the wire: no baud-rate timing, no `TXE` delay (`TXE` always
 //!   reads 1), no framing, no echo. If `UE` or `TE` is clear the character is dropped with a warning;
 //! * the receive side is an unbounded byte queue fed by [`Usart::receive_byte`] (Renode `WriteChar`); the
-//!   NGC platform connects nothing to it, but the register behaviour (`RXNE`, `RDR` pop, `RXFRQ`, the receiver
+//!   NGC platform connects nothing to it, but the register behavior (`RXNE`, `RDR` pop, `RXFRQ`, the receiver
 //!   timeout and the `ReceiveDmaRequest` output) is ported;
 //! * registers are served by a port of Renode's register framework: unhandled offsets log
-//!   `Unhandled read/write ...`, writes of ones to unmodelled ("tagged") bits log the framework's
+//!   `Unhandled read/write ...`, writes of ones to unmodeled ("tagged") bits log the framework's
 //!   `Unhandled write to offset ... Tags: ...` message, bits that no field covers keep their reset value.
 //!
 //! Output lines: [`IRQ_LINE`] (0) is Renode's `IRQ`, [`RX_DMA_REQUEST_LINE`] (1) is `ReceiveDmaRequest`.
@@ -107,7 +107,7 @@ impl Field {
     }
 }
 
-/// An unmodelled field (`WithTaggedFlag`, `WithTag`, `WithReservedBits`), kept for the unhandled-write log.
+/// An unmodeled field (`WithTaggedFlag`, `WithTag`, `WithReservedBits`), kept for the unhandled-write log.
 struct Tag {
     name: &'static str,
     pos: u8,
@@ -161,7 +161,7 @@ const RDR: usize = 8;
 const TDR: usize = 9;
 const REG_COUNT: usize = 10;
 
-// Bit positions used by the behaviour.
+// Bit positions used by the behavior.
 const CR1_UE: u32 = 1 << 0;
 const CR1_RE: u32 = 1 << 2;
 const CR1_TE: u32 = 1 << 3;
@@ -394,7 +394,7 @@ pub struct Usart {
     tx_total: u64,
     /// Renode cancels a receiver-timeout action through a `CancellationToken` and leaves the (now inert)
     /// action in the clock source, where it still fires. Same here: `schedule_action` entries cannot be
-    /// withdrawn, so a cancelled action is one whose generation is no longer current.
+    /// withdrawn, so a canceled action is one whose generation is no longer current.
     rto_generation: u64,
 }
 
@@ -528,7 +528,7 @@ impl Usart {
         self.regs[ICR] & ICR_RTOCF != 0
     }
 
-    // ---- behaviour (UARTBase + STM32F7_USART) ----
+    // ---- behavior (UARTBase + STM32F7_USART) ----
 
     /// Renode `UpdateInterrupt`: TXE is assumed always set.
     fn update_interrupt(&self, ctx: &mut Ctx<'_>) {
@@ -1088,9 +1088,9 @@ mod tests {
         inject(&mut h, id, b'x');
         assert_eq!(h.next_event_time(), Some(from_micros(1000)));
         h.advance_to(from_micros(500));
-        inject(&mut h, id, b'y'); // re-arms: the first action is cancelled ...
+        inject(&mut h, id, b'y'); // re-arms: the first action is canceled ...
         assert_eq!(h.next_event_time(), Some(from_micros(1000)), "... but, as in Renode, it stays queued");
-        h.advance_to(from_micros(1000)); // the cancelled action fires and does nothing
+        h.advance_to(from_micros(1000)); // the canceled action fires and does nothing
         assert_eq!(h.read32(reg(offset::ISR)) & ISR_RTOF, 0);
         assert!(!h.irq_level(IRQ));
         assert_eq!(h.next_event_time(), Some(from_micros(1500)));

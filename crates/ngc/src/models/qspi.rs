@@ -5,9 +5,9 @@
 //!
 //! The exact flash part is unknown; the 128 MiB default capacity follows the firmware's `FSIZE = 26`
 //! address window and the JEDEC answer (`ef 40 21`) is an explicit synthetic fixture. Only **indirect**
-//! transfers are modelled (functional-mode field `FMODE` 0 = write, 1 = read); automatic polling and
+//! transfers are modeled (functional-mode field `FMODE` 0 = write, 1 = read); automatic polling and
 //! memory-mapped mode (`FMODE` 2/3) raise the transfer-error flag, as in the C# model. Serial-clock and
-//! FIFO timing are not modelled: a transfer completes in the register access that supplies its last byte.
+//! FIFO timing are not modeled: a transfer completes in the register access that supplies its last byte.
 //!
 //! # Command model
 //!

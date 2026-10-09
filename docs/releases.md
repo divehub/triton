@@ -81,7 +81,7 @@ refused for NEPTUN with `Release::cold_boot_refusal`; Restart and Wake work.
 
 ## Speed
 
-The idle-loop fast-forward recognises loops of straight, call-free code. The NEPTUN main image (an unoptimized build) keeps its
+The idle-loop fast-forward recognizes loops of straight, call-free code. The NEPTUN main image (an unoptimized build) keeps its
 FreeRTOS idle task in a loop that calls `prvCheckTasksWaitingTermination` every round, and a HAL busy-wait with timeout
 polls the UART5 status register (`UART_WaitOnFlagUntilTimeout`, `0x0803dbc4`, reads `0x4000501c`, always `0x204000c0`); a
 PC histogram of the steady state (3-9 virtual s) shows these two loops at about 98 % of the instructions, neither involves a

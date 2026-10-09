@@ -1,5 +1,5 @@
 // Ported from class NGCUartCapture in emulation/models/NGCBoardTelemetry.cs of the analysis workspace
-// (Renode 1.17.0 external, see that file for its licence).
+// (Renode 1.17.0 external, see that file for its license).
 
 //! `NGCUartCapture`: passive observation of UART transmit streams.
 //!

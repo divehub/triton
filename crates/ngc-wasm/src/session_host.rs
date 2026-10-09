@@ -1,5 +1,5 @@
 //! The [`Host`] over `ngc::session::Session` (DESIGN.md section 14): the single host-facing engine API. The
-//! C ABI in `lib.rs` never reaches into boards; everything behavioural (actions, state, profile, capture) is the
+//! C ABI in `lib.rs` never reaches into boards; everything behavioral (actions, state, profile, capture) is the
 //! session's.
 
 use crate::host::{FrameRef, Host, HostConfig, Part, StagedProfile};

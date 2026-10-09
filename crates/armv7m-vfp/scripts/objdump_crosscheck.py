@@ -62,7 +62,7 @@ def hex_imm(m):
     return f"#-0x{-v:x}" if v < 0 else f"#0x{v:x}"
 
 
-def normalise(mnem, ops, comment):
+def normalize(mnem, ops, comment):
     """GNU objdump text -> the crate's disassembly layout."""
     mnem = mnem.lower()
     ops = ops.replace(" ", "").lower()
@@ -114,7 +114,7 @@ def parse_objdump(chunk_path):
         parts = text.split("\t", 1)
         mnem = parts[0].strip()
         ops = parts[1].strip() if len(parts) > 1 else ""
-        res[idx] = ("unpred" if unpred else "insn", normalise(mnem, ops, comment) if not unpred else f"{mnem} {ops}")
+        res[idx] = ("unpred" if unpred else "insn", normalize(mnem, ops, comment) if not unpred else f"{mnem} {ops}")
     return res
 
 

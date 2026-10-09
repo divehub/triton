@@ -39,7 +39,7 @@ export const STATUS = Object.freeze({
   rejected: 'Not applied',
 });
 
-/** Serialises UI actions; adjacent pending basic updates coalesce to the newest. */
+/** Serializes UI actions; adjacent pending basic updates coalesce to the newest. */
 export class ActionQueue {
   /**
    * @param {object} hooks

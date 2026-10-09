@@ -29,15 +29,16 @@
       <p class="lead">This page runs the unchanged <strong>main 5.8</strong> and <strong>handset 65.3</strong> firmware of a TRITON or NEPTUN release on a WebAssembly model of the two Cortex-M4F boards connected over CAN, with the handset display shown live. Engine: <code id="engine-label">…</code>.</p>
 
       <div class="slots">
+        <!-- Waiting: heading, state and the expected names (short). Verified (entry.js renderSlot): one line, with the hash and the checks in a closed <details>. -->
         <article id="slot-main" class="slot" data-role="main" aria-live="polite">
           <h3>Main controller 5.8</h3>
-          <p class="expected">ngc_main_5.8_TRITON.srec or ngc_main_5.8_NEPTUN.srec</p>
           <div class="state" data-part="state">Waiting for the file.</div>
+          <p class="expected">ngc_main_5.8_TRITON.srec or ngc_main_5.8_NEPTUN.srec</p>
         </article>
         <article id="slot-handset" class="slot" data-role="handset" aria-live="polite">
           <h3>Handset 65.3</h3>
-          <p class="expected">ngc_handset_65.3_TRITON.srec or ngc_handset_65.3_NEPTUN.srec</p>
           <div class="state" data-part="state">Waiting for the file.</div>
+          <p class="expected">ngc_handset_65.3_TRITON.srec or ngc_handset_65.3_NEPTUN.srec</p>
         </article>
       </div>
       <p id="release-line" class="release-line" aria-live="polite" hidden></p>
@@ -54,13 +55,13 @@
         <summary>Choose firmware files or load them from URLs</summary>
         <div id="dropzone" class="dropzone">
           <div><strong>Drop both .srec files here</strong>, or <button type="button" id="choose-files" class="link">choose files…</button></div>
-          <div class="small muted">Either order. The files are recognised by their content, not their names.</div>
+          <div class="small muted">Either order. The files are recognized by their content, not their names.</div>
           <input id="file-input" type="file" accept=".srec,.s19,.s28,.s37,.mot,.txt,text/plain" multiple hidden>
         </div>
 
         <form id="url-form" class="url-loader" novalidate aria-labelledby="url-heading">
           <h3 id="url-heading">Or load them from URLs</h3>
-          <p id="url-intro" class="small muted">Paste the address of each original S-record file: <code>https://api.multi3s.com/static/NAME.srec</code>, or a Wayback Machine capture of it, <code>https://web.archive.org/web/TIMESTAMP/https://api.multi3s.com/static/NAME.srec</code>. Either field may stay empty; the files are recognised by their content, so a file in the wrong field still lands in the right slot.</p>
+          <p id="url-intro" class="small muted">Paste the address of each original S-record file: <code>https://api.multi3s.com/static/NAME.srec</code>, or a Wayback Machine capture of it, <code>https://web.archive.org/web/TIMESTAMP/https://api.multi3s.com/static/NAME.srec</code>. Either field may stay empty; the files are recognized by their content, so a file in the wrong field still lands in the right slot.</p>
           <div id="url-fields" class="url-fields">
             <label>Main controller 5.8 URL<input id="url-main" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://web.archive.org/web/…/https://api.multi3s.com/static/….srec" aria-describedby="url-main-info"></label>
             <p id="url-main-info" class="small url-info" aria-live="polite"></p>
@@ -87,7 +88,7 @@
           <label>Board-ID ADC sample (0–4095)<input id="start-adc" type="number" min="0" max="4095" step="1" value="400"></label>
           <label class="check"><input type="checkbox" id="start-deco-fixture" checked><span>Repair the stored decompression state before every start (an emulator fixture, TRITON only: when the tissue block was never saved, the saved decompression date is erased so that the firmware resets its tissues instead of loading NaN, which keeps the no-decompression limit at 99)</span></label>
           <label class="check"><input type="checkbox" id="start-surface" checked><span>Start at the surface (an emulator fixture: every start sets both pressure inputs to the surface pressure plus the sensor offsets, a new session also resets the oxygen cells to their defaults)</span></label>
-          <label class="check"><input type="checkbox" id="start-i2c-idle" checked><span>Main I2C idle lines PB6/PB7/PB10/PB11 driven high before the firmware runs (an idle-line fixture standing for external pull-ups, not electrical I2C modelling; leaving PB6/PB7 low changes the start-up ordering of settings loading and HUD initialization)</span></label>
+          <label class="check"><input type="checkbox" id="start-i2c-idle" checked><span>Main I2C idle lines PB6/PB7/PB10/PB11 driven high before the firmware runs (an idle-line fixture standing for external pull-ups, not electrical I2C modeling; leaving PB6/PB7 low changes the start-up ordering of settings loading and HUD initialization)</span></label>
           <label class="check"><input type="checkbox" id="start-simultaneous"><span>Start both CPUs together (bypass the inferred main PE3 handset supply gate)</span></label>
           <label class="check"><input type="checkbox" id="start-paused"><span>Start paused</span></label>
           <label class="check"><input type="checkbox" id="start-idle-ff" checked><span>Exact idle-loop fast-forward (changes host speed only; results are identical)</span></label>
@@ -96,7 +97,7 @@
 
       <!-- Applies when the emulator boots, so it sits with the other boot-time choices, just above the Boot button. -->
       <div class="remember">
-        <label class="check"><input type="checkbox" id="remember" checked><span>Remember these files in this browser (stored locally in the origin-private file system, never uploaded). They are verified again on every visit; untick this to be asked for them each time.</span></label>
+        <label class="check"><input type="checkbox" id="remember" checked><span>Remember these files in this browser (stored locally in the origin-private file system, never uploaded). They are verified again on every visit; uncheck this to be asked for them each time.</span></label>
         <p id="remember-note" class="small warn-text" hidden>Remembering files is unavailable here: this browser or mode does not provide the origin-private file system.</p>
       </div>
 
@@ -109,7 +110,7 @@
       </div>
 
       <ul class="facts">
-        <li>This is a <strong>functional model, not a claim of physical accuracy</strong>. It is a new engine ported from the behaviour of Renode 1.17.0; results from the Renode setup do not transfer automatically, and every capture is labeled with the engine that produced it.</li>
+        <li>This is a <strong>functional model, not a claim of physical accuracy</strong>. It is a new engine ported from the behavior of Renode 1.17.0; results from the Renode setup do not transfer automatically, and every capture is labeled with the engine that produced it.</li>
         <li>Power, standby, reset, CAN wire timing, sensors and the display are simulated with explicit fixtures, named under Start options and in Advanced once the emulator runs.</li>
         <li>The firmware is <strong>not part of this page</strong>. Choose your two original S-record files, both from the same release (TRITON or NEPTUN), or load them from URLs; they are checked in your browser by SHA-256 and content, and never uploaded.</li>
       </ul>
@@ -307,13 +308,13 @@
             <div><dt>Mode</dt><dd id="mode">—</dd></div>
           </dl>
           <p id="unavailable-info" class="small" hidden></p>
-          <p>The LCD shows firmware-written pixels. Buttons drive timed pin pulses through the firmware capture interrupt; peripheral timing is simulated. This engine is a new functional model in WebAssembly, ported from the behaviour of Renode 1.17.0; it does not inherit Renode's evidence and does not establish physical-device accuracy.</p>
+          <p>The LCD shows firmware-written pixels. Buttons drive timed pin pulses through the firmware capture interrupt; peripheral timing is simulated. This engine is a new functional model in WebAssembly, ported from the behavior of Renode 1.17.0; it does not inherit Renode's evidence and does not establish physical-device accuracy.</p>
           <p id="lcd-summary">Waiting for emulator status.</p>
         </details>
 
         <section id="profile-panel" class="profile-panel" aria-labelledby="profile-heading">
           <h3 id="profile-heading">Profile and evidence</h3>
-          <p>The profile is the emulated device's nonvolatile state of this firmware release: EEPROM (<code>eeprom.bin</code>), log flash (<code>nor.ngc</code>), the RTC checkpoint (<code>rtc-state.json</code>), the sensor inputs (<code>inputs.json</code>) and the LED colour labels (<code>led-colors.json</code>). It is kept in this browser (a separate profile for each release) and restored on the next start. The clock advances in virtual time only, so it stands still while the emulator is closed or paused. Save evidence downloads a zip with <code>state.json</code>, <code>lcd.png</code> and <code>can-trace.tsv</code> (CAN trace only in dual mode).</p>
+          <p>The profile is the emulated device's nonvolatile state of this firmware release: EEPROM (<code>eeprom.bin</code>), log flash (<code>nor.ngc</code>), the RTC checkpoint (<code>rtc-state.json</code>), the sensor inputs (<code>inputs.json</code>) and the LED color labels (<code>led-colors.json</code>). It is kept in this browser (a separate profile for each release) and restored on the next start. The clock advances in virtual time only, so it stands still while the emulator is closed or paused. Save evidence downloads a zip with <code>state.json</code>, <code>lcd.png</code> and <code>can-trace.tsv</code> (CAN trace only in dual mode).</p>
           <p id="profile-status" class="small muted mt10"></p>
           <div class="actions-row">
             <button type="button" id="evidence-save">Save evidence (zip)</button>

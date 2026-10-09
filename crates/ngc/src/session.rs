@@ -26,7 +26,7 @@
 //!   and an internal counter.
 //! * An IWDG expiry or `AIRCR.SYSRESETREQ` performs a Renode-style machine reset instead of ending the run (see
 //!   `System::machine_reset`).
-//! * Two labelled emulator fixtures act at every board creation, both **on by default** and switchable
+//! * Two labeled emulator fixtures act at every board creation, both **on by default** and switchable
 //!   ([`SessionConfig::deco_storage_fixture`], [`SessionConfig::start_at_surface`]): the runner has neither. The pre-boot
 //!   EEPROM consistency repair ([`crate::deco`]) and the start at the surface ([`crate::surface_start`]; a new session also
 //!   resets the oxygen cells). The state names them (`decoStorageFixture`, `startAtSurface`) next to the read-only

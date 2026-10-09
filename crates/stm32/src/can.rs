@@ -1,13 +1,13 @@
 // Ported from Renode 1.17.0 src/Emulator/Peripherals/Peripherals/CAN/STMCAN.cs together with
 // src/Emulator/Main/Peripherals/CAN/CANMessageFrame.cs and ICAN.cs (MIT License, Copyright (c) Antmicro).
 
-//! bxCAN controller as modelled by Renode's `CAN.STMCAN` (master instance, no CAN2/slave support).
+//! bxCAN controller as modeled by Renode's `CAN.STMCAN` (master instance, no CAN2/slave support).
 //!
 //! The model is functional, not electrical. There is no bit timing, no arbitration and no mailbox
 //! scheduling: a write to `CAN_TIxR` with TXRQ set emits the frame **synchronously** (Renode `FrameSent`),
 //! marks the mailbox empty and completed, and returns. Frames the controller emits are appended to an
 //! out-queue ([`StmCan::take_tx_frames`]) together with the sender's `ctx.now()` stamp; the system delivers
-//! them to the peer with [`StmCan::deliver_frame`] at its synchronisation points (Renode: the sync phase at
+//! them to the peer with [`StmCan::deliver_frame`] at its synchronization points (Renode: the sync phase at
 //! the end of the quantum, see `models::can_link`).
 //!
 //! Renode quirks that are reproduced on purpose (`// Renode parity` markers in the code):
@@ -178,7 +178,7 @@ const STANDARD_ID_OFFSET: u32 = 18;
 /// A CAN frame as exchanged between controllers (Renode `CANMessageFrame`).
 ///
 /// `id` is the 11-bit identifier for standard frames and the full 29-bit identifier for extended ones.
-/// Renode's STMCAN reports a zero-length frame with a `null` payload (the link normalises it); here the
+/// Renode's STMCAN reports a zero-length frame with a `null` payload (the link normalizes it); here the
 /// payload of such a frame is an empty vector.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CanFrame {
@@ -563,7 +563,7 @@ impl StmCan {
         self.rx[fifo].queue.len()
     }
 
-    /// `OnFrameReceived`: a frame arrives from the bus (the link calls this at a synchronisation point).
+    /// `OnFrameReceived`: a frame arrives from the bus (the link calls this at a synchronization point).
     pub fn deliver_frame(&mut self, ctx: &mut Ctx<'_>, frame: &CanFrame) {
         if self.mcr & MCR_SLEEP != 0 {
             // Wake up if autowake up is on.
@@ -623,7 +623,7 @@ impl StmCan {
         }
     }
 
-    /// The bank part of `Reset()`: banks go inactive/16-bit/mask/FIFO 0; FR values and the prioritised
+    /// The bank part of `Reset()`: banks go inactive/16-bit/mask/FIFO 0; FR values and the prioritized
     /// lists are kept (Renode parity).
     fn reset_filter_banks(&mut self) {
         for bank in &mut self.banks {
@@ -757,7 +757,7 @@ impl StmCan {
             offset::RF1R => self.rx[1].value(),
             offset::IER => self.ier & IER_MASK,
             offset::ESR => self.esr_value(),
-            // BTR is only readable (and writable) in initialisation mode.
+            // BTR is only readable (and writable) in initialization mode.
             offset::BTR => {
                 if self.msr & MSR_INAK != 0 {
                     self.btr
@@ -838,7 +838,7 @@ impl StmCan {
         let init_request = self.mcr & MCR_INRQ != 0;
         let sleep_request = self.mcr & MCR_SLEEP != 0;
         if init_request && !sleep_request {
-            // Enter initialisation mode.
+            // Enter initialization mode.
             self.msr |= MSR_INAK;
             self.msr &= !MSR_SLAK;
         } else if sleep_request && !init_request {
@@ -1140,7 +1140,7 @@ mod tests {
         ] {
             assert_eq!(h.read32(reg(off)), 0, "register 0x{off:X}");
         }
-        // BTR only reads back in initialisation mode.
+        // BTR only reads back in initialization mode.
         h.write32(reg(offset::MCR), 0x0001_0001);
         assert_eq!(h.read32(reg(offset::MSR)) & MSR_INAK, 1);
         assert_eq!(h.read32(reg(offset::BTR)), 0x0123_0000);
@@ -1341,7 +1341,7 @@ mod tests {
         let (mut h, id) = rig();
         renode_boot(&mut h);
         deliver(&mut h, id, CanFrame::standard(0x1, &[]));
-        assert_eq!(h.get::<StmCan>(id).fifo_len(0), 0, "no FA1R write yet: nothing prioritised");
+        assert_eq!(h.get::<StmCan>(id).fifo_len(0), 0, "no FA1R write yet: nothing prioritized");
         config_filter(&mut h, 0, 0, true, false, 0, 0, false);
         deliver(&mut h, id, CanFrame::standard(0x1, &[]));
         assert_eq!(h.get::<StmCan>(id).fifo_len(0), 0, "bank configured but inactive");

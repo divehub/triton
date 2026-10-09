@@ -417,9 +417,9 @@ function runWholeDive(engine, options, routineAccel) {
   profile['rtc-state.json'] = new TextEncoder().encode(`${JSON.stringify(rtc, null, 2)}\n`);
   if (surface) profile['inputs.json'] = surface;
   else delete profile['inputs.json']; // openSession then pins the batteries again
-  const dives = options.diveDepths.map((metres) => {
-    const depth = DEPTHS[metres];
-    if (!depth) throw new Error(`--dive-depths takes 20 and/or 30 (got ${metres})`);
+  const dives = options.diveDepths.map((meters) => {
+    const depth = DEPTHS[meters];
+    if (!depth) throw new Error(`--dive-depths takes 20 and/or 30 (got ${meters})`);
     return runDive(session, options, routineAccel, profile, depth);
   });
   return { routineAccel: routineAccel ? 'on' : 'off', idleFastForward: options.idleFf, diveSeconds: options.diveSeconds, stages, dives };
