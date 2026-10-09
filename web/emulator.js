@@ -10,10 +10,11 @@ import { byId, confirmDialog, formatBytes, formatClock, h, hex32, prefs, reportF
 import { ActionQueue, BASIC_IDS, ConditionsController } from './conditions.js';
 import { decoWarnings, fixtureLines, healthLine, parseSurfacePressure } from './deco.js';
 import { faultDetail, faultReports, faultWarnings } from './faults.js';
+import { clearCellFixture } from './game-logic.js';
 import { handsetKeyAction } from './keys.js';
 import { LcdView } from './lcd.js';
 import { ReplayController, STATUS_STRIP, activityText, describeEntry, driveText, historyText } from './replay.js';
-import { describeRelease } from './releases.js';
+import { DEFAULT_RELEASE_ID, describeRelease, profileArea } from './releases.js';
 import { PRESSURE_KEYS, SENSOR_KEYS, TEMPERATURE_KEYS } from './sensors.js';
 import { readZip } from './zip.js';
 
@@ -966,6 +967,8 @@ export class EmulatorView {
     this.actionError = '';
     try {
       await this.client.request('reset-profile');
+      // The dive game's oxygen-cell deviations belong to the profile (a calibration is stored in its EEPROM): new ones are drawn.
+      clearCellFixture(prefs, profileArea(release ? release.id : DEFAULT_RELEASE_ID));
     } catch (error) {
       this.actionError = error.message;
     }

@@ -11,7 +11,8 @@ import { FIRMWARE_PROXY_URL } from './config.js';
 import { parseSurfacePressure } from './deco.js';
 import { byId, confirmDialog, formatBytes, formatClock, h, prefs, reportFacts } from './dom.js';
 import { FETCH_TIMEOUT_MS, fetchFirmware, normalizeFirmwareUrl, proxyEndpoint } from './firmware-url.js';
-import { CUSTOM_RELEASE_ID, RELEASES, RELEASE_IDS, describeRelease } from './releases.js';
+import { clearCellFixture } from './game-logic.js';
+import { CUSTOM_RELEASE_ID, RELEASES, RELEASE_IDS, describeRelease, profileArea } from './releases.js';
 
 const ROLE_LABEL = { main: 'main controller 5.8', handset: 'handset 65.3' };
 const CUSTOM_LABEL = { main: 'Main', handset: 'Handset' };
@@ -36,7 +37,8 @@ function profileName(id) {
 export class EntryView {
   /**
    * @param {import('./worker-client.js').WorkerClient} client
-   * @param {{booted: (result: object, info: object) => void}} hooks
+   * @param {{booted: (result: object, info: object) => void, starting?: (info: {game: boolean}) => void}} hooks `booted` gets
+   *   `info.game` true when the session was started with Start game; `starting` runs when a start begins
    * @param {object} [deps] injected by the tests: `fetch`, `timers` ({setTimer, clearTimer}), `timeoutMs`, `proxy`
    *   (the result of `proxyEndpoint`) or `proxyUrl` (the configured FIRMWARE_PROXY_URL, default: config.js)
    */
@@ -76,6 +78,8 @@ export class EntryView {
     this.dropzone = byId('dropzone');
     this.input = byId('file-input');
     this.bootButton = byId('boot');
+    this.gameButton = byId('start-game');
+    this.gameHint = byId('game-hint');
     this.bootHint = byId('boot-hint');
     this.remember = byId('remember');
     this.problem = byId('profile-problem');
@@ -147,6 +151,7 @@ export class EntryView {
       byId(id).addEventListener('change', () => this.refresh());
     }
     this.bootButton.addEventListener('click', () => this.boot('stored'));
+    this.gameButton.addEventListener('click', () => this.boot('stored', { game: true }));
     byId('use-remembered').addEventListener('click', () => this.useRemembered());
     byId('forget-remembered').addEventListener('click', () => this.forget());
     for (const role of ROLES) {
@@ -333,6 +338,8 @@ export class EntryView {
     if (!ok) return false;
     try {
       await this.client.request('reset-profile', { release: releaseId });
+      // The game's oxygen-cell deviations belong to the profile (a calibration is stored in its EEPROM): new ones are drawn.
+      clearCellFixture(prefs, profileArea(releaseId));
       if (this.init && this.init.profiles) this.init.profiles[releaseId] = null;
       this.renderProfileNote();
       this.problem.hidden = true;
@@ -864,6 +871,9 @@ export class EntryView {
     this.renderUrls();
     const state = this.ready();
     this.bootButton.disabled = !state.ok;
+    // Start game needs the main board (it feeds the sensors the game drives): with "Handset only" it is off, and says why.
+    this.gameButton.disabled = !state.ok || state.handsetOnly;
+    this.gameHint.hidden = !state.handsetOnly;
     // The mode choice cannot change while something is being checked, fetched or started.
     this.customToggle.disabled = !this.customSupported() || this.booting || this.busy > 0 || !!this.urlLoading;
     byId('custom-unsupported').hidden = this.customSupported();
@@ -952,17 +962,20 @@ export class EntryView {
     this.problem.hidden = false;
   }
 
-  async boot(profile) {
+  /** Boots the session: the emulator view, or (`game`) the dive game on the same firmware, profile and start options. */
+  async boot(profile, { game = false } = {}) {
     if (!this.ready().ok && !this.booting) return;
+    if (game && this.ready().handsetOnly) return;
     const options = this.options();
     this.booting = true;
     this.problem.hidden = true;
     this.refresh();
     const custom = this.customMode;
+    if (this.hooks.starting) this.hooks.starting({ game });
     try {
       const result = await this.client.request('boot', { options, remember: this.remember.checked, profile, custom });
       this.booting = false;
-      this.hooks.booted(result, { options, profile, custom });
+      this.hooks.booted(result, { options, profile, custom, game });
     } catch (error) {
       this.booting = false;
       this.refresh();
@@ -970,8 +983,8 @@ export class EntryView {
         const release = this.release();
         const name = release ? `${release.name} ` : '';
         this.showProblem(`The saved ${name}profile could not be used: ${error.message}`, [
-          h('button', { type: 'button', class: 'danger', onclick: async () => { if (await this.resetProfile(release ? release.id : RELEASE_IDS[0])) this.boot('stored'); } }, 'Erase the saved profile and boot'),
-          h('button', { type: 'button', onclick: () => this.boot('none') }, 'Boot without the saved profile (nothing is saved)'),
+          h('button', { type: 'button', class: 'danger', onclick: async () => { if (await this.resetProfile(release ? release.id : RELEASE_IDS[0])) this.boot('stored', { game }); } }, 'Erase the saved profile and boot'),
+          h('button', { type: 'button', onclick: () => this.boot('none', { game }) }, 'Boot without the saved profile (nothing is saved)'),
         ]);
       } else {
         this.showProblem(error.message);

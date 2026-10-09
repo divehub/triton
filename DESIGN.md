@@ -562,3 +562,41 @@ The private analysis workspace is rewriting both firmwares in Rust (Embassy, `th
 - **Wake fixture.** For custom builds it writes `PWR.SR1 = 0x104` and `RCC.CSR = 0` only; the original application marker `RTC.BKP1R = 0x32F0` is not written (it would overwrite native backup state).
 - **Buttons.** PE3/PE5 are high from reset (external pull-up) with no readiness gate; Up = PE5, Down = PE3 for every firmware. Renode's timer drops an input change while a channel is still an output and forgets the level, so the first press after configuring capture was lost; an opt-in `Stm32Timer::with_external_pull_ups()`, enabled only for the handset TIM3, remembers the pin level (a deliberate departure from Renode for that one timer; every Renode golden transcript still passes). Because the new default removes two zero-width capture interrupts after the original firmware's init, `scenario::recorded_config` keeps the old gated model (`SessionConfig::button_pull_up = false`); scenarios and the dive benchmark stay byte-identical. The session-create hook `blankEeprom` (benchmark only) also selects the recorded button model so the web dive benchmark keeps matching the native one.
 - **Native smoke (the user's work-in-progress builds, converted locally from `firmware.bin`).** All structural checks pass. The main scans its erased NOR for about 15 virtual s before raising the handset supply (PE3), so the handset starts at about 15.15 s (`--simultaneous-start` skips that). UART boot lines, LCD output (panel ID `0x798552`), CAN traffic and pin-driven keys (`KEY mask=1/2/3`) work; no faults; only harmless unmodeled-register warnings (GPIO `ASCR`, some I2C and TIM15 tag bits).
+
+## 21. Dive game (2026-10-09, user decisions)
+
+The CCR dive game prototype from the private analysis workspace (`game/`: `index.html`, `app.js`, `gas-model.js`, `gas-model.test.mjs`, `lcd.js`, `style.css`; the user approved publishing it here) is connected to the emulator. Desktop only for now (phone layout is out of scope). Its README describes every control; all of them must work against the emulator.
+
+### 21.1 Entry and session
+
+- The entry screen gets **Start game** beside **Boot emulator**. Both use the same verified firmware (original release or custom builds), the same profile and the same start options. The game always runs both boards: with "Handset only" selected, Start game is disabled with a short reason.
+- No view switch between game and emulator (deferred). The game has its own Quit, which closes the session the way the emulator view does (profile saved) and returns to the entry screen.
+
+### 21.2 What drives what
+
+- **Clock.** The game uses emulator virtual time only (no local mock clock). Pause / 1x / 2x / 4x / Uncapped set the emulator pacing (Uncapped = unpaced). Holding a valve forces 1x and restores the chosen speed afterwards, as in the mock. Space pauses and resumes.
+- **Depth to pressure.** The diver depth sets both pressure inputs: surface pressure (the session setting, 1013.25 mbar by default) + EN13319 water (1020 kg/m3, 9.80665 m/s2) x depth. Inputs are sent coalesced and serialized (newest wins) whenever depth or gas changes, a few times per wall second at most; the game never writes guest RAM.
+- **Gas to oxygen cells.** The loop model (`gas-model.js`, unchanged physics) gives ppO2 = loop O2 fraction x ambient pressure. Each cell voltage is ppO2 x its sensitivity. Sensitivities are a labeled game fixture: each cell reads **12 mV in air at the surface plus a random per-cell deviation** (uniform +-1.0 mV, so 11.0..13.0 mV at ppO2 = 0.2128 bar), drawn once per profile and kept in the page settings for that profile area (a profile reset draws new ones), so a calibration stays valid across sessions like a real cell. The diver must calibrate through the firmware menu before the firmware shows valid ppO2.
+- **Temperature** stays at the emulator setting (20 C); not tied to depth.
+- **Diluent** selection sets the loop gas only. The firmware diluent is the diver's job on the handset, as in real life.
+- **Reset dive**: back to the surface, a fresh Air loop and 1x; the boards keep running (the firmware ends its dive itself).
+
+### 21.3 Wrist unit and outputs
+
+- The authored LCD is replaced by the firmware frame (the existing `lcd.js` renderer). Bezel Up/Down press the handset buttons (Up = PE5, Down = PE3, the engine mapping); tapping the middle third of the LCD is Confirm (the existing tap zones: upper third Up, lower third Down). With the handset focused: arrow keys press Up/Down, Enter confirms.
+- The indicator tray (Vibrator, Red HUD LED, White HUD LED) shows the firmware outputs, with the existing replay of short pulses; the tap-to-preview demos go away.
+- The dive profile is plotted against emulator virtual time.
+
+### 21.4 Presentation
+
+- Mock-only text goes: the "UI prototype" badge, "Emulator disconnected", "Mock readings", the mock clock and LCD notes. The header shows the release and run state. The cell panel shows the voltages sent to the firmware and the true loop ppO2, labeled as the simulated truth; the firmware's own reading is on the handset. The MAV flow setting stays (assumptions panel).
+- The game keeps its own look, scoped so its styles never leak into the emulator view or the entry screen (and vice versa). No inline script or style; the Content-Security-Policy stays as it is; new modules go to `SITE_FILES`.
+- American English; evidence wording as elsewhere: a functional model, fixtures labeled, no physical-device claims.
+
+### 21.5 As implemented (2026-10-10)
+
+- Files are flat in `web/` (the dev server and the site assembly serve flat names): `game-gas.js` (the prototype loop physics, unchanged), `game-logic.js` (no DOM: cell fixture, depth/gas to inputs, `InputsSender` with the newest inputs, one in flight, at most 4 per wall second and no repeats, `PlayClock` with the speed and valve-override rules, `GameSim` on virtual time, stop alerts), `game.js` (`GameView`, reusing `LcdView`, `ReplayController`, `ActionQueue` and `keys.js`) and `game.css` (every selector scoped to `#screen-game`; its first rule reverts the page styles inside the game). `node --test web/game-gas.test.mjs` runs the ported mass-balance checks.
+- The game uses the same runtime actions as the emulator view; only the two pressure keys and the three cell keys are sent as inputs. The valve override starts at the virtual time the worker confirms 1x.
+- Cell ppO2 and the ambient pressure use the session surface pressure sent to the firmware (identical to the model's 1.01325 bar at the default). Cell voltages saturate at the engine's 250 mV input limit.
+- Additions: a sticky header; a Wake system button on a standby stop and a Resume button on an engine error; "Running, not keeping up" when the worker falls behind.
+- Observed in the browser (functional model): after an air calibration through the menu the handset reads within about 2% of the loop truth; its depth reads about 2% deeper than the game's EN13319 depth, consistent with a 1000 kg/m3 density in the firmware's water setting (not traced in code). The handset's "Bubble check!" prompt was dismissed by Down, not Confirm (firmware prompt keys; not investigated).

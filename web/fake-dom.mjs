@@ -280,6 +280,7 @@ export class FakeDocument extends Element {
   }
 
   createElement(tag) { return new Element(tag); }
+  createElementNS(namespace, tag) { return new Element(tag); }
   createTextNode(text) { return new TextNode(text); }
   getElementById(id) { return this.querySelector(`#${id}`); }
 }
@@ -324,6 +325,7 @@ class FakeStorage {
   constructor() { this.map = new Map(); }
   getItem(key) { return this.map.has(key) ? this.map.get(key) : null; }
   setItem(key, value) { this.map.set(key, String(value)); }
+  removeItem(key) { this.map.delete(key); }
 }
 
 /** Installs a fresh document and window as globals; returns them. */

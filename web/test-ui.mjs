@@ -26,6 +26,8 @@ import { FirmwareFetchError, MAX_FETCH_BYTES, configuredProxyUrl, fetchFirmware,
 import { FIRMWARE_PROXY_URL } from './config.js';
 import * as sensors from './sensors.js';
 import * as deco from './deco.js';
+import * as game from './game-logic.js';
+import { MAX_DEPTH_METERS, getLoopReadings } from './game-gas.js';
 import { Runtime, nonceFromWords } from './runtime.js';
 import { MemoryStorage } from './storage.js';
 import { Element, installDom } from './fake-dom.mjs';
@@ -1463,7 +1465,7 @@ test('page: Restart, Cold boot, Wake and a new serial number start the output hi
 
 test('structure: every element the scripts look up exists in index.html, and the page honors its CSP', () => {
   const ids = new Set([...html.matchAll(/\bid="([\w-]+)"/g)].map((match) => match[1]));
-  for (const file of ['emulator.js', 'entry.js', 'app.js']) {
+  for (const file of ['emulator.js', 'entry.js', 'app.js', 'game.js']) {
     const source = fs.readFileSync(path.join(here, file), 'utf8');
     for (const match of source.matchAll(/byId\('([\w-]+)'\)/g)) assert.ok(ids.has(match[1]), `${file} uses #${match[1]}, which index.html lacks`);
   }
@@ -3506,4 +3508,834 @@ test('structure: faults.js is a published page module, and custom mode is off by
   const original = html.slice(html.indexOf('<div id="original-mode">'), html.indexOf('<div id="custom-mode-panel"'));
   assert.ok(original.includes('id="url-form"'));
   assert.ok(!html.slice(html.indexOf('<div id="custom-mode-panel"'), html.indexOf('<details id="start-options"')).includes('url-'));
+});
+
+// =====================================================================================================
+// the dive game (DESIGN 21): game-logic.js, game-gas.js and game.js on the fake DOM
+// =====================================================================================================
+
+const closeTo = (actual, expected, tolerance, message = '') => assert.ok(Math.abs(actual - expected) <= tolerance, `${message}: expected ${expected} within ${tolerance}, received ${actual}`);
+
+/** A settings store with the interface of dom.js `prefs`. */
+function memoryStore() {
+  const map = new Map();
+  return { map, get: (key, fallback) => (map.has(key) ? map.get(key) : fallback), set: (key, value) => map.set(key, String(value)), remove: (key) => map.delete(key) };
+}
+
+test('game (entry): Start game sits beside Boot with the same files and options, and is off with a reason for a handset-only run', async () => {
+  const answers = proxyFor({
+    [MAIN_FETCHED]: () => proxyBody(srec('main', 'TRITON-5.8-65.3')),
+    [HANDSET_FETCHED]: () => proxyBody(srec('handset', 'TRITON-5.8-65.3')),
+  });
+  const booted = [];
+  const started = [];
+  const m = await mountEntry({ respond: answers, booted: (result, info) => booted.push({ result, info }) });
+  m.view.hooks.starting = (info) => started.push(info);
+  const start = m.el('start-game');
+  assert.equal(start.parent, m.el('boot').parent, 'in the row of the Boot button');
+  assert.equal(start.disabled, true, 'no files yet');
+  m.type('main', MAIN_EXAMPLE);
+  m.type('handset', HANDSET_EXAMPLE);
+  await m.view.loadUrls();
+  assert.equal(start.disabled, false);
+  assert.equal(m.el('boot').disabled, false);
+  assert.equal(m.el('game-hint').hidden, true);
+
+  // "Handset only" has no main board to feed: Start game is off and says why, Boot stays available.
+  m.el('start-mode').value = 'handset';
+  m.el('start-mode').dispatch('change');
+  assert.equal(start.disabled, true);
+  assert.equal(m.el('boot').disabled, false);
+  assert.equal(m.el('game-hint').hidden, false);
+  assert.match(m.el('game-hint').textContent, /needs both boards.*Main 5\.8 \+ handset 65\.3 over CAN/);
+  await m.view.boot('stored', { game: true });
+  assert.equal(booted.length, 0, 'a game start is refused without the main board');
+  m.el('start-mode').value = 'dual';
+  m.el('start-mode').dispatch('change');
+  assert.equal(start.disabled, false);
+  assert.equal(m.el('game-hint').hidden, true);
+
+  // The same start options and verified files as Boot; the page is told it was a game.
+  m.el('start-boot-mode').value = 'cold';
+  m.el('start-boot-mode').dispatch('change');
+  start.click();
+  await until(() => booted.length === 1);
+  assert.deepEqual(started, [{ game: true }]);
+  assert.equal(booted[0].info.game, true);
+  assert.equal(booted[0].info.options.bootMode, 'cold');
+  assert.equal(booted[0].info.profile, 'stored');
+  assert.equal(booted[0].result.release.id, 'TRITON-5.8-65.3');
+  assert.equal(m.engine.created.at(-1).config.mode, 'dual');
+  await m.runtime.request('close-session');
+  await m.view.boot('stored');
+  assert.equal(booted[1].info.game, false, 'Boot emulator is the emulator view');
+  assert.deepEqual(started.at(-1), { game: false });
+  assert.equal(booted[1].result.release.id, booted[0].result.release.id);
+  await m.runtime.request('close-session');
+});
+
+test('game (cells): each cell reads 12 mV in air at the surface plus its own deviation of up to 1.0 mV, kept per profile area', () => {
+  assert.deepEqual(game.drawCellDeviations(() => 0), [-1, -1, -1]);
+  assert.deepEqual(game.drawCellDeviations(() => 0.5), [0, 0, 0]);
+  assert.ok(game.drawCellDeviations(() => 0.999999).every((value) => value > 0.99 && value <= 1));
+  const draws = Array.from({ length: 2000 }, () => game.drawCellDeviations()).flat();
+  assert.ok(draws.every((value) => value >= -1 && value <= 1), 'uniform within +-1.0 mV');
+  assert.ok(Math.min(...draws) < -0.95 && Math.max(...draws) > 0.95 && new Set(draws).size > 1000, 'and spread over the whole range');
+
+  const store = memoryStore();
+  let calls = 0;
+  const random = () => (((calls++) * 0.37) % 1);
+  const first = game.loadCellFixture(store, 'profile', random);
+  assert.equal(first.drawn, true);
+  assert.equal(first.deviationsMv.length, 3);
+  const used = calls;
+  const again = game.loadCellFixture(store, 'profile', () => assert.fail('stored deviations are reused, not drawn'));
+  assert.deepEqual(again.deviationsMv, first.deviationsMv, 'the same cells in the next session');
+  assert.equal(again.drawn, false);
+  assert.equal(calls, used);
+  assert.deepEqual(JSON.parse(store.map.get('game-cells.profile')), { version: 1, deviationsMv: first.deviationsMv }, 'kept in the page settings, keyed by profile area');
+  const other = game.loadCellFixture(store, 'profile-neptun-5_8-65_3', random);
+  assert.equal(other.drawn, true, 'another profile area has cells of its own');
+  assert.ok(store.map.has('game-cells.profile-neptun-5_8-65_3'));
+  assert.deepEqual(game.loadCellFixture(store, 'profile', () => assert.fail('untouched by the other area')).deviationsMv, first.deviationsMv);
+
+  // A damaged or out-of-range entry is replaced by a new draw; a profile reset forgets the area's cells.
+  for (const damaged of ['not json', '{"version":1,"deviationsMv":[5,0,0]}', '{"version":2,"deviationsMv":[0,0,0]}', '{"version":1,"deviationsMv":[0,0]}']) {
+    store.map.set('game-cells.profile', damaged);
+    assert.equal(game.loadCellFixture(store, 'profile', () => 0.75).drawn, true, damaged);
+  }
+  game.clearCellFixture(store, 'profile');
+  assert.equal(store.map.has('game-cells.profile'), false);
+  assert.equal(game.loadCellFixture(store, 'profile', () => 0.25).drawn, true);
+  assert.deepEqual(game.loadCellFixture(store, 'profile', () => 0).deviationsMv, [-0.5, -0.5, -0.5], 'the new draw is the one that is kept');
+
+  // Air at the surface reads 12 mV plus the deviation; the voltage is linear in ppO2 and stays inside the engine's input range.
+  const sensitivities = game.cellSensitivities([-1, 0, 1]);
+  const air = game.cellMillivolts(game.AIR_SURFACE_PPO2, sensitivities);
+  [11, 12, 13].forEach((expected, index) => near(air[index], expected, `cell ${index + 1} in air`));
+  assert.deepEqual(game.cellMillivolts(0, sensitivities), [0, 0, 0]);
+  near(game.cellMillivolts(2 * game.AIR_SURFACE_PPO2, sensitivities)[1], 24, 'twice the ppO2, twice the voltage');
+  assert.deepEqual(game.cellMillivolts(100, sensitivities), [250, 250, 250], 'a cell saturates at the engine\'s 250 mV limit instead of being refused');
+  near(game.AIR_SURFACE_PPO2, 0.21 * 1.01325, 'air at the surface');
+});
+
+test('game (cells): a profile reset, from the start screen or from the emulator, draws new cells', async () => {
+  const key = (area) => `ngc-wasm.game-cells.${area}`;
+  const entry = await mountEntry();
+  for (const [id, area] of [['TRITON-5.8-65.3', 'profile'], ['NEPTUN-5.8-65.3', 'profile-neptun-5_8-65_3'], ['CUSTOM', 'custom']]) {
+    globalThis.window.localStorage.setItem(key(area), '{"version":1,"deviationsMv":[0.1,0.2,0.3]}');
+    globalThis.window.localStorage.setItem(key('other'), 'kept');
+    assert.equal(await entry.view.resetProfile(id), true);
+    assert.equal(globalThis.window.localStorage.getItem(key(area)), null, `${id} resets ${area}`);
+    assert.equal(globalThis.window.localStorage.getItem(key('other')), 'kept', 'nothing else is touched');
+  }
+  // The emulator's own Reset profile (Advanced) is the same reset.
+  const m = await mount();
+  globalThis.window.localStorage.setItem(key('profile'), '{"version":1,"deviationsMv":[0.1,0.2,0.3]}');
+  const done = m.view.resetProfile();
+  await settle();
+  const request = m.requests.find((item) => item.type === 'reset-profile');
+  assert.ok(request, 'the reset was requested');
+  assert.notEqual(globalThis.window.localStorage.getItem(key('profile')), null, 'nothing is forgotten before the engine did it');
+  request.resolve({});
+  await done;
+  assert.equal(globalThis.window.localStorage.getItem(key('profile')), null);
+  // A reset that fails keeps the cells (the profile is still the old one).
+  globalThis.window.localStorage.setItem(key('profile'), '{"version":1,"deviationsMv":[0.1,0.2,0.3]}');
+  const failed = m.view.resetProfile();
+  await settle();
+  m.requests.filter((item) => item.type === 'reset-profile').at(-1).reject(new Error('refused'));
+  await failed;
+  assert.notEqual(globalThis.window.localStorage.getItem(key('profile')), null);
+});
+
+test('game (sensors): both pressure inputs get the surface pressure plus EN13319 water, the cells their voltage, and nothing else changes', () => {
+  const sensitivities = game.cellSensitivities([0, 0, 0]);
+  const at = (depthM, surfaceMbar = 1013.25, ppo2 = game.AIR_SURFACE_PPO2) => game.gameInputs({ surfaceMbar, depthM, ppo2, sensitivities });
+  const surface = at(0);
+  assert.deepEqual(Object.keys(surface).sort(), [...sensors.PRESSURE_KEYS, 'oxygen1Mv', 'oxygen2Mv', 'oxygen3Mv'].sort(), 'no temperature, no battery, nothing else');
+  assert.equal(surface.pressure1Mbar, 1013.25);
+  assert.equal(surface.pressure2Mbar, 1013.25);
+  assert.deepEqual([surface.oxygen1Mv, surface.oxygen2Mv, surface.oxygen3Mv], [12, 12, 12], 'air at the surface');
+  const deep = at(20);
+  closeTo(deep.pressure1Mbar, 1013.25 + (1020 * 9.80665 * 20) / 100, 0.006, 'the surface pressure plus water (EN13319: 1020 kg/m3, 9.80665 m/s2), to 0.01 mbar');
+  closeTo(deep.pressure1Mbar, 3013.8, 0.1, 'about 3.014 bar at 20 m');
+  assert.equal(deep.pressure1Mbar, deep.pressure2Mbar, 'both sensors get the same value');
+  assert.deepEqual(Object.keys(deep).filter((name) => name.startsWith('pressure')), [...sensors.PRESSURE_KEYS], 'through the page\'s sensor numbering');
+  closeTo(at(10, 950).pressure2Mbar, 950 + (1020 * 9.80665 * 10) / 100, 0.006, 'the session\'s surface pressure, not a fixed one');
+  // The same conversion as the basic view's depth control.
+  closeTo(at(37.5).pressure1Mbar, sensors.calculate({ ...sensors.defaults(), depthM: 37.5 }).pressure1Mbar, 0.006, 'sensors.js is the one conversion');
+  // The ends of the range stay inside what the engine accepts, and a depth outside it is refused, never clipped.
+  for (const depth of [0, MAX_DEPTH_METERS]) {
+    const inputs = at(depth, 1013.25, 20);
+    assert.ok(inputs.pressure1Mbar >= sensors.RAW_LIMITS.pressure[0] && inputs.pressure1Mbar <= sensors.RAW_LIMITS.pressure[1]);
+    assert.ok(inputs.oxygen1Mv <= sensors.RAW_LIMITS.oxygen[1], 'a very high ppO2 saturates the cell');
+  }
+  assert.throws(() => at(MAX_DEPTH_METERS + 1), /depthM must be between 0 and 110/);
+  assert.throws(() => at(-1), /depthM/);
+});
+
+test('game (sensors): inputs are coalesced, serialized and sent a few times per second at most, newest first', () => {
+  const clock = fakeTimers();
+  let wall = 0;
+  const sent = [];
+  const sender = new game.InputsSender({ send: (inputs) => sent.push(inputs), now: () => wall, setTimer: clock.setTimer, clearTimer: clock.clearTimer });
+  sender.offer({ n: 1 });
+  assert.deepEqual(sent, [{ n: 1 }], 'the first goes at once');
+  wall = 50;
+  sender.offer({ n: 2 });
+  sender.offer({ n: 3 });
+  assert.equal(sent.length, 1, 'inside the interval nothing more is sent');
+  assert.equal(clock.timers.size, 1, 'one wait, however many offers');
+  wall = 250;
+  clock.advance(200);
+  assert.deepEqual(sent, [{ n: 1 }, { n: 3 }], 'the newest wins; the one in between is never sent');
+  sender.offer({ n: 3 });
+  assert.equal(sent.length, 2, 'unchanged values are not sent again');
+  wall = 300;
+  sender.offer({ n: 4 });
+  sender.offer({ n: 3 });
+  assert.equal(clock.timers.size, 0, 'a newer offer equal to what the engine has supersedes the one that was waiting');
+  assert.equal(sent.length, 2);
+  sender.invalidate();
+  wall = 600;
+  sender.offer({ n: 3 });
+  assert.equal(sent.length, 3, 'after a board creation or a failure the same values go out again');
+  wall = 610;
+  sender.offer({ n: 5 }, { immediate: true });
+  assert.equal(sent.at(-1).n, 5, 'a new session does not wait');
+
+  // A busy second: many changes, at most four sends per wall second (plus the first).
+  const busy = [];
+  const fast = new game.InputsSender({ send: (inputs) => busy.push(inputs), now: () => wall, setTimer: clock.setTimer, clearTimer: clock.clearTimer });
+  wall = 10_000;
+  for (let step = 1; step <= 100; step++) {
+    wall += 10;
+    clock.advance(10);
+    fast.offer({ step });
+  }
+  assert.ok(busy.length >= 3 && busy.length <= 5, `${busy.length} sends in one second`);
+  wall += 250;
+  clock.advance(250);
+  assert.equal(busy.at(-1).step, 100, 'the newest values always arrive');
+  sender.cancel();
+  fast.cancel();
+});
+
+test('game (clock): Pause / 1x / 2x / 4x / Uncapped, with the prototype\'s valve override: 1x while held, the chosen speed comes back', () => {
+  const changes = [];
+  const clock = new game.PlayClock({ onChange: (change) => changes.push({ ...change, effective: clock.effective() }) });
+  assert.equal(clock.effective(), 1);
+  for (const speed of [2, 4, 'uncapped']) {
+    clock.setSpeed(speed);
+    assert.equal(clock.effective(), speed);
+  }
+  // Holding a valve forces 1x over Uncapped, from any source; the chosen speed is kept.
+  assert.equal(clock.hold('oxygen', 'pointer:1', true), true);
+  assert.equal(clock.effective(), 1);
+  assert.equal(clock.speed, 'uncapped');
+  assert.equal(clock.returnLabel(), 'Uncapped');
+  assert.equal(clock.hold('diluent', 'shortcut', true), false, 'a second valve does not change the injection state');
+  assert.equal(clock.hold('oxygen', 'pointer:1', false), false, 'one source letting go keeps the override while another holds');
+  assert.equal(clock.effective(), 1);
+  assert.equal(clock.hold('diluent', 'shortcut', false), true);
+  assert.equal(clock.effective(), 'uncapped', 'restored after the last source lets go');
+  // Choosing another speed while injecting changes the speed that comes back.
+  clock.hold('oxygen', 'focused-key:Space', true);
+  clock.setSpeed(4);
+  assert.equal(clock.effective(), 1, 'still at 1x while held');
+  clock.hold('oxygen', 'focused-key:Space', false);
+  assert.equal(clock.effective(), 4);
+  // Pause releases the valves and stays paused; a paused clock cannot hold a valve; resuming uses the speed before the pause.
+  clock.hold('diluent', 'pointer:2', true);
+  clock.setSpeed(0);
+  assert.equal(clock.injecting(), false, 'the pause released the valve');
+  assert.equal(clock.effective(), 0);
+  assert.equal(clock.hold('oxygen', 'shortcut', true), false);
+  assert.equal(clock.injecting(), false);
+  clock.togglePause();
+  assert.equal(clock.effective(), 4, 'Space resumes at the speed before the pause');
+  clock.togglePause();
+  assert.equal(clock.effective(), 0);
+  // Reset dive: 1x, nothing held.
+  clock.setSpeed(2);
+  clock.hold('oxygen', 'shortcut', true);
+  clock.reset();
+  assert.equal(clock.speed, 1);
+  assert.equal(clock.injecting(), false);
+  assert.throws(() => clock.setSpeed(3), /Unknown play speed/);
+  assert.throws(() => clock.hold('helium', 'x', true), /Unknown valve/);
+  assert.ok(changes.every((change) => typeof change.injectingChanged === 'boolean'));
+});
+
+test('game (dive): depth and gas advance over the emulator\'s virtual time, the same whether a state brings one step or many', () => {
+  const run = (times, setup = () => {}) => {
+    const sim = new game.GameSim();
+    sim.rebase(10);
+    setup(sim);
+    for (const virtual of times) sim.advanceTo(virtual, {});
+    return sim;
+  };
+  const descend = (sim) => sim.setMotionRate(30);
+  const coarse = run([70], descend);
+  const fine = run(Array.from({ length: 600 }, (_, index) => 10 + (index + 1) / 10), descend);
+  near(coarse.depth, 30, 'a minute at 30 m/min');
+  near(fine.depth, coarse.depth, 'the same in 0.1 s states');
+  near(coarse.elapsed, 60, 'the dive time is the virtual time integrated');
+  near(getLoopReadings(fine.loop).fractions.o2, getLoopReadings(coarse.loop).fractions.o2, 'the same gas');
+  assert.equal(coarse.advanceTo(70, {}), 0, 'a time that stands still integrates nothing (a paused emulator)');
+  assert.equal(coarse.advanceTo(65, {}), 0, 'nor one that went back (a settle went slightly past the next state)');
+  near(coarse.depth, 30);
+  assert.equal(coarse.advanceTo(NaN, {}), 0);
+
+  // The first state only sets where the integration starts.
+  const late = new game.GameSim();
+  late.setMotionRate(30);
+  late.advanceTo(500, {});
+  assert.equal(late.depth, 0);
+  assert.equal(late.virtual, 500);
+  late.rebase(10); // the boards were recreated: the virtual time started over
+  late.advanceTo(40, {});
+  near(late.depth, 15, 'half a minute at 30 m/min from the new start');
+
+  // The depth boundaries stop the motion; time keeps counting.
+  let hits = 0;
+  const deep = new game.GameSim({ onBoundary: () => { hits += 1; } });
+  deep.rebase(0);
+  deep.setMotionRate(30);
+  deep.advanceTo(300, {});
+  assert.equal(deep.depth, MAX_DEPTH_METERS);
+  assert.equal(deep.maxDepth, MAX_DEPTH_METERS);
+  assert.equal(deep.direction, 0);
+  assert.equal(hits, 1);
+  near(deep.elapsed, 300);
+  deep.setMotionRate(-18);
+  deep.advanceTo(1000, {});
+  assert.equal(deep.depth, 0, 'the surface');
+  assert.equal(hits, 2);
+  assert.equal(deep.maxDepth, MAX_DEPTH_METERS, 'the maximum stays');
+
+  // A held oxygen valve (60 SL/min = 1 SL/s into the 4 L loop) follows the analytic mixing; the diluent selection refills the loop.
+  const injected = new game.GameSim();
+  injected.rebase(0);
+  injected.advanceTo(10, { oxygen: true });
+  near(getLoopReadings(injected.loop).fractions.o2, 1 - 0.79 * Math.exp(-10 / 4), 'ten seconds of oxygen');
+  injected.setGas('tx1845');
+  near(getLoopReadings(injected.loop).fractions.he, 0.45);
+  assert.equal(injected.gas.name, 'Trimix 18/45');
+  assert.throws(() => injected.setGas('nitrox'), /Unknown diluent/);
+  injected.setMotionRate(30);
+  injected.advanceTo(70, {});
+  injected.reset(70);
+  assert.equal(injected.depth, 0);
+  assert.equal(injected.maxDepth, 0);
+  assert.equal(injected.gas.name, 'Air');
+  assert.equal(injected.virtual, 70, 'a reset keeps the virtual time');
+  near(getLoopReadings(injected.loop).fractions.o2, 0.21);
+  assert.deepEqual(injected.profile, [[0, 0]]);
+
+  // The profile keeps the whole time span while long dives thin their samples.
+  const long = new game.GameSim();
+  long.rebase(0);
+  long.advanceTo(20_000, {});
+  assert.ok(long.profile.length <= 2401, `${long.profile.length} samples`);
+  assert.ok(long.profile.at(-1)[0] > 19_000, 'up to the end of the dive');
+});
+
+test('game (clock): the virtual time at "now" is estimated only for a paced run, and never far ahead', () => {
+  const base = { lastVirtual: 100, lastWallMs: 1000 };
+  near(game.estimateVirtual({ ...base, nowMs: 1100, pace: 1 }), 100.1);
+  near(game.estimateVirtual({ ...base, nowMs: 1100, pace: 4 }), 100.35, 'capped at 0.35 virtual s');
+  assert.equal(game.estimateVirtual({ ...base, nowMs: 1100, pace: 0 }), 100, 'paused');
+  assert.equal(game.estimateVirtual({ ...base, nowMs: 1100, pace: null }), 100, 'unpaced: wait for the state');
+  assert.equal(game.estimateVirtual({ lastVirtual: null, lastWallMs: 0, nowMs: 5, pace: 1 }), null);
+});
+
+test('game (state): the run state and the messages that must not hide an engine stop', () => {
+  const running = { running: true, virtualTime: 5 };
+  assert.deepEqual(game.runState(running, { speed: 1, keepingUp: true }), { key: 'running', text: 'Running', tone: 'ok' });
+  assert.equal(game.runState({ running: false }, {}).text, 'Paused');
+  assert.equal(game.runState({ running: false, standby: true }, {}).text, 'Standby');
+  assert.equal(game.runState({ running: false, error: 'x' }, {}).text, 'Stopped by an error');
+  assert.equal(game.runState(running, { suspended: true }).key, 'suspended');
+  assert.equal(game.runState(running, { speed: 1, keepingUp: false }).key, 'behind');
+  assert.equal(game.runState(running, { speed: null, keepingUp: true }).key, 'running', 'unpaced runs cannot fall behind');
+  assert.equal(game.runState(running, {}, { connectionError: true }).text, 'Disconnected');
+  assert.equal(game.runState(null, null).key, 'starting');
+
+  assert.deepEqual(game.stopAlerts(running), []);
+  assert.deepEqual(game.stopAlerts(null), []);
+  const standby = game.stopAlerts({ standby: true, running: false });
+  assert.equal(standby.length, 1);
+  assert.equal(standby[0].action, 'wake');
+  assert.match(standby[0].text, /requested standby/);
+  const error = game.stopAlerts({ error: 'Terminal handler reached at 0x1', running: false });
+  assert.equal(error[0].action, 'resume');
+  assert.match(error[0].text, /Terminal handler reached/);
+  const fault = game.stopAlerts({ running: true, faults: { main: { cfsr: 0x8000, hfsr: 0, lockup: null }, handset: { cfsr: 0, hfsr: 0, lockup: null } } });
+  assert.equal(fault.length, 1);
+  assert.match(fault[0].text, /^Main CPU fault: CFSR 0x00008000/);
+  assert.match(game.stopAlerts({ running: true, decoHealth: { tissues: 'invalid', oxygen: 'ok' } })[0].text, /stored tissues are blank.*reset the saved profile on the start screen/);
+  assert.deepEqual(game.stopAlerts({ running: true, decoHealth: { tissues: 'unknown', oxygen: 'unknown' } }), []);
+});
+
+/** The real GameView on the real index.html (fake DOM), a fake worker client and fake timers; the cells are fixed (+0.5 mV each). */
+async function mountGame({ options = {}, release = describeRelease(DEFAULT_RELEASE_ID), store = memoryStore() } = {}) {
+  installDom(html);
+  const { GameView } = await import('./game.js');
+  const clock = fakeTimers();
+  let wall = 0;
+  const sent = [];
+  const requests = [];
+  const client = {
+    send: (type, payload) => sent.push({ type, payload }),
+    request: (type, payload) => { requests.push({ type, payload }); return Promise.resolve({}); },
+  };
+  const quits = [];
+  const view = new GameView(client, { quit: () => { quits.push(true); } }, { timers: clock, now: () => wall, random: () => 0.75, store });
+  view.show({ options: { mode: 'dual', adcSample: 400, ...options }, profile: 'stored', release });
+  const document = globalThis.document;
+  const host = { generation: 1, profileEpoch: 1, speed: 1, keepingUp: true };
+  const baseState = { running: true, virtualTime: 0, frameReady: false, hardwareOutputs: [], uartConsole: [], outputHistoryEpoch: 'domain-a' };
+  const feed = (virtualTime, wallMs = wall, extra = {}, hostExtra = {}) => {
+    wall = wallMs;
+    view.onState({ state: { ...baseState, virtualTime, ...extra }, host: { ...host, ...hostExtra } });
+  };
+  return {
+    view, clock, sent, requests, quits, document, store, feed, host, baseState,
+    el: (id) => document.getElementById(`game-${id}`),
+    text: (id) => document.getElementById(`game-${id}`).textContent,
+    actions: () => requests.filter((item) => item.type === 'action').map((item) => item.payload.request),
+    inputs: () => requests.filter((item) => item.type === 'action' && item.payload.request.action === 'inputs').map((item) => item.payload.request.inputs),
+    speeds: () => requests.filter((item) => item.type === 'speed').map((item) => item.payload.speed),
+    time: () => wall,
+  };
+}
+
+test('game (view): a session starts with the emulator\'s pacing and the surface inputs, and depth becomes pressure over virtual time', async () => {
+  const g = await mountGame();
+  assert.deepEqual(g.sent.at(0), { type: 'ui', payload: { uartOpen: false } }, 'the worker is told the console is not on screen');
+  assert.equal(g.document.getElementById('screen-game').hidden, false);
+  g.feed(0.25, 0);
+  await settle();
+  assert.deepEqual(g.speeds(), [1], 'the first state sets the pacing');
+  assert.equal(g.actions().some((request) => request.action === 'pause' || request.action === 'resume'), false, 'a running engine is not resumed');
+  const first = g.inputs();
+  assert.equal(first.length, 1);
+  assert.equal(first[0].pressure1Mbar, 1013.25);
+  assert.equal(first[0].pressure2Mbar, 1013.25);
+  assert.deepEqual([first[0].oxygen1Mv, first[0].oxygen2Mv, first[0].oxygen3Mv], [12.5, 12.5, 12.5], 'air at the surface plus the fixed +0.5 mV of the test');
+  assert.equal(g.text('virtual-time'), '00:00:00');
+  assert.equal(g.text('release'), 'TRITON main 5.8 / handset 65.3');
+  assert.equal(g.text('run-state'), 'Running');
+  assert.match(g.text('fixture-list'), /Cell 1: 12\.50 mV in air at the surface \(\+0\.50 mV\)/);
+
+  // A descent at 30 m/min: ten virtual seconds are five meters, whatever the wall clock does.
+  g.view.changeMotion(30);
+  assert.equal(g.text('motion-status'), 'Descending · 30.0 m/min');
+  for (let step = 1; step <= 10; step++) g.feed(0.25 + step, step * 300);
+  near(g.view.sim.depth, 5, 'depth follows the emulator\'s virtual time');
+  await settle();
+  const last = g.inputs().at(-1);
+  closeTo(last.pressure1Mbar, 1013.25 + (1020 * 9.80665 * g.view.sim.depth) / 100, 0.006, 'the pressure follows the depth');
+  assert.equal(last.pressure1Mbar, last.pressure2Mbar);
+  assert.ok(g.inputs().length >= 2 && g.inputs().length <= 11, `coalesced by the queue, never more than one per state (${g.inputs().length})`);
+  assert.equal(g.text('depth-value'), '5.0');
+  assert.equal(g.text('max-depth-meta'), 'Max 5.0 m');
+  assert.equal(g.text('virtual-time'), '00:00:10', 'the header clock is the emulator\'s virtual time');
+  assert.match(g.text('profile-duration'), /^0:10 elapsed$/);
+  closeTo(Number(g.text('cell-1')), last.oxygen1Mv, 0.006, 'the voltages shown are the ones sent');
+  assert.ok(last.oxygen1Mv > 12.5 * 1.4, 'more ambient pressure, more voltage');
+  assert.equal(g.text('loop-ppo2'), (0.21 * g.view.sim.readings(1013.25).ambientBar).toFixed(2), 'the true loop ppO2 is shown as the simulated truth');
+
+  // Release holds the depth; a paused emulator (the same virtual time again) changes nothing.
+  g.view.stopMotion();
+  g.feed(11.25, 3500);
+  g.feed(11.25, 3800);
+  near(g.view.sim.depth, 5);
+  assert.equal(g.view.sim.direction, 0);
+  g.view.chooseSpeed(0);
+  g.feed(11.25, 4100, { running: false });
+  assert.equal(g.text('run-state'), 'Paused');
+  assert.equal(g.text('motion-status'), 'Paused');
+  g.view.hide();
+});
+
+test('game (view): pacing follows the speed menu, Uncapped is unpaced, a held valve runs at 1x and the chosen speed comes back', async () => {
+  const g = await mountGame();
+  g.feed(0, 0);
+  await settle();
+  const menu = (speed) => g.el('speed-menu').querySelectorAll('[data-speed]').find((button) => button.dataset.speed === String(speed));
+  menu(4).click();
+  assert.deepEqual(g.speeds(), [1, 4]);
+  assert.equal(g.text('header-speed'), '4×');
+  assert.equal(g.text('play-speed-label'), '4×');
+  menu('uncapped').click();
+  assert.equal(g.speeds().at(-1), null, 'Uncapped is the unpaced engine');
+  assert.equal(g.text('play-speed-label'), '∞');
+  menu(2).click();
+  assert.equal(g.speeds().at(-1), 2);
+
+  // A valve held: the whole clock runs at 1x (the engine is paced at 1x), the status says what comes back; the injection counts only
+  // once the worker confirmed the pacing, so no earlier virtual time is injected.
+  g.view.holdValve('oxygen', 'pointer:1', true);
+  assert.equal(g.speeds().at(-1), 1);
+  assert.equal(g.text('header-speed'), '1×');
+  assert.equal(g.text('mav-status'), 'Injecting at 1× · returns to 2×');
+  assert.equal(g.el('mav-oxygen').classList.contains('active'), true);
+  assert.deepEqual(g.view.valveFlags(), { oxygen: false, diluent: false }, 'not yet: the 1x pacing is not confirmed');
+  g.feed(5, 1000);
+  assert.equal(g.view.sim.loop.totals.oxygen, 0, 'virtual time before the confirmation is not injected');
+  await settle();
+  assert.deepEqual(g.view.valveFlags(), { oxygen: true, diluent: false });
+  g.feed(10, 2000);
+  near(g.view.sim.loop.totals.oxygen, 5, 'five virtual seconds at 60 SL/min');
+  // Choosing another speed while injecting changes the speed that comes back.
+  g.view.chooseSpeed(4);
+  assert.equal(g.text('mav-status'), 'Injecting at 1× · returns to 4×');
+  assert.equal(g.speeds().at(-1), 1, 'still at 1x');
+  g.view.holdValve('oxygen', 'pointer:1', false);
+  assert.equal(g.speeds().at(-1), 4);
+  assert.equal(g.text('header-speed'), '4×');
+  assert.equal(g.text('mav-status'), '60 surface L/min · 1× while held');
+  assert.deepEqual(g.view.valveFlags(), { oxygen: false, diluent: false });
+
+  // Over Uncapped as well, from the keyboard shortcut and a focused key, which are separate sources.
+  menu('uncapped').click();
+  g.view.holdValve('diluent', 'shortcut', true);
+  assert.equal(g.speeds().at(-1), 1);
+  g.view.holdValve('oxygen', 'focused-key:Space', true);
+  g.view.holdValve('diluent', 'shortcut', false);
+  assert.equal(g.speeds().at(-1), 1, 'one source still holds');
+  g.view.holdValve('oxygen', 'focused-key:Space', false);
+  assert.equal(g.speeds().at(-1), null, 'unpaced again');
+
+  // Pause: the engine's pause action, valves released, nothing can be held; Space resumes at the speed before.
+  g.view.holdValve('oxygen', 'pointer:2', true);
+  menu(0).click();
+  await settle();
+  assert.equal(g.actions().at(-1).action, 'pause');
+  assert.equal(g.view.clock.injecting(), false);
+  assert.equal(g.el('mav-oxygen').disabled, true);
+  g.view.holdValve('oxygen', 'pointer:3', true);
+  assert.equal(g.view.clock.injecting(), false, 'a paused clock holds no valve');
+  g.view.togglePause();
+  await settle();
+  assert.equal(g.speeds().at(-1), null, 'back to the speed before the pause (Uncapped)');
+  assert.equal(g.actions().at(-1).action, 'resume');
+  g.view.hide();
+});
+
+test('game (view): Reset dive returns to the surface with a fresh Air loop at 1x while the boards keep running', async () => {
+  const g = await mountGame();
+  g.feed(0, 0);
+  g.view.chooseSpeed(4);
+  g.view.changeMotion(30);
+  g.feed(30, 300);
+  g.view.sim.setGas('tx1050');
+  assert.ok(g.view.sim.depth > 10);
+  g.el('diluent-select').value = 'tx1050';
+  g.el('reset').click();
+  await settle();
+  const sim = g.view.sim;
+  assert.equal(sim.depth, 0);
+  assert.equal(sim.maxDepth, 0);
+  assert.equal(sim.direction, 0);
+  assert.equal(sim.gas.name, 'Air');
+  assert.equal(g.el('diluent-select').value, 'air');
+  assert.equal(g.view.clock.speed, 1);
+  assert.equal(g.speeds().at(-1), 1);
+  assert.equal(sim.virtual, 30, 'the emulator\'s clock is not reset');
+  assert.equal(g.text('virtual-time'), '00:00:30');
+  assert.equal(g.text('max-depth-meta'), 'Max 0.0 m');
+  assert.equal(g.actions().some((request) => ['reset', 'cold', 'wake'].includes(request.action)), false, 'no board is restarted');
+  const surface = g.inputs().at(-1);
+  assert.equal(surface.pressure1Mbar, 1013.25);
+  assert.equal(surface.oxygen1Mv, 12.5);
+  g.view.hide();
+});
+
+test('game (view): the handset is operated through its pins: bezel keys, the display\'s tap zones, and the keyboard while it has the focus', async () => {
+  const g = await mountGame();
+  g.feed(0, 0);
+  await settle();
+  const device = g.el('device');
+  const press = (name) => g.actions().filter((request) => request.action === name).length;
+  const counts = async () => { await settle(); return [press('up'), press('down'), press('confirm')]; };
+  g.el('handset-up').click();
+  g.el('handset-down').click();
+  assert.deepEqual(await counts(), [1, 1, 0]);
+  assert.equal(g.view.sim.direction, 0, 'bezel keys do not move the diver');
+  assert.equal(g.document.activeElement, device, 'the handset has the focus after a click, so the keyboard drives it');
+  // The display: the upper third is Up, the middle Confirm, the lower third Down (the fake canvas is 480 high).
+  const frame = g.el('frame');
+  frame.dispatch('click', { clientY: 10 });
+  frame.dispatch('click', { clientY: 240 });
+  frame.dispatch('click', { clientY: 470 });
+  assert.deepEqual(await counts(), [2, 2, 1]);
+  // The keyboard drives the handset only while it has the focus; held keys are one press and never scroll the page.
+  device.dispatch('keydown', { key: 'ArrowUp', code: 'ArrowUp', repeat: false });
+  device.dispatch('keydown', { key: 'ArrowDown', code: 'ArrowDown', repeat: false });
+  device.dispatch('keydown', { key: 'Enter', code: 'Enter', repeat: false });
+  assert.deepEqual(await counts(), [3, 3, 2]);
+  const held = device.dispatch('keydown', { key: 'ArrowDown', code: 'ArrowDown', repeat: true });
+  assert.deepEqual(await counts(), [3, 3, 2], 'a held key is one press');
+  assert.equal(held.defaultPrevented, true, 'and does not scroll the page');
+  g.document.dispatch('keydown', { key: 'ArrowDown', code: 'ArrowDown', repeat: false });
+  g.document.dispatch('keydown', { key: 'Enter', code: 'Enter', repeat: false });
+  assert.deepEqual(await counts(), [3, 3, 2], 'the page-wide keys belong to the water and the valves, not the handset');
+  assert.equal(g.view.sim.direction, 0, 'and the handset keys never moved the diver');
+  // The water has its own arrow keys while it has the focus: hold to move, release to stop.
+  const ocean = g.el('ocean');
+  ocean.dispatch('keydown', { key: 'ArrowDown', code: 'ArrowDown' });
+  assert.equal(g.view.sim.direction, 1);
+  near(g.view.sim.rate, 10);
+  g.document.dispatch('keyup', { code: 'ArrowDown' });
+  assert.equal(g.view.sim.direction, 0);
+  ocean.dispatch('keydown', { key: 'ArrowUp', code: 'ArrowUp' });
+  assert.equal(g.view.sim.direction, -1);
+  near(g.view.sim.rate, 6);
+  g.view.chooseSpeed(0);
+  assert.equal(g.view.sim.direction, 0, 'a pause stops the motion');
+  ocean.dispatch('keydown', { key: 'ArrowDown', code: 'ArrowDown' });
+  assert.equal(g.view.sim.direction, 0, 'and a paused water takes no keys');
+  g.view.hide();
+});
+
+test('game (view): errors and stops stay in view, the standby has a Wake button, and Quit goes through the session close', async () => {
+  const g = await mountGame();
+  g.feed(0, 0);
+  assert.equal(g.el('alerts').hidden, true);
+  g.feed(1, 300, { running: false, standby: true });
+  assert.equal(g.el('alerts').hidden, false);
+  assert.equal(g.text('run-state'), 'Standby');
+  assert.match(g.text('alerts'), /requested standby/);
+  assert.equal(g.text('motion-status'), 'Emulator stopped');
+  const wake = g.el('alerts').querySelectorAll('button').find((button) => button.dataset.alert === 'wake');
+  assert.ok(wake, 'a Wake button');
+  wake.click();
+  await settle();
+  const names = g.actions().map((request) => request.action);
+  assert.deepEqual(names.slice(-2), ['wake', 'resume'], 'the boards are woken and the engine resumed');
+  assert.equal(g.actions().find((request) => request.action === 'wake').surfacePressureMbar, 1013.25);
+  // The board creation restarts the integration from the new virtual time and sends the inputs again.
+  const before = g.inputs().length;
+  g.feed(0.4, 2000, {}, { generation: 2 });
+  await settle();
+  assert.equal(g.view.sim.virtual, 0.4);
+  assert.equal(g.inputs().length, before + 1, 'the inputs go out again after a board creation');
+  assert.equal(g.el('alerts').hidden, true, 'the message goes away with the stop');
+  // An engine error is shown with its text and a Resume button; action errors are shown and can be dismissed.
+  g.feed(2, 2500, { running: false, error: 'Terminal handler reached at 0x08001234' });
+  assert.match(g.text('alerts'), /Terminal handler reached at 0x08001234/);
+  assert.equal(g.text('run-state'), 'Stopped by an error');
+  g.view.actionError = 'The main board has not enabled the handset supply yet';
+  g.view.renderAlerts();
+  assert.match(g.text('alerts'), /handset supply/);
+  g.el('alerts').querySelectorAll('button').find((button) => button.dataset.dismiss === 'action').click();
+  assert.doesNotMatch(g.text('alerts'), /handset supply/);
+  // A lost engine is not a silent freeze either.
+  g.view.setConnectionError('The emulation engine stopped after an internal error (x).');
+  assert.equal(g.text('run-state'), 'Disconnected');
+  assert.match(g.text('alerts'), /internal error/);
+  // Notices of the worker (a failed save, the profile lock) are listed too.
+  g.view.addNotice('warning', 'Another tab or window of this application is using the saved profile.');
+  assert.match(g.text('alerts'), /saved profile/);
+  // Quit hands over to the page's session close.
+  g.el('quit').click();
+  await settle();
+  assert.equal(g.quits.length, 1);
+  g.view.hide();
+});
+
+test('game (view): the three indicators show the firmware\'s outputs with the pulse replay, and have no tap-to-preview', async () => {
+  const g = await mountGame();
+  g.feed(0, 0, { hardwareOutputs: [vibratorOrLed(pulses(0)), vibratorOrLed(pulses(0), 'vibrator')] });
+  const lit = (slot) => g.el(`signal-${slot}`).classList.contains('active');
+  assert.equal(lit('white'), false);
+  assert.match(g.el('signal-white').getAttribute('aria-label'), /^White HUD LED \(HUD 2\): Off$/);
+  assert.match(g.el('signal-vibrator').getAttribute('aria-label'), /^Handset vibrator: Off$/);
+  assert.match(g.el('signal-red').getAttribute('aria-label'), /^Red HUD LED \(HUD 3\): unknown$/, 'an output the engine does not report stays unknown');
+  assert.equal(g.el('signal-red').classList.contains('unknown'), true);
+  // A short pulse between two states flashes the indicator (the replay of the emulator view) while the drive reads Off.
+  g.feed(1, 300, { hardwareOutputs: [vibratorOrLed(pulses(1))] });
+  assert.equal(lit('white'), true, 'the captured pulse is replayed');
+  assert.match(g.el('signal-white').getAttribute('aria-label'), /Pulse$/);
+  g.clock.advance(150);
+  assert.equal(lit('white'), false, 'after 150 ms');
+  // A steady On stays lit.
+  g.feed(2, 600, { hardwareOutputs: [vibratorOrLed([event(1, false), event(2, true)])] });
+  assert.equal(lit('white'), true);
+  assert.match(g.el('signal-white').getAttribute('aria-label'), /On$/);
+  // Click handlers of the old demo are gone: the indicators are not controls.
+  assert.equal(g.el('signal-white').tagName, 'DIV');
+  assert.equal(g.el('signal-white').getAttribute('role'), 'img');
+  assert.equal(g.el('signal-white').listeners.has('click'), false);
+  g.view.hide();
+});
+
+test('game (view): the firmware frame fills the bezel, and a frame that arrives while the game starts is kept', async () => {
+  const g = await mountGame();
+  const recycled = [];
+  g.view.client.send = (type, payload) => { if (type === 'recycle') recycled.push(payload.buffer.byteLength); };
+  g.feed(0, 0, { frameReady: false });
+  assert.equal(g.el('frame').hidden, true);
+  assert.equal(g.text('placeholder'), 'Waiting for LCD output');
+  g.view.onFrame({ width: 320, height: 240, version: 1, buffer: new ArrayBuffer(320 * 240 * 4) });
+  assert.deepEqual(recycled, [320 * 240 * 4], 'the buffer goes back to the worker');
+  g.feed(0.2, 300, { frameReady: true });
+  assert.equal(g.el('frame').hidden, false, 'the firmware frame is shown');
+  assert.equal(g.el('placeholder').hidden, true);
+  g.feed(0.4, 600, { frameReady: false });
+  assert.equal(g.el('frame').hidden, true, 'a panel that is off shows the placeholder again');
+  g.view.hide();
+  // The first frame of a session arrives before the page knows the session: it is not lost by show().
+  g.view.onFrame({ width: 320, height: 240, version: 2, buffer: new ArrayBuffer(320 * 240 * 4) });
+  g.view.show({ options: { mode: 'dual' }, release: describeRelease(DEFAULT_RELEASE_ID) });
+  g.view.onState({ state: { ...g.baseState, virtualTime: 0, frameReady: true }, host: g.host });
+  assert.equal(g.el('frame').hidden, false);
+  g.view.hide();
+});
+
+test('game (view): the header names the release or the custom build, Start paused starts paused, and the surface pressure is the session\'s', async () => {
+  const custom = await mountGame({ release: describeRelease(CUSTOM_RELEASE_ID) });
+  assert.equal(custom.text('release'), 'Custom build');
+  assert.equal(custom.text('wrist-name'), 'Custom build');
+  assert.match(custom.document.title, /Custom build/);
+  assert.ok(custom.store.map.has('game-cells.custom'), 'the cells of the shared custom profile');
+  custom.view.hide();
+  const neptun = await mountGame({ release: describeRelease('NEPTUN-5.8-65.3') });
+  assert.equal(neptun.text('release'), 'NEPTUN main 5.8 / handset 65.3');
+  assert.ok(neptun.store.map.has('game-cells.profile-neptun-5_8-65_3'));
+  neptun.view.hide();
+  const paused = await mountGame({ options: { startPaused: true, surfacePressureMbar: 950 } });
+  paused.feed(0, 0, { running: false });
+  await settle();
+  assert.equal(paused.view.clock.speed, 0, 'Start paused is the game\'s Pause');
+  assert.equal(paused.text('header-speed'), 'Pause');
+  assert.equal(paused.text('run-state'), 'Paused');
+  assert.equal(paused.inputs().at(-1).pressure1Mbar, 950, 'the session\'s surface pressure, not 1013.25');
+  assert.equal(paused.speeds().length, 0, 'no pacing request: the engine is paused and stays so');
+  paused.view.togglePause();
+  await settle();
+  assert.equal(paused.speeds().at(-1), 1);
+  assert.equal(paused.actions().at(-1).action, 'resume');
+  paused.view.hide();
+  assert.equal(globalThis.document.title, 'NGC system emulator · WebAssembly', 'the window title is the emulator\'s again');
+});
+
+// ---- the game's page structure: ids, styles, publishing ------------------------------------------------------------
+
+test('game (structure): every id of the game starts with game-, the scripts find all of theirs, and the emulator\'s wiring cannot reach the game', () => {
+  const start = html.indexOf('<div id="screen-game"');
+  const end = html.indexOf('<script type="module" src="app.js">');
+  assert.ok(start > 0 && end > start);
+  const section = html.slice(start, end);
+  const ids = [...section.matchAll(/\bid="([\w-]+)"/g)].map((match) => match[1]);
+  assert.ok(ids.length > 60);
+  for (const id of ids) assert.ok(id === 'screen-game' || id.startsWith('game-'), `${id} would collide with the other screens`);
+  const pageIds = [...html.matchAll(/\bid="([\w-]+)"/g)].map((match) => match[1]);
+  assert.equal(new Set(pageIds).size, pageIds.length, 'ids are unique across the page');
+  const source = fs.readFileSync(path.join(here, 'game.js'), 'utf8');
+  const used = new Set([...source.matchAll(/\$\('([\w-]+)'\)/g)].map((match) => `game-${match[1]}`));
+  for (const name of [...source.matchAll(/\$\(`([\w-]+)-\$\{[a-z]+\}`\)/g)].map((match) => match[1])) {
+    for (const suffix of ['up', 'down', 'oxygen', 'diluent', 'o2', 'n2', 'he', '1', '2', '3', 'vibrator', 'red', 'white']) if (ids.includes(`game-${name}-${suffix}`)) used.add(`game-${name}-${suffix}`);
+  }
+  for (const id of used) assert.ok(ids.includes(id), `game.js looks up #${id}, which index.html lacks`);
+  assert.ok(used.size > 50, 'the lookups were found');
+  // emulator.js binds every [data-action] of the page when it starts; the game uses none of them (nor its ids).
+  assert.doesNotMatch(section, /data-action=/);
+  assert.doesNotMatch(section, /\sstyle=/);
+  assert.match(html, /<div id="screen-game" hidden>/, 'the game is hidden until it starts');
+  assert.match(html, /<main id="app-main">/);
+  assert.ok(html.indexOf('</main>') < start, 'the game is a screen of its own, outside <main>');
+  // The entry screen has the button and the reason.
+  assert.match(html, /<button type="button" id="start-game" class="game-start" disabled/);
+  assert.match(html, /id="game-hint"/);
+  // The mock-only texts of the prototype are gone.
+  assert.doesNotMatch(section, /UI PROTOTYPE|Emulator disconnected|Mock readings|Mock assumptions|MOCK CLOCK|Handset key preview|no emulator connection/i);
+  assert.doesNotMatch(source, /signalPreviews|Handset key preview|MOCK_CELL/);
+});
+
+test('game (structure): every rule of game.css is scoped to #screen-game, the page\'s styles never name the game, and the keyframes are the game\'s own', () => {
+  const css = fs.readFileSync(path.join(here, 'game.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const scoped = (text) => {
+    const found = [];
+    let depth = 0;
+    let start = 0;
+    let preludeStack = [];
+    for (let index = 0; index < text.length; index++) {
+      if (text[index] === '{') {
+        preludeStack.push(text.slice(start, index).trim());
+        depth += 1;
+        start = index + 1;
+      } else if (text[index] === '}') {
+        depth -= 1;
+        preludeStack.pop();
+        start = index + 1;
+      } else if (text[index] === ';' && depth === 0) {
+        start = index + 1;
+      }
+      if (text[index] === '{') found.push({ prelude: preludeStack.at(-1), parents: preludeStack.slice(0, -1) });
+    }
+    return found;
+  };
+  const blocks = scoped(css);
+  assert.ok(blocks.length > 200, `${blocks.length} blocks`);
+  const keyframes = [];
+  for (const { prelude, parents } of blocks) {
+    if (prelude.startsWith('@media')) {
+      assert.match(prelude, /^@media\s*\(/, prelude);
+      continue;
+    }
+    if (prelude.startsWith('@keyframes')) {
+      keyframes.push(prelude.split(/\s+/)[1]);
+      continue;
+    }
+    if (parents.some((parent) => parent.startsWith('@keyframes'))) continue; // from, to and percentages
+    assert.ok(!prelude.startsWith('@'), `an at-rule the game does not expect: ${prelude}`);
+    // Commas inside parentheses (:where(:not(svg, svg *))) do not separate selectors.
+    const selectors = [];
+    let level = 0;
+    let current = '';
+    for (const char of prelude) {
+      if (char === '(') level += 1;
+      if (char === ')') level -= 1;
+      if (char === ',' && level === 0) {
+        selectors.push(current);
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    selectors.push(current);
+    for (const selector of selectors) {
+      assert.ok(/^#screen-game(?=[\s.:#\[>]|$)/.test(selector.trim()), `unscoped game selector: ${selector.trim()}`);
+    }
+  }
+  assert.ok(keyframes.length >= 4 && keyframes.every((name) => name.startsWith('game-')), `keyframes: ${keyframes}`);
+  assert.doesNotMatch(css, /:root|(^|[\s,{}])(html|body)\b/m, 'no rule about the document itself');
+  assert.doesNotMatch(css, /@import|url\(\s*['"]?https?:/, 'no external resource');
+  // The isolation rule: the page's own element and class rules do not reach into the game (SVG presentation attributes are kept).
+  assert.match(css, /#screen-game :where\(:not\(svg, svg \*\)\) \{ all: revert; \}/);
+  assert.ok(css.indexOf('all: revert') < css.indexOf('#screen-game * { box-sizing'), 'the reset comes before the game\'s own rules');
+  // The other way round: style.css never mentions the game screen, and loads before game.css.
+  const page = fs.readFileSync(path.join(here, 'style.css'), 'utf8');
+  assert.doesNotMatch(page, /screen-game|#game-/);
+  assert.ok(html.indexOf('href="style.css"') < html.indexOf('href="game.css"'));
+  // Custom properties of the game are its own (--g-*); none of the page's names is redefined.
+  const defined = [...css.matchAll(/(--[\w-]+)\s*:/g)].map((match) => match[1]);
+  assert.ok(defined.every((name) => name.startsWith('--g-') || name.startsWith('--signal-')), `variables: ${defined.filter((name) => !name.startsWith('--g-') && !name.startsWith('--signal-'))}`);
+});
+
+test('game (structure): the game modules are published on purpose, the page script is the only entry, and no new dependency or external resource appears', () => {
+  const build = fs.readFileSync(path.join(here, '..', 'deploy', 'build_site.py'), 'utf8');
+  for (const name of ['game.js', 'game-gas.js', 'game-logic.js', 'game.css']) assert.match(build, new RegExp(`"${name.replace('.', '\\.')}"`), `${name} is on the site allowlist`);
+  assert.doesNotMatch(build, /game-gas\.test|test-ui/);
+  for (const file of ['game.js', 'game-logic.js', 'game-gas.js']) {
+    const source = fs.readFileSync(path.join(here, file), 'utf8');
+    for (const match of source.matchAll(/from\s+'([^']+)'/g)) assert.match(match[1], /^\.\//, `${file} imports only page modules (${match[1]})`);
+    assert.doesNotMatch(source, /\bfetch\(|XMLHttpRequest|WebSocket|eval\(|new Function|innerHTML/, `${file} makes no request and builds no markup from text`);
+  }
+  assert.match(fs.readFileSync(path.join(here, 'app.js'), 'utf8'), /import \{ GameView \} from '\.\/game\.js'/);
 });

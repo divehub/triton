@@ -76,6 +76,11 @@ export const prefs = {
       window.localStorage.setItem(`ngc-wasm.${key}`, String(value));
     } catch (_) { /* ignore */ }
   },
+  remove(key) {
+    try {
+      window.localStorage.removeItem(`ngc-wasm.${key}`);
+    } catch (_) { /* ignore */ }
+  },
 };
 
 /** Modal confirmation (uses <dialog> when available). Resolves to true when the user confirms. */

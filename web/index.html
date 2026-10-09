@@ -8,9 +8,10 @@
   <title>NGC system emulator · WebAssembly</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230c1117'/%3E%3Crect x='3' y='4' width='10' height='7' rx='1' fill='%2359d9ad'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="game.css">
 </head>
 <body>
-  <main>
+  <main id="app-main">
     <header>
       <div><h1 id="title">NGC system emulator</h1><p id="subtitle">TRITON or NEPTUN main 5.8 + handset 65.3 · WebAssembly functional model</p></div>
       <div class="header-badges">
@@ -140,14 +141,18 @@
 
       <div class="entry-actions">
         <button type="button" id="boot" class="primary" disabled>Boot emulator</button>
+        <button type="button" id="start-game" class="game-start" disabled title="Start the dive game on the same firmware, profile and start options">Start game</button>
         <span id="boot-hint" class="small muted">Provide both firmware files to continue.</span>
       </div>
+      <!-- Start game needs the main board, which feeds the sensors; shown only while "Handset only" is selected (entry.js refresh). -->
+      <p id="game-hint" class="small warn-text" hidden>Start game needs both boards, because the game drives the main board's pressure and oxygen inputs. Choose "Main 5.8 + handset 65.3 over CAN" under Start options.</p>
 
       <ul class="facts">
         <li>This is a <strong>functional model, not a claim of physical accuracy</strong>. It is a new engine ported from the behavior of Renode 1.17.0; results from the Renode setup do not transfer automatically, and every capture is labeled with the engine that produced it.</li>
         <li>Power, standby, reset, CAN wire timing, sensors and the display are simulated with explicit fixtures, named under Start options and in Advanced once the emulator runs.</li>
         <li id="fact-original">The firmware is <strong>not part of this page</strong>. Choose your two original S-record files, both from the same release (TRITON or NEPTUN), or load them from URLs; they are checked in your browser by SHA-256 and content, and never uploaded.</li>
         <li id="fact-custom" hidden>The firmware is <strong>not part of this page</strong>. Your custom builds are checked in your browser (S-record syntax, address range, vector table) and never uploaded. Diagnostics that read the original firmware's RAM (battery readiness, decompression state) are reported as unknown for them.</li>
+        <li><strong>Start game</strong> opens a dive game on the same session (same firmware, profile and start options): the depth you dive and the gas in the loop become the emulated pressure and oxygen-cell inputs, and you operate the handset through its display. The game runs on a desktop-size window and fixes its oxygen-cell voltages as a labeled game fixture.</li>
       </ul>
     </section>
 
@@ -381,6 +386,105 @@
     <div id="error" class="notice" role="alert" hidden></div>
     <footer>Buttons use simulated electrical pulses; peripheral timing is simulated. The display follows the firmware's pixel writes (up to 60 frames per second) and the status updates 5 times per second. Engine: <span id="footer-engine">—</span>.</footer>
   </main>
+
+  <!-- ===== Dive game (DESIGN 21): its own screen, outside <main>; game.css scopes every rule to #screen-game; every id starts with game- ===== -->
+  <div id="screen-game" hidden>
+    <svg class="icon-library" aria-hidden="true"><defs>
+      <symbol id="game-i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"></path></symbol>
+      <symbol id="game-i-play" viewBox="0 0 24 24"><path d="m9 5 10 7-10 7Z"></path></symbol>
+      <symbol id="game-i-reset" viewBox="0 0 24 24"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6"></path></symbol>
+      <symbol id="game-i-quit" viewBox="0 0 24 24"><path d="M10 5H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h4M14 8l4 4-4 4M18 12H9"></path></symbol>
+      <symbol id="game-i-chevron" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"></path></symbol>
+      <symbol id="game-i-wave" viewBox="0 0 24 24"><path d="M2 8c3-6 5 6 8 0s5 6 8 0 4 0 4 0M2 16c3-6 5 6 8 0s5 6 8 0 4 0 4 0"></path></symbol>
+      <symbol id="game-i-gas" viewBox="0 0 24 24"><path d="M9 5V3h6v2M7 8a5 5 0 0 1 10 0v10a3 3 0 0 1-3 3h-4a3 3 0 0 1-3-3ZM7 10h10"></path></symbol>
+      <symbol id="game-i-vibration" viewBox="0 0 32 32"><rect x="11" y="7" width="10" height="18" rx="3"></rect><path d="M7 11q-4 5 0 10M25 11q4 5 0 10M3 8q-6 8 0 16M29 8q6 8 0 16M15 21h2"></path></symbol>
+    </defs></svg>
+
+    <div class="app-header">
+      <div class="brand"><span class="brand-symbol"><svg class="icon"><use href="#game-i-wave"></use></svg></span><span>NGC<span class="brand-divider">/</span><span class="brand-name">Dive game</span></span></div>
+      <div class="header-right">
+        <span class="release-label" id="game-release" title="The firmware release this session runs">TRITON</span>
+        <span class="run-state" id="game-run-state" role="status">Starting</span>
+        <button type="button" class="reset-button" id="game-reset" title="Back to the surface with a fresh Air loop at 1×; the boards keep running"><svg class="icon"><use href="#game-i-reset"></use></svg><span>Reset dive</span></button>
+        <button type="button" class="reset-button quit-button" id="game-quit" title="Close the session (the profile is saved) and return to the start screen"><svg class="icon"><use href="#game-i-quit"></use></svg><span>Quit</span></button>
+      </div>
+    </div>
+
+    <div class="workspace">
+      <div id="game-alerts" class="game-alerts" role="alert" hidden></div>
+      <div class="intro"><div><p class="eyebrow">A LITTLE MORE IMMERSIVE</p><h1>Your next dive starts here.</h1></div><div class="session-chip"><span class="clock-dot"></span><div><span class="tiny-label">VIRTUAL TIME</span><strong id="game-virtual-time">00:00:00</strong></div><span class="speed-chip" id="game-header-speed">1×</span></div></div>
+
+      <div class="dive-grid">
+        <section class="dive-card panel" aria-labelledby="game-dive-title">
+          <div class="panel-heading"><div><span class="section-index">01</span><h2 id="game-dive-title">In the water</h2></div><span id="game-motion-status" class="subtle-status">Holding depth</span></div>
+          <div class="ocean" id="game-ocean" tabindex="0" role="group" aria-label="Interactive dive water" aria-describedby="game-motion-help">
+            <svg class="seascape" viewBox="0 0 600 620" preserveAspectRatio="none" aria-hidden="true">
+              <defs><linearGradient id="game-sea" x2="0" y2="1"><stop stop-color="#259da9"></stop><stop offset=".28" stop-color="#157183"></stop><stop offset=".7" stop-color="#114256"></stop><stop offset="1" stop-color="#0c293a"></stop></linearGradient><linearGradient id="game-ray" x2="0" y2="1"><stop stop-color="#b1f5e9" stop-opacity=".14"></stop><stop offset="1" stop-color="#b1f5e9" stop-opacity="0"></stop></linearGradient><linearGradient id="game-sand" x2="0" y2="1"><stop stop-color="#31534e"></stop><stop offset="1" stop-color="#152d34"></stop></linearGradient></defs>
+              <rect width="600" height="620" fill="url(#game-sea)"></rect>
+              <path d="M55 0h55L0 570H-55Zm160 0h85L165 620H80Zm200 0h55L310 620h-80Z" fill="url(#game-ray)"></path>
+              <path d="M0 13Q45 6 90 13t90 0t90 0t90 0t90 0t90 0v-13H0Z" fill="#adf3e6" opacity=".2"></path>
+              <path d="M0 585Q70 562 145 583T300 591T450 574T600 585V620H0Z" fill="url(#game-sand)"></path>
+              <g stroke="#448581" stroke-width="3" fill="none" opacity=".42"><path d="M38 596q-20-25-8-47m8 47q15-35 6-60m-6 60q28-22 18-44M554 603q-22-39-9-59m9 59q22-43 9-75m-9 75q-1-30 20-38"></path></g>
+              <g fill="#b4ebe6" opacity=".24"><circle cx="80" cy="117" r="1.5"></circle><circle cx="271" cy="252" r="1"></circle><circle cx="450" cy="87" r="1.5"></circle><circle cx="369" cy="427" r="1"></circle><circle cx="153" cy="505" r="1.5"></circle><circle cx="534" cy="340" r="1"></circle><circle cx="210" cy="65" r="1"></circle></g>
+              <g fill="#4a8590" opacity=".4"><path d="m80 382 9-4q9-3 16 4-7 7-16 4Zm-15 16 7-3q7-3 13 3-6 6-13 3Z"></path><path d="m362 155 9-4q9-3 16 4-7 7-16 4Z"></path></g>
+            </svg>
+            <div class="depth-grid" id="game-depth-grid" aria-hidden="true"></div>
+            <div class="surface-caption"><span class="surface-dot"></span>SURFACE</div>
+            <div class="depth-readout"><strong id="game-depth-value">0.0</strong><span>m</span><small id="game-ambient-pressure">1.01 bar ambient</small></div>
+            <div class="diver-track" id="game-diver-track"><div class="diver" id="game-diver">
+              <svg viewBox="0 0 190 90" role="img" aria-label="CCR diver"><g transform="translate(4 5)"><path d="m26 48-22-13 1 15 20 10m6-6L6 65l3 12 31-18" fill="#e8cc77"></path><path d="m30 49 39-6 28 2" stroke="#162d35" stroke-width="13" stroke-linecap="round"></path><path d="m36 57 38-3 23-9" stroke="#253e46" stroke-width="10" stroke-linecap="round"></path><rect x="75" y="29" width="44" height="18" rx="8" fill="#719998"></rect><rect x="81" y="28" width="28" height="5" rx="2" fill="#b5c8bc"></rect><path d="M73 43q17-7 51 0l17 13-29 8-37-11Z" fill="#142c35"></path><path d="m117 51 12 17 20-2" fill="none" stroke="#264751" stroke-width="9" stroke-linecap="round"></path><path d="m124 45 18-6" fill="none" stroke="#41636a" stroke-width="6"></path><circle cx="143" cy="44" r="12" fill="#183740"></circle><path d="M144 36q15-4 15 7t-12 7" fill="#82dad2"></path><path d="m149 49-4 8-20-9" fill="none" stroke="#d8c77b" stroke-width="3"></path><rect x="128" y="65" width="7" height="4" rx="1" fill="#88dfd1"></rect></g></svg>
+              <span class="diver-shadow"></span>
+            </div><div class="diver-depth-line"></div></div>
+
+            <svg class="gesture-overlay" aria-hidden="true"><line id="game-gesture-tether"></line><circle id="game-gesture-anchor" r="9"></circle><circle id="game-gesture-contact" r="6"></circle></svg>
+            <div class="speedometer" id="game-speedometer" role="meter" aria-label="Vertical speed" aria-valuemin="-18" aria-valuemax="30" aria-valuenow="0" aria-valuetext="Holding depth"><span class="meter-title">VERTICAL SPEED</span><svg class="meter-dial" viewBox="0 0 120 78" aria-hidden="true"><path d="M15 65A45 45 0 0 1 60 20" fill="none" stroke="#73e5d0" stroke-width="3" opacity=".6"></path><path d="M60 20A45 45 0 0 1 105 65" fill="none" stroke="#e2ca83" stroke-width="3" opacity=".6"></path><g stroke="#b2d3cf" opacity=".5"><path d="M60 20v7M15 65h7M98 65h7M28 33l5 5M87 38l5-5"></path></g><g id="game-speed-needle" transform="rotate(0 60 65)"><path d="M60 65V30" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"></path></g><circle cx="60" cy="65" r="4" fill="currentColor"></circle><g fill="#a1bfbf" font-size="8" font-family="inherit"><text x="7" y="76">18 ↑</text><text x="60" y="12" text-anchor="middle">0</text><text x="113" y="76" text-anchor="end">↓ 30</text></g></svg><div class="speed-reading"><strong id="game-speed-value">0.0</strong><span>m/min</span></div><span class="speed-direction" id="game-speed-direction">HOLD</span></div>
+            <span class="sr-only" id="game-motion-help">Press and hold anywhere in the water, then drag up to ascend or down to descend. Drag farther for more speed. Release to hold depth. With the water focused, hold an up or down arrow key to move and release to stop.</span>
+            <div class="play-control"><button type="button" id="game-play-speed" aria-label="Change play speed" aria-expanded="false" aria-controls="game-speed-menu"><svg class="icon" id="game-play-icon"><use href="#game-i-play"></use></svg><strong id="game-play-speed-label">1×</strong><svg class="icon small"><use href="#game-i-chevron"></use></svg></button><div class="speed-menu" id="game-speed-menu" hidden><span class="menu-label">PLAY SPEED</span><button type="button" data-speed="0">Pause <span>Ⅱ</span></button><button type="button" data-speed="1" class="selected">1× <span>Real time</span></button><button type="button" data-speed="2">2×</button><button type="button" data-speed="4">4×</button><button type="button" data-speed="uncapped">Uncapped <span>∞</span></button></div></div>
+            <div class="ocean-footer"><span id="game-scene-hint">Hold &amp; drag to dive · release to hold</span></div>
+          </div>
+          <div class="scene-meta"><span><i class="legend-dot teal"></i>EN13319 water</span><span>Range 0–110 m</span><span id="game-max-depth-meta">Max 0.0 m</span></div>
+        </section>
+
+        <section class="instrument-card panel" aria-labelledby="game-instrument-title">
+          <div class="panel-heading"><div><span class="section-index">02</span><h2 id="game-instrument-title">On your wrist</h2></div><span class="subtle-status"><i class="legend-dot teal"></i><span id="game-wrist-name">TRITON</span> · firmware display</span></div>
+          <div class="signal-dock" role="group" aria-label="Handset vibrator and HUD LEDs, as the firmware commands them">
+            <div class="signal-tray">
+              <div class="signal signal-vibrator" id="game-signal-vibrator" role="img" aria-label="Handset vibrator: unknown" title="Handset vibrator">
+                <span class="signal-visual" aria-hidden="true"><svg class="vibration-glyph" viewBox="0 0 32 32"><use href="#game-i-vibration"></use></svg></span>
+              </div>
+              <div class="signal signal-red" id="game-signal-red" role="img" aria-label="Red HUD LED (HUD 3): unknown" title="Red HUD LED (HUD 3)">
+                <span class="signal-visual" aria-hidden="true"><span class="led-lens"></span></span>
+              </div>
+              <div class="signal signal-white" id="game-signal-white" role="img" aria-label="White HUD LED (HUD 2): unknown" title="White HUD LED (HUD 2)">
+                <span class="signal-visual" aria-hidden="true"><span class="led-lens"></span></span>
+              </div>
+            </div>
+          </div>
+          <div class="instrument-stage">
+            <div class="device-strap strap-top"></div><div class="device-strap strap-bottom"></div>
+            <div class="ccr-device" id="game-device" tabindex="0" role="group" aria-label="Handset. With this focused, the Up and Down arrow keys press Up and Down and Enter confirms.">
+              <div class="device-topline"><span>NGC</span><span id="game-device-name">TRITON</span></div>
+              <button type="button" class="device-key device-key-left" id="game-handset-up" aria-label="Handset Up key" title="Up"></button>
+              <div class="lcd-bezel"><div class="game-lcd" id="game-lcd"><canvas id="game-frame" width="320" height="240" role="img" aria-label="Current LCD frame from the emulated handset; tap the upper third for Up, the middle for Confirm, the lower third for Down" title="Tap: upper third Up · middle Confirm · lower third Down" hidden></canvas><div class="game-placeholder" id="game-placeholder">Waiting for LCD output</div><span id="game-frame-size" hidden>320 × 240</span></div></div>
+              <button type="button" class="device-key device-key-right" id="game-handset-down" aria-label="Handset Down key" title="Down"></button>
+              <div class="device-bottomline"><span>CCR CONTROLLER</span><span class="device-dots">•••</span></div>
+            </div>
+            <span class="lcd-caption" id="game-lcd-caption">Tap the display: top Up · middle Confirm · bottom Down. With the handset focused: ↑ ↓ Enter.</span>
+          </div>
+          <div class="profile-section"><div class="profile-heading"><div><h3>Dive profile</h3><span>Depth over virtual time</span></div><div class="profile-key"><i></i><span id="game-profile-duration">0:00 elapsed</span></div></div><svg id="game-profile" viewBox="0 0 700 175" role="img" aria-label="Dive depth profile in virtual minutes"><defs><linearGradient id="game-profile-fill" x2="0" y2="1"><stop stop-color="#55d8c1" stop-opacity=".05"></stop><stop offset="1" stop-color="#55d8c1" stop-opacity=".24"></stop></linearGradient></defs><g id="game-profile-grid"></g><path id="game-profile-area" fill="url(#game-profile-fill)"></path><path id="game-profile-line" fill="none" stroke="#73e5d0" stroke-width="2" stroke-linejoin="round"></path><circle id="game-profile-point" r="4" fill="#9bf5de"></circle><g id="game-profile-labels"></g></svg></div>
+        </section>
+      </div>
+
+      <section class="loop-panel panel" aria-labelledby="game-loop-title">
+        <div class="loop-controls"><div class="loop-title"><span class="section-index">03</span><h2 id="game-loop-title">Breathe into the loop</h2></div><div class="gas-selector"><label for="game-diluent-select">DILUENT</label><div class="select-wrap"><select id="game-diluent-select"><option value="air">Air · 21 / 0</option><option value="tx2135">Trimix · 21 / 35</option><option value="tx1845">Trimix · 18 / 45</option><option value="tx1050">Trimix · 10 / 50</option></select><svg class="icon"><use href="#game-i-chevron"></use></svg></div></div><div class="mav-buttons"><button type="button" class="mav diluent-mav" id="game-mav-diluent" aria-label="Hold to inject diluent"><svg class="icon"><use href="#game-i-gas"></use></svg><span><strong>Diluent MAV</strong><small>Hold · 1× injection</small></span><span class="key-hint">D</span></button><button type="button" class="mav oxygen-mav" id="game-mav-oxygen" aria-label="Hold to inject oxygen"><span class="o2-symbol">O₂</span><span><strong>Oxygen MAV</strong><small>Hold · 1× injection</small></span><span class="key-hint">O</span></button></div><p class="mav-status" id="game-mav-status" role="status">60 surface L/min · 1× while held</p><p class="mav-status diluent-note">The diluent sets the loop gas only. Tell the handset which diluent you carry through its own menu.</p></div>
+
+        <div class="lung-section"><div class="lung-heading"><h3>Counterlungs</h3><span><strong>4.0</strong> L constant</span></div><div class="lung-visual"><span class="flow-arrow flow-in" id="game-flow-in">→</span><div class="lung-bag lung-left"><div class="gas-fill" id="game-lung-fill-left"></div><div class="lung-ribs"></div><span>2 L</span></div><div class="lung-bridge"><svg viewBox="0 0 74 72" aria-hidden="true"><path d="M0 50V19Q0 8 13 8h48q13 0 13 11v31" fill="none" stroke="#54737a" stroke-width="9"></path><path d="M30 8v18h15V8" fill="none" stroke="#b7d5d1" stroke-width="7"></path></svg><span id="game-loop-o2"><span id="game-loop-o2-value">21.0</span><small>% O₂</small></span></div><div class="lung-bag lung-right"><div class="gas-fill" id="game-lung-fill-right"></div><div class="lung-ribs"></div><span>2 L</span></div><span class="flow-arrow flow-out" id="game-flow-out">→</span></div><div class="gas-legend"><span><i class="legend-dot oxygen"></i>O₂ <b id="game-fraction-o2">21.0%</b></span><span><i class="legend-dot nitrogen"></i>N₂ <b id="game-fraction-n2">79.0%</b></span><span><i class="legend-dot helium"></i>He <b id="game-fraction-he">0.0%</b></span></div><div class="loop-status"><span class="state-pill" id="game-adv-status"><i></i><span id="game-adv-text">ADV · ready</span></span><span class="state-pill" id="game-vent-status"><i></i><span id="game-vent-text">Vent · closed</span></span><span class="cmf-label">CMF balanced</span></div></div>
+
+        <div class="loop-readings"><div class="sensor-heading"><h3>Oxygen cells</h3><span>Voltages sent to the firmware</span></div><div class="cell-readings"><div><span>CELL 1</span><strong id="game-cell-1">12.00</strong><small>mV</small></div><div><span>CELL 2</span><strong id="game-cell-2">12.00</strong><small>mV</small></div><div><span>CELL 3</span><strong id="game-cell-3">12.00</strong><small>mV</small></div></div><div class="truth-row"><span class="truth-label">Loop ppO₂</span><strong id="game-loop-ppo2">0.21</strong><small>bar · simulated truth</small></div><div class="sensor-note">Cell voltage = loop ppO₂ × the cell's sensitivity (a game fixture). The handset shows what the firmware derives from these voltages once you calibrate.</div><details class="game-settings"><summary>Game assumptions <svg class="icon"><use href="#game-i-chevron"></use></svg></summary><div class="settings-content"><label for="game-mav-flow">MAV flow <span><input id="game-mav-flow" type="number" min="0.1" max="300" step="any" value="60"> SL/min</span></label><p>SL = liters at surface pressure (1.01325 bar). An adjustable power-injection setting; 60 SL/min = 1 SL/s. CMF exactly offsets consumption. No gas supply limit.</p><p><strong>Oxygen-cell fixture (a game fixture, not a physical cell).</strong> Each cell reads 12 mV in air at the surface plus its own deviation of up to ±1.0 mV, drawn once for this profile and kept in this browser; resetting the profile draws new ones, so a calibration stays valid across sessions.</p><div class="fixture-list" id="game-fixture-list"></div><p>Depth sets both pressure inputs: the session's surface pressure plus EN13319 water (1020 kg/m³). The temperature keeps the emulator's setting. A functional model, not a claim of physical accuracy.</p></div></details></div>
+      </section>
+      <footer class="workspace-footer"><span>The simulated depth and loop gas drive the emulated pressure and oxygen inputs; the handset shows what the firmware makes of them.</span><span>Hold <kbd>O</kbd> oxygen / <kbd>D</kbd> diluent · <kbd>Space</kbd> pause</span></footer>
+    </div>
+  </div>
   <script type="module" src="app.js"></script>
 </body>
 </html>

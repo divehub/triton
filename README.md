@@ -47,6 +47,8 @@ The page has two views:
 
 **Replay pulses** (on by default) flashes HUD and vibrator activations that happened between status updates. It only animates the display and does not change firmware timing.
 
+**Dive game.** **Start game**, beside Boot emulator, runs the same session as a game (desktop only): you dive in a water scene, the depth and the gas in the loop become the emulated pressure and oxygen-cell inputs, and you operate the handset through its display. Its oxygen-cell voltages are a labeled game fixture (12 mV in air at the surface plus ±1.0 mV per cell, kept per profile). Controls, the clock and the limits: [web/README.md](web/README.md#dive-game-start-game-design-21); its gas model has its own checks, `node --test web/game-gas.test.mjs`.
+
 ## Firmware
 
 Supply the files yourself; they are read only from where you put them and are never copied or committed.
