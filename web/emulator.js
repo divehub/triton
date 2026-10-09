@@ -11,7 +11,7 @@ import { ActionQueue, BASIC_IDS, ConditionsController } from './conditions.js';
 import { decoWarnings, fixtureLines, healthLine, parseSurfacePressure } from './deco.js';
 import { faultDetail, faultReports, faultWarnings } from './faults.js';
 import { clearCellFixture } from './game-logic.js';
-import { handsetKeyAction } from './keys.js';
+import { handsetKeyAction, isHandsetArrow } from './keys.js';
 import { LcdView } from './lcd.js';
 import { ReplayController, STATUS_STRIP, activityText, describeEntry, driveText, historyText } from './replay.js';
 import { DEFAULT_RELEASE_ID, describeRelease, profileArea } from './releases.js';
@@ -254,10 +254,9 @@ export class EmulatorView {
     document.addEventListener('keydown', (event) => {
       if (this.root.hidden) return;
       const action = handsetKeyAction(event);
-      if (action) {
-        event.preventDefault();
-        this.sendAction(action);
-      }
+      // The arrow keys belong to the handset only: no scrolling (also while held), no field or control moves.
+      if (action || isHandsetArrow(event)) event.preventDefault();
+      if (action) this.sendAction(action);
     });
     document.addEventListener('click', (event) => {
       const control = event.target instanceof Element ? event.target.closest('button, summary') : null;

@@ -18,7 +18,7 @@ import {
   GAME_INDICATORS, GameSim, InputsSender, PlayClock, cellMillivolts, cellSensitivities, clockText, durationText,
   estimateVirtual, gameInputs, indicatorView, loadCellFixture, runState, speedLabel, stopAlerts,
 } from './game-logic.js';
-import { handsetKeyAction } from './keys.js';
+import { handsetKeyAction, isHandsetArrow } from './keys.js';
 import { LcdView } from './lcd.js';
 import { DEFAULT_RELEASE_ID, describeRelease, profileArea } from './releases.js';
 import { ReplayController } from './replay.js';
@@ -28,6 +28,12 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const DEFAULT_TITLE = 'NGC system emulator · WebAssembly';
 const PRESS_FEEDBACK_MS = 160;
 const INDICATOR_NAMES = { vibrator: 'Handset vibrator', red: 'Red HUD LED (HUD 3)', white: 'White HUD LED (HUD 2)' };
+// W / S swimming: the speed tiers in m/min (hold, double tap and hold, triple tap and hold), up to the gesture maxima of
+// 18 m/min ascending and 30 m/min descending; taps count when the next press follows the last release within the gap.
+const SWIM_KEYS = { KeyW: 'up', KeyS: 'down' };
+const SWIM_RATES = { up: [6, 12, 18], down: [10, 20, 30] };
+const SWIM_TIERS = 3;
+const SWIM_TAP_GAP_MS = 300;
 
 function svgNode(tag, attributes, content) {
   const node = document.createElementNS(SVG_NS, tag);
@@ -79,6 +85,9 @@ export class GameView {
     this.motionPointer = null;
     this.motionOrigin = null;
     this.motionReach = 180;
+    this.swimHeld = new Map(); // W / S held: the speed tier (1 to 3) of each
+    this.swimTaps = { KeyW: 0, KeyS: 0 };
+    this.swimReleased = { KeyW: -Infinity, KeyS: -Infinity };
     this.previousPaint = '';
     this.alertsKey = '';
     // The worker sends the first LCD frame while it creates the session, so it can reach `onFrame` before `show` runs: frames
@@ -378,10 +387,31 @@ export class GameView {
     this.renderMotion();
   }
 
+  /**
+   * W (up) and S (down): hold to swim; tap once or twice first and keep the last press held for the faster speeds (a
+   * double tap and hold, a triple tap and hold). Both held hold the depth; a drag in the water or a pause takes over.
+   */
+  swimKey(code, down) {
+    const now = performance.now();
+    if (down) {
+      if (this.clock.speed === 0 || this.motionPointer !== null) return;
+      const taps = now - this.swimReleased[code] <= SWIM_TAP_GAP_MS ? Math.min(SWIM_TIERS, this.swimTaps[code] + 1) : 1;
+      this.swimTaps[code] = taps;
+      this.swimHeld.set(code, taps);
+    } else {
+      if (!this.swimHeld.delete(code)) return;
+      this.swimReleased[code] = now;
+    }
+    const up = this.swimHeld.get('KeyW');
+    const descend = this.swimHeld.get('KeyS');
+    this.changeMotion(up && descend ? 0 : up ? -SWIM_RATES.up[up - 1] : descend ? SWIM_RATES.down[descend - 1] : 0);
+  }
+
   clearGesture() {
     const pointer = this.motionPointer;
     this.motionPointer = null;
     this.motionOrigin = null;
+    this.swimHeld.clear();
     const ocean = $('ocean');
     ocean.classList.remove('dragging');
     if (pointer !== null && typeof ocean.hasPointerCapture === 'function' && ocean.hasPointerCapture(pointer)) ocean.releasePointerCapture(pointer);
@@ -604,18 +634,25 @@ export class GameView {
       }
     });
 
-    // Keyboard: the arrow keys press the handset's Up and Down wherever the focus is (except while editing a field), O and
-    // D hold the valves, Space pauses and resumes, Escape lets everything go.
+    // Keyboard: the arrow keys belong to the handset only (Up and Down wherever the focus is; never a scroll or a field),
+    // W and S swim up and down, O and D hold the valves, Space pauses and resumes, Escape lets everything go.
     document.addEventListener('keydown', (event) => {
       const target = event.target;
-      if (!this.active || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
-      const editing = target && typeof target.closest === 'function' && target.closest('input,select,textarea,[contenteditable]');
-      if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !event.shiftKey && !editing) {
-        event.preventDefault(); // one press per key press (no auto-repeat), and the page does not scroll
-        if (!event.repeat) this.pressHandset(event.key === 'ArrowUp' ? 'up' : 'down');
+      if (!this.active) return;
+      if (isHandsetArrow(event)) {
+        const action = handsetKeyAction(event);
+        event.preventDefault(); // a held key is one press, and the page does not scroll
+        if (action) this.pressHandset(action);
         return;
       }
-      if (target && typeof target.closest === 'function' && target.closest('input,select,textarea,button,summary')) return;
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+      const closest = (selector) => !!(target && typeof target.closest === 'function' && target.closest(selector));
+      if (event.code in SWIM_KEYS && !closest('input,select,textarea,[contenteditable]')) {
+        event.preventDefault();
+        if (!event.repeat) this.swimKey(event.code, true);
+        return;
+      }
+      if (closest('input,select,textarea,button,summary')) return;
       const gas = event.code === 'KeyO' ? 'oxygen' : event.code === 'KeyD' ? 'diluent' : null;
       if (gas && this.clock.speed !== 0) {
         event.preventDefault();
@@ -634,6 +671,7 @@ export class GameView {
     });
     document.addEventListener('keyup', (event) => {
       if (!this.active) return;
+      if (event.code in SWIM_KEYS) this.swimKey(event.code, false);
       const gas = event.code === 'KeyO' ? 'oxygen' : event.code === 'KeyD' ? 'diluent' : null;
       if (gas) this.holdValve(gas, 'shortcut', false);
     });

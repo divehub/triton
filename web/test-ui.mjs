@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Engine, EngineError } from './engine.js';
 import { ActionQueue, BASIC_IDS, ConditionsController } from './conditions.js';
-import { handsetKeyAction } from './keys.js';
+import { handsetKeyAction, isHandsetArrow } from './keys.js';
 import { Cursor, PulseQueue, ReplayController, describeEntry, driveText, historyText } from './replay.js';
 import { CUSTOM_RELEASE_ID, DEFAULT_RELEASE_ID, RELEASES, RELEASE_IDS, describeRelease, firmwareArea, mixedPairMessage, pairConflict, profileArea, releaseOf, storageAreas } from './releases.js';
 import * as faults from './faults.js';
@@ -1360,21 +1360,21 @@ test('page: sensor numbers are the firmware\'s in the basic view, the previews a
   assert.match(note, /sensor 2 the one on I2C1 \(pressure1Mbar, temperature1C\)/);
 });
 
-test('page: keyboard disclosure controls do not send physical handset button actions', async () => {
+test('page: keyboard disclosure controls do not confirm in the guest, and the arrow keys only ever drive the handset', async () => {
   const h = await scenarioHarness();
   const summaries = h.document.querySelectorAll('#advanced-panel summary, details.variations summary');
   assert.ok(summaries.length >= 4, 'Exercise the actual Advanced and three variation disclosures.');
-  for (const summary of summaries) {
-    h.document.dispatch('keydown', { target: summary, key: 'Enter' });
-    h.document.dispatch('keydown', { target: summary, key: 'ArrowDown' });
-  }
+  for (const summary of summaries) h.document.dispatch('keydown', { target: summary, key: 'Enter' });
   await settle();
-  assert.equal(h.posts().length, 0, 'Opening Advanced or variations via keyboard must not confirm or navigate the guest.');
-  // Positive control: the same keys on the page itself drive the handset, in order, once each.
+  assert.equal(h.posts().length, 0, 'Opening Advanced or variations via keyboard must not confirm in the guest.');
+  // The arrow keys belong to the handset wherever the focus is (a disclosure too), never scroll (a held key either),
+  // and a held key is one press.
   const lcd = h.control('lcd');
-  h.document.dispatch('keydown', { target: lcd, key: 'ArrowDown' });
+  const onSummary = h.document.dispatch('keydown', { target: summaries[0], key: 'ArrowDown' });
+  assert.equal(onSummary.defaultPrevented, true);
   h.document.dispatch('keydown', { target: lcd, key: 'Enter' });
-  h.document.dispatch('keydown', { target: lcd, key: 'ArrowUp', repeat: true });
+  const held = h.document.dispatch('keydown', { target: lcd, key: 'ArrowUp', repeat: true });
+  assert.equal(held.defaultPrevented, true, 'a held arrow does not scroll the page');
   await settle();
   assert.deepEqual(h.posts().map((request) => request.body.action), ['down']);
   await h.respond(h.posts()[0]);
@@ -1497,22 +1497,26 @@ test('structure: the raw sensor fields keep the engine ranges and accept any dec
   for (const name of ['battery1Mv', 'battery2Mv']) assert.match(field(name), /value="4100"/, name);
 });
 
-test('keys: arrows and Enter drive the handset except where the key belongs to the control', () => {
+test('keys: the arrow keys always drive the handset; Enter confirms except where it belongs to the control', () => {
   const target = (tagName, extra = {}) => ({ tagName, closest: () => null, ...extra });
   const press = (key, element, extra = {}) => handsetKeyAction({ key, target: element, ...extra });
+  const inDialog = target('BUTTON', { closest: (selector) => (/dialog/.test(selector) ? {} : null) });
+  const inConsole = target('DIV', { closest: (selector) => (/uart-panel/.test(selector) ? {} : null) });
   assert.equal(press('ArrowUp', target('BODY')), 'up');
   assert.equal(press('ArrowDown', target('DIV')), 'down');
   assert.equal(press('Enter', target('BODY')), 'confirm');
   assert.equal(press('a', target('BODY')), null);
-  for (const tag of ['INPUT', 'TEXTAREA', 'SELECT', 'SUMMARY', 'A']) {
-    for (const key of ['ArrowUp', 'ArrowDown', 'Enter']) assert.equal(press(key, target(tag)), null, `${key} on ${tag}`);
+  for (const element of [...['INPUT', 'TEXTAREA', 'SELECT', 'SUMMARY', 'A', 'BUTTON'].map((tag) => target(tag)), target('DIV', { isContentEditable: true }), inConsole]) {
+    assert.equal(press('ArrowDown', element), 'down', `ArrowDown on ${element.tagName}`);
+    assert.equal(isHandsetArrow({ key: 'ArrowUp', target: element }), true, `no scroll or field change on ${element.tagName}`);
+    assert.equal(press('Enter', element), null, `Enter belongs to ${element.tagName}`);
   }
-  assert.equal(press('Enter', target('BUTTON')), null, 'Enter activates a focused button');
-  assert.equal(press('ArrowDown', target('BUTTON')), 'down', 'arrows have no other meaning on a button');
-  assert.equal(press('ArrowDown', target('DIV', { isContentEditable: true })), null);
-  assert.equal(press('ArrowDown', target('DIV', { closest: (selector) => (/uart-panel/.test(selector) ? {} : null) })), null, 'the console, history lists and dialogs keep their keys');
+  assert.equal(press('ArrowDown', inDialog), null, 'an open modal dialog keeps its keys');
+  assert.equal(isHandsetArrow({ key: 'ArrowDown', target: inDialog }), false);
   for (const modifier of ['altKey', 'ctrlKey', 'metaKey', 'shiftKey']) assert.equal(press('ArrowDown', target('BODY'), { [modifier]: true }), null, modifier);
+  assert.equal(isHandsetArrow({ key: 'ArrowDown', target: target('BODY'), metaKey: true }), false, 'browser shortcuts stay');
   assert.equal(press('ArrowDown', target('BODY'), { repeat: true }), null, 'a held key is one press');
+  assert.equal(isHandsetArrow({ key: 'ArrowDown', target: target('BODY'), repeat: true }), true, 'and is still no scroll');
   assert.equal(press('ArrowDown', target('BODY'), { defaultPrevented: true }), null);
 });
 
@@ -4074,8 +4078,7 @@ test('game (view): the handset is operated through its pins: bezel keys, the dis
   frame.dispatch('click', { clientY: 470 });
   assert.deepEqual(await counts(), [2, 2, 1]);
   // Enter confirms only with the handset focused. The arrow keys press the handset's Up and Down wherever the focus is
-  // (one press per key press, no page scroll), except in a field being edited. The water takes no keys: diving is touch
-  // and drag only.
+  // (one press per key press, no page scroll, a field too) and never move the diver; W and S swim.
   device.dispatch('keydown', { key: 'Enter', code: 'Enter', repeat: false });
   assert.deepEqual(await counts(), [2, 2, 2]);
   const ocean = g.el('ocean');
@@ -4088,9 +4091,47 @@ test('game (view): the handset is operated through its pins: bezel keys, the dis
   assert.equal(held.defaultPrevented, true, 'and does not scroll the page');
   g.document.dispatch('keydown', { key: 'Enter', code: 'Enter', repeat: false });
   assert.deepEqual(await counts(), [3, 4, 2], 'Enter outside the handset is not Confirm');
-  g.document.dispatch('keydown', { target: g.el('mav-flow'), key: 'ArrowUp', code: 'ArrowUp', repeat: false });
-  assert.deepEqual(await counts(), [3, 4, 2], 'a field being edited keeps its arrow keys');
-  assert.equal(g.view.sim.direction, 0, 'and no key ever moves the diver');
+  const inField = g.document.dispatch('keydown', { target: g.el('mav-flow'), key: 'ArrowUp', code: 'ArrowUp', repeat: false });
+  assert.equal(inField.defaultPrevented, true, 'a field does not take the arrow keys');
+  assert.deepEqual(await counts(), [4, 4, 2], 'they press the handset there too');
+  assert.equal(g.view.sim.direction, 0, 'and the arrow keys never move the diver');
+
+  // W and S: hold to swim at 6 / 10 m/min; a double tap and hold, or a triple tap and hold, goes faster (to 18 / 30).
+  const key = (type, code, target) => g.document.dispatch(type, { code, key: code.slice(3).toLowerCase(), repeat: false, ...(target ? { target } : {}) });
+  key('keydown', 'KeyS');
+  assert.equal(g.view.sim.direction, 1);
+  near(g.view.sim.rate, 10);
+  key('keyup', 'KeyS');
+  assert.equal(g.view.sim.direction, 0, 'release holds the depth');
+  key('keydown', 'KeyS');
+  near(g.view.sim.rate, 20, 'double tap and hold');
+  key('keyup', 'KeyS');
+  key('keydown', 'KeyS');
+  near(g.view.sim.rate, 30, 'triple tap and hold');
+  key('keyup', 'KeyS');
+  key('keydown', 'KeyS');
+  near(g.view.sim.rate, 30, 'and no faster');
+  key('keyup', 'KeyS');
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  key('keydown', 'KeyW');
+  assert.equal(g.view.sim.direction, -1);
+  near(g.view.sim.rate, 6, 'a pause between taps starts over');
+  key('keydown', 'KeyS');
+  assert.equal(g.view.sim.direction, 0, 'W and S together hold the depth');
+  key('keyup', 'KeyS');
+  assert.equal(g.view.sim.direction, -1);
+  key('keyup', 'KeyW');
+  assert.equal(g.view.sim.direction, 0);
+  key('keydown', 'KeyS', g.el('mav-flow'));
+  assert.equal(g.view.sim.direction, 0, 'a field being edited keeps its letters');
+  key('keyup', 'KeyS', g.el('mav-flow'));
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  key('keydown', 'KeyS');
+  g.view.chooseSpeed(0);
+  assert.equal(g.view.sim.direction, 0, 'a pause stops the swim');
+  key('keyup', 'KeyS');
+  key('keydown', 'KeyS');
+  assert.equal(g.view.sim.direction, 0, 'and a paused water takes no keys');
   g.view.hide();
 });
 
