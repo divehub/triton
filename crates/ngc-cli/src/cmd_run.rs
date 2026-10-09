@@ -27,7 +27,7 @@ impl Machine {
 
 pub const USAGE: &str = "ngc-cli run [--main <srec>] [--handset <srec>] [--mode dual|handset] [--seconds S]\n  \
     [--boot-mode handset-wake|cold] [--simultaneous-start] [--no-idle-ff] [--no-routine-accel|--shadow-routine-accel] [--no-i2c-idle-high] [--release ID]\n  \
-    [--no-eeprom-factory-init] [--no-deco-storage-fixture] [--no-start-at-surface]\n  \
+    [--no-start-at-surface]\n  \
     [--ppm out.ppm] [--can-trace out.tsv]\n  \
     [--pc-trace N out.u32le [--pc-trace-after S] [--board handset|main]] [--json out.json] [--no-warnings] [--log N] [--inputs SCRIPT]\n  \
     [--dump-sram PREFIX] [--peek ADDR[,ADDR...] [--board handset|main]] [--access-trace N [--board handset|main]]\n  \
@@ -51,12 +51,12 @@ pub const USAGE: &str = "ngc-cli run [--main <srec>] [--handset <srec>] [--mode 
     --no-routine-accel turns off the exact acceleration of the runtime-library routines (memoized soft-float calls, DESIGN.md 16.2;\n  \
     results are identical either way, only host speed differs); --shadow-routine-accel replays and interprets every memo hit and\n  \
     compares the two (slow verification mode).\n  \
-    --no-eeprom-factory-init, --no-deco-storage-fixture and --no-start-at-surface (with --data-dir only: the fixtures act on the\n  \
-    saved profile) turn off the three labeled emulator fixtures of the profile handling, which are on by default: before every\n  \
-    board creation each inventoried EEPROM record that is still erased (serial, oxygen-toxicity model and dose, the tissue block,\n  \
-    the no-fly records; docs/eeprom.md) gets the value its firmware code implies, a stored tissue block that was never saved loses\n  \
-    the saved decompression date (so the firmware resets the tissues instead of loading NaN), and every board creation starts at\n  \
-    the surface pressure, a new session with the oxygen cells at their defaults.\n  \
+    With --data-dir the host-facing Session applies two labeled emulator fixtures. When the profile has no eeprom.bin (or an\n  \
+    entirely erased one) the EEPROM is created from the factory image once: the records the firmware's first-boot defaults never\n  \
+    write (serial, oxygen-toxicity model and dose, the tissue block, the no-fly records; docs/eeprom.md) get the value their firmware\n  \
+    code implies, and an existing eeprom.bin is never touched (there is no option; without --data-dir the run uses a bare system\n  \
+    with an erased EEPROM). --no-start-at-surface turns off the other fixture, which is on by default: every board creation starts\n  \
+    at the surface pressure, a new session with the oxygen cells at their defaults.\n  \
     --mode handset runs the handset alone (no CAN peer, like the viewer without --dual).\n  \
     --pc-trace records the first N executed instruction addresses of a board (default handset) as little-endian\n  \
     u32 words; that board runs without idle fast-forward until N instructions were traced. With --pc-trace-after S the\n  \
@@ -93,7 +93,7 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<(), RunError> {
     let parsed = args::parse(
         argv,
         &["main", "handset", "mode", "seconds", "boot-mode", "ppm", "can-trace", "pc-trace", "board", "json", "pc-trace-out", "log", "inputs", "dump-sram", "peek", "access-trace", "data-dir", "release", "pc-trace-after"],
-        &["simultaneous-start", "no-idle-ff", "no-warnings", "no-i2c-idle-high", "no-routine-accel", "shadow-routine-accel", "no-eeprom-factory-init", "no-deco-storage-fixture", "no-start-at-surface"],
+        &["simultaneous-start", "no-idle-ff", "no-warnings", "no-i2c-idle-high", "no-routine-accel", "shadow-routine-accel", "no-start-at-surface"],
     )
     .map_err(RunError::Usage)?;
     let routine_accel = common::routine_accel_mode(&parsed).map_err(RunError::Usage)?;
@@ -131,8 +131,6 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<(), RunError> {
                 routine_accel: routine_accel != RoutineAccelMode::Off,
                 routine_accel_shadow: routine_accel == RoutineAccelMode::Shadow,
                 i2c_idle_high,
-                eeprom_factory_init: !parsed.flag("no-eeprom-factory-init"),
-                deco_storage_fixture: !parsed.flag("no-deco-storage-fixture"),
                 start_at_surface: !parsed.flag("no-start-at-surface"),
                 ..SessionConfig::default()
             };

@@ -25,7 +25,7 @@ Application RAM fields and one code address are properties of an image. `Release
 state document publishes the table as `firmware.addresses` (`{address, basis}` or `{address: null, reason}`) and the
 fields that depend on an unproven one are `null` with the reason in `unavailable`. **No value is ever taken over from
 TRITON.** The decompression entries below are main RAM addresses or physical EEPROM offsets (and one flash address, the record
-table); `decoHealth` and `decoStorageFixture` carry their own reason when one is unavailable.
+table); `decoHealth` carries its own reason when one is unavailable.
 
 | entry | TRITON | NEPTUN | used for |
 | --- | --- | --- | --- |
@@ -39,9 +39,9 @@ table); `decoHealth` and `decoStorageFixture` carry their own reason when one is
 | `mainBreathingMode` (RAM byte; 2 = measured ppO2) | `0x20002457` | unavailable | `decoHealth.oxygen` |
 | `mainPpO2` (RAM float) | `0x2000421c` | unavailable | `decoHealth.oxygen` |
 | `mainCellFlags` (RAM, 3 bytes, cached cell flags) | `0x200023f4` | unavailable | `decoHealth.oxygen` while the ppO2 is zero |
-| `eepromTissueBlock` (EEPROM physical offset, 128 bytes) | `0x0ff` | unavailable | the pre-boot EEPROM consistency fixture |
-| `eepromDecoDate` (EEPROM physical offset, 4 bytes) | `0x17f` | unavailable | the pre-boot EEPROM consistency fixture |
-| `eepromRecordTable` (**flash** address of the 568-byte record table, IDs 0..`0x8d`) | `0x080306f2` | `0x08050e38` (proven) | the layout check of the EEPROM factory-init fixture (`docs/eeprom.md`) |
+| `eepromTissueBlock` (EEPROM physical offset, 128 bytes) | `0x0ff` | unavailable | documentation of the stored tissue block (the removed pre-boot repair fixture used it) |
+| `eepromDecoDate` (EEPROM physical offset, 4 bytes) | `0x17f` | unavailable | documentation of the saved decompression date record (the removed pre-boot repair fixture used it) |
+| `eepromRecordTable` (**flash** address of the 568-byte record table, IDs 0..`0x8d`) | `0x080306f2` | `0x08050e38` (proven) | the layout check of the EEPROM factory image (`docs/eeprom.md`) |
 
 Scenario-only addresses (battery wizard offsets, key sampler, screen ids, `0x08005b18`) are TRITON-specific; the scenario
 suite refuses other releases.
@@ -54,7 +54,7 @@ NEPTUN: **unavailable**. The decompression code of its main image is part of the
 
 ### The EEPROM record table (both releases)
 
-The EEPROM layout is a data table, not code, so it can be proven by bytes alone: the 568-byte table (entries of offset u16 and size u16 for logical IDs 0 to `0x8d`, SHA-256 `a69c0b84bdffa90dee14b26daa4eb35c7578b0923247a4ffe9b2c98fef244672`) occurs exactly once in each main image, at `0x080306f2` in TRITON and at `0x08050e38` in NEPTUN, and NEPTUN's accessor code holds three literal-pool references to it (`0x0801ad40`, `0x0801adec`, `0x0801b124`) like TRITON's three (`0x0801039c`, `0x08010488`, `0x08010528`). The record layout (ID to physical offset and size) is therefore the same. The EEPROM factory-init fixture (`crates/ngc/src/eeprom_init.rs`) checks the hash against the loaded image before it writes, and a test (`crates/ngc/tests/eeprom_init.rs`) re-checks both tables and the inventoried records against them. That proves the layout only: `eepromTissueBlock` and `eepromDecoDate` above stay unavailable for NEPTUN because the RAM side of the decompression code is not proven; `docs/eeprom.md` lists what was checked on NEPTUN's own first boot.
+The EEPROM layout is a data table, not code, so it can be proven by bytes alone: the 568-byte table (entries of offset u16 and size u16 for logical IDs 0 to `0x8d`, SHA-256 `a69c0b84bdffa90dee14b26daa4eb35c7578b0923247a4ffe9b2c98fef244672`) occurs exactly once in each main image, at `0x080306f2` in TRITON and at `0x08050e38` in NEPTUN, and NEPTUN's accessor code holds three literal-pool references to it (`0x0801ad40`, `0x0801adec`, `0x0801b124`) like TRITON's three (`0x0801039c`, `0x08010488`, `0x08010528`). The record layout (ID to physical offset and size) is therefore the same. The EEPROM factory image (`crates/ngc/src/eeprom_init.rs`) checks the hash against the loaded image before it writes, and a test (`crates/ngc/tests/eeprom_init.rs`) re-checks the TRITON table and the inventoried records against it (NEPTUN has no tests; the table was proven when they existed). That proves the layout only: `eepromTissueBlock` and `eepromDecoDate` above stay unavailable for NEPTUN because the RAM side of the decompression code is not proven; `docs/eeprom.md` lists what was checked on NEPTUN's own first boot.
 
 ### How the NEPTUN entries were proven
 

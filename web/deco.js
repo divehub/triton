@@ -4,9 +4,11 @@
 // them only on power-down, so a profile that was booted once and restarted holds a decompression date but no tissues; the
 // next start loads 32 erased words as NaN and the no-decompression limit stays at 99. With the oxygen cells uncalibrated in
 // the measured-ppO2 mode its ppO2 is NaN and the limit stays at 99 as well. The engine reports both (`decoHealth`, from
-// side-effect-free peeks) and, with labeled emulator fixtures that are on by default, fills the records the firmware never
-// initializes, among them a never-saved tissue block (`eepromFactoryInit`), repairs the first before a start for older profiles
-// (`decoStorageFixture`) and starts every board creation at the surface (`startAtSurface`). Nothing here changes the guest.
+// side-effect-free peeks). Two labeled emulator fixtures keep the first problem away from new profiles: the EEPROM factory image
+// (no option) fills the records the firmware never initializes, among them the tissue block, when a new EEPROM is created
+// (`eepromFactoryInit`), and the start at the surface (`startAtSurface`, on by default) starts every board creation at depth 0.
+// An older profile whose stored tissues are blank is not repaired: the report says so and the next step is to reset the profile.
+// Nothing here changes the guest.
 //
 // No DOM: the Node tests import it.
 
@@ -16,6 +18,14 @@ export const SURFACE_LIMITS = Object.freeze([100, 30000]);
 
 /** The route through the handset's menu to a calibration, as the warning names it. */
 export const CALIBRATION_ROUTE = 'Menu → Calibration → Air → Auto → Start → Save';
+
+/**
+ * The warning for stored tissues that are not finite. A new EEPROM is created with valid tissues, so this is an older profile whose
+ * stored tissue block was never written; the engine does not repair an existing EEPROM, and a profile reset creates an initialized
+ * one. The route names the page's controls: Advanced, the "Profile and evidence" section, the "Reset profile…" button.
+ */
+export const INVALID_TISSUES_WARNING =
+  "Decompression state invalid: this profile's stored tissues are blank. Reset the profile (Advanced → Profile and evidence → Reset profile) to start with an initialized EEPROM.";
 
 /**
  * A surface pressure setting (a number or the text of a field or of a stored preference) as a finite number inside
@@ -41,14 +51,7 @@ export function decoWarnings(state) {
   // An uncalibrated oxygen cell is not shown as a warning (user decision): the firmware's own calibration prompt covers
   // it. The report still carries it (`decoHealth.oxygen`) for the advanced details.
   if (health.tissues === 'invalid') {
-    const fixture = state.decoStorageFixture;
-    const off = !!fixture && fixture.enabled === false;
-    warnings.push({
-      id: 'tissues',
-      text: off
-        ? 'Decompression state invalid: the repair fixture is off. Close the session, check "Repair the stored decompression state" under Start options and boot again.'
-        : 'Decompression state invalid: restart the boards to let the firmware reset it.',
-    });
+    warnings.push({ id: 'tissues', text: INVALID_TISSUES_WARNING });
   }
   return warnings;
 }
@@ -65,20 +68,14 @@ export function healthLine(state) {
   return `Decompression state (read-only report): ${parts.join(', ')}.${reasons.length ? ` ${reasons.join(' ')}` : ''}`;
 }
 
-/** Lines for the session information about the three labeled emulator fixtures (empty for an engine without them). */
+/** Lines for the session information about the two labeled emulator fixtures (empty for an engine without them). */
 export function fixtureLines(state) {
   const lines = [];
-  // The EEPROM factory init runs first (before the repair below): it fills the records the firmware's first-boot defaults never write.
+  // The EEPROM factory image: whether this session created its EEPROM from it (an existing EEPROM is never touched).
   const factory = state && state.eepromFactoryInit;
   if (factory && typeof factory === 'object') {
-    const filled = Array.isArray(factory.records) ? factory.records.length : 0;
-    const status = factory.enabled === false ? 'off' : factory.applied ? `applied at the last start, ${filled} record${filled === 1 ? '' : 's'} filled` : 'on, not needed at the last start';
-    lines.push(`Fixture: EEPROM factory init (${status}). ${factory.reason || ''}`.trim());
-  }
-  const storage = state && state.decoStorageFixture;
-  if (storage && typeof storage === 'object') {
-    const status = storage.enabled === false ? 'off' : storage.applied ? 'applied at the last start' : 'on, not needed at the last start';
-    lines.push(`Fixture: stored decompression state repair (${status}). ${storage.reason || ''}`.trim());
+    const status = factory.applied ? 'this session created the EEPROM from it' : 'not applied';
+    lines.push(`Fixture: EEPROM factory image (${status}). ${factory.reason || ''}`.trim());
   }
   const surface = state && state.startAtSurface;
   if (surface && typeof surface === 'object') {

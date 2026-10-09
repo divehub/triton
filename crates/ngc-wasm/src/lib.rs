@@ -24,7 +24,7 @@
 //!                                      kind 0 eeprom.bin, 1 nor.ngc, 2 rtc-state.json, 3 inputs.json, 4 led-colors.json
 //! ngc_session_create(cfg_ptr, cfg_len) JSON {mode, bootMode, simultaneousStart, idleFastForward, routineAccel,
 //!                                      routineAccelShadow, adcSample, startPaused, i2cIdleHigh, historyNonce,
-//!                                      eepromFactoryInit, decoStorageFixture, startAtSurface, surfacePressureMbar}, every key
+//!                                      startAtSurface, surfacePressureMbar}, every key
 //!                                      optional: `routineAccel` (default true) is the exact acceleration of the runtime-library
 //!                                      routines (memoized soft-float calls; results identical either way), `routineAccelShadow`
 //!                                      (default false) its slow verification mode;
@@ -32,20 +32,17 @@
 //!                                      the first instruction (functional I2C idle-line fixture), false leaves them low;
 //!                                      `historyNonce` (unsigned integer < 2^64, default 0) is the host's random part of
 //!                                      the state's `outputHistoryEpoch`, `"<historyNonce>-<generation>"`;
-//!                                      `eepromFactoryInit` (default true) fills, before every board creation, each inventoried
-//!                                      main-EEPROM record that is still entirely erased (serial number, oxygen-toxicity
-//!                                      model and dose, the 32 tissue words, the no-fly records) with the value its firmware
-//!                                      code implies, and starts a brand-new profile from an erased image (releases with a
-//!                                      proven record table: TRITON, NEPTUN); it runs before
-//!                                      `decoStorageFixture` (default true), which repairs a stored
-//!                                      tissue block that was never saved by erasing the saved decompression date record
-//!                                      (TRITON only); `startAtSurface` (default true) starts every board creation with
+//!                                      `startAtSurface` (default true) starts every board creation with
 //!                                      both pressure inputs at the surface pressure plus the sensor offsets, a new session
 //!                                      also with the oxygen cells at their defaults; `surfacePressureMbar` (100 to 30000,
 //!                                      default 1013.25) is the surface pressure that fixture uses (the `reset`, `cold`,
-//!                                      `wake` and `serial` actions may carry a new value). All three are labeled emulator
-//!                                      fixtures, named in the state (`eepromFactoryInit`, `decoStorageFixture`,
-//!                                      `startAtSurface`).
+//!                                      `wake` and `serial` actions may carry a new value). It is a labeled emulator fixture,
+//!                                      named in the state (`startAtSurface`). The EEPROM factory image has no key: when the
+//!                                      profile has no `eeprom.bin` (or an entirely erased one) the session creates the
+//!                                      EEPROM from it once (releases with a proven record table: TRITON, NEPTUN), an existing
+//!                                      EEPROM is never touched, and the state says which happened (`eepromFactoryInit`).
+//!                                      `blankEeprom` (default false) is a benchmark and test hook that the page never sends:
+//!                                      a new EEPROM stays erased, as the Renode-recorded workload of the dive benchmark needs.
 //!                                      Fails with a clear message when the main and handset images are of different
 //!                                      releases, and for `bootMode` "cold" on a release without a cold-boot route (NEPTUN)
 //! ngc_session_run_for(seconds)         0 still running, 1 paused/standby/error, 2 no session
@@ -858,19 +855,21 @@ mod tests {
     }
 
     #[test]
-    fn the_profile_fixtures_are_on_by_default_and_switchable() {
+    fn the_start_at_surface_fixture_is_on_by_default_and_switchable_and_the_removed_keys_are_refused() {
         let defaults = HostConfig::from_json("{}").unwrap();
-        assert!(defaults.eeprom_factory_init && defaults.deco_storage_fixture && defaults.start_at_surface, "all three labeled fixtures are on by default");
+        assert!(defaults.start_at_surface, "the start at the surface is on by default");
         assert_eq!(defaults.surface_pressure_mbar, 1013.25);
-        let config = HostConfig::from_json(r#"{"decoStorageFixture":false,"startAtSurface":false,"surfacePressureMbar":900}"#).unwrap();
-        assert!(!config.deco_storage_fixture && !config.start_at_surface && config.eeprom_factory_init, "the switches are independent");
+        let config = HostConfig::from_json(r#"{"startAtSurface":false,"surfacePressureMbar":900}"#).unwrap();
+        assert!(!config.start_at_surface);
         assert_eq!(config.surface_pressure_mbar, 900.0);
-        let config = HostConfig::from_json(r#"{"eepromFactoryInit":false}"#).unwrap();
-        assert!(!config.eeprom_factory_init && config.deco_storage_fixture && config.start_at_surface);
+        // The EEPROM factory image and the older decompression repair have no session-create key any more: a typo or an old page
+        // must not silently start a different fixture.
+        assert_eq!(HostConfig::from_json(r#"{"eepromFactoryInit":false}"#).unwrap_err(), "unknown session option: eepromFactoryInit");
+        assert_eq!(HostConfig::from_json(r#"{"decoStorageFixture":false}"#).unwrap_err(), "unknown session option: decoStorageFixture");
+        // The benchmark hook keeps a new EEPROM erased; it is off by default.
+        assert!(!defaults.blank_eeprom && HostConfig::from_json(r#"{"blankEeprom":true}"#).unwrap().blank_eeprom);
         for bad in [
-            r#"{"eepromFactoryInit":0}"#,
-            r#"{"eepromFactoryInit":"off"}"#,
-            r#"{"decoStorageFixture":0}"#,
+            r#"{"blankEeprom":1}"#,
             r#"{"startAtSurface":"yes"}"#,
             r#"{"surfacePressureMbar":99}"#,
             r#"{"surfacePressureMbar":30001}"#,
@@ -879,73 +878,5 @@ mod tests {
             assert!(HostConfig::from_json(bad).is_err(), "{bad}");
         }
         assert_eq!(HostConfig::from_json(r#"{"surfacePressureMbar":99}"#).unwrap_err(), "surfacePressureMbar must be between 100 and 30000");
-    }
-
-    // ---- with the real firmware (skipped when the gitignored SREC files are not available) ----
-
-    fn srec(release: &firmware::Release, role: Role) -> Option<Vec<u8>> {
-        // `NGC_FIRMWARE_DIR` (the directory that holds the release directories), else the repository's `firmware/`.
-        let roots = [std::env::var_os("NGC_FIRMWARE_DIR").map(std::path::PathBuf::from), Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../firmware"))];
-        let name = release.expected(role).file_name;
-        roots.into_iter().flatten().find_map(|root| std::fs::read(root.join(release.id).join(name)).ok())
-    }
-
-    fn output_text() -> String {
-        with_state(|state| String::from_utf8(state.output.clone()).unwrap())
-    }
-
-    fn error_text() -> String {
-        with_state(|state| state.error.clone())
-    }
-
-    fn create(config: &str) -> i32 {
-        unsafe { ngc_session_create(config.as_ptr(), config.len()) }
-    }
-
-    #[test]
-    fn inspect_and_set_firmware_name_the_release_and_creation_refuses_a_mixed_pair() {
-        let (Some(triton_main), Some(triton_handset), Some(neptun_main), Some(neptun_handset)) =
-            (srec(&firmware::TRITON, Role::Main), srec(&firmware::TRITON, Role::Handset), srec(&firmware::NEPTUN, Role::Main), srec(&firmware::NEPTUN, Role::Handset))
-        else {
-            eprintln!("skipping: both firmware releases are needed");
-            return;
-        };
-        for (bytes, id, label, role) in [
-            (&triton_main, "TRITON-5.8-65.3", "TRITON main 5.8 / handset 65.3", "main"),
-            (&neptun_handset, "NEPTUN-5.8-65.3", "NEPTUN main 5.8 / handset 65.3", "handset"),
-        ] {
-            unsafe { ngc_firmware_inspect(bytes.as_ptr(), bytes.len()) };
-            let text = output_text();
-            assert!(text.contains(&format!("\"role\":\"{role}\",\"release\":{{\"id\":\"{id}\",\"label\":\"{label}\"}}")), "{text}");
-            assert!(text.contains("\"ok\":true") && text.contains("\"message\":null"), "{text}");
-        }
-        // Either release is accepted per role; the wrong role is still refused with the release named.
-        unsafe {
-            assert_eq!(ngc_set_firmware(0, neptun_main.as_ptr(), neptun_main.len()), 0);
-            assert_eq!(ngc_set_firmware(1, triton_handset.as_ptr(), triton_handset.len()), 0);
-        }
-        assert_eq!(create(r#"{"mode":"dual"}"#), 1);
-        let message = error_text();
-        assert!(message.contains("Mixed firmware releases") && message.contains("NEPTUN-5.8-65.3") && message.contains("TRITON-5.8-65.3"), "{message}");
-        assert_eq!(ngc_session_active(), 0);
-        unsafe {
-            assert_eq!(ngc_set_firmware(1, triton_main.as_ptr(), triton_main.len()), 1, "a main image in the handset slot");
-        }
-        assert!(error_text().contains("this is the main firmware (TRITON-5.8-65.3 main 5.8) but the handset image is required"), "{}", error_text());
-        // A matching NEPTUN pair creates a session whose state names the release, the nonce and the fixture.
-        unsafe { assert_eq!(ngc_set_firmware(1, neptun_handset.as_ptr(), neptun_handset.len()), 0) };
-        assert_eq!(create(r#"{"historyNonce":77,"i2cIdleHigh":false,"startPaused":true}"#), 0, "{}", error_text());
-        assert_eq!(ngc_session_active(), 1);
-        let length = ngc_session_state();
-        assert!(length > 0);
-        let state = emu_core::Json::parse(&output_text()).unwrap();
-        assert_eq!(state.get("outputHistoryEpoch").and_then(emu_core::Json::as_str), Some("77-1"));
-        assert_eq!(state.get("i2cIdleHigh"), Some(&emu_core::Json::Bool(false)));
-        assert_eq!(state.get("firmware").and_then(|f| f.get("release")).and_then(|r| r.get("id")).and_then(emu_core::Json::as_str), Some("NEPTUN-5.8-65.3"));
-        // A cold boot request is refused for NEPTUN with the reason.
-        assert_eq!(create(r#"{"bootMode":"cold"}"#), 1);
-        assert!(error_text().contains("cold-boot fixture"), "{}", error_text());
-        assert_eq!(ngc_session_active(), 1, "the failed creation left the existing session untouched");
-        ngc_session_destroy();
     }
 }

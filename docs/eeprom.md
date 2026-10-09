@@ -1,11 +1,20 @@
-# EEPROM records a first boot leaves erased, and the factory-init fixture
+# EEPROM records a first boot leaves erased, and the factory image
 
-A fresh emulator profile starts with a fully erased main EEPROM: 2048 bytes of `0xFF`. The original firmware's first-boot default
+A fresh emulator profile would start with a fully erased main EEPROM: 2048 bytes of `0xFF`. The original firmware's first-boot default
 routine (`0x08009fea`, gated on the validity marker `0xa3` at offset 254, logical record `0x63`) fills most records, but not all. An
 erased record reads back as `0xFF` bytes: NaN for a float, 65535 or 4294967295 for an integer. For a handful of records the firmware
 computes with that value and the result is visible: the handset prints the delta vital capacity as `?a?%`, the surface information
 page shows a no-fly time of 80 515, the System info page shows the serial number as `-00000001`, and after a restart the tissues load as
-NaN. The fixture `eepromFactoryInit` (DESIGN.md section 18) gives these records the value the firmware's own code implies.
+NaN. The **factory image** (DESIGN.md section 18) gives these records the value the firmware's own code implies.
+
+**When it applies.** Once, when a *new* EEPROM is created: the profile has no `eeprom.bin`, or the stored image is entirely erased (all
+2048 bytes `0xFF`). The engine then writes the factory image, which is 2048 bytes of `0xFF` with the eight records below written into
+it, before the board loads it, and the image is saved with the profile. **An existing ("dirty") EEPROM is never touched**, even when
+some of the records below are still erased in it; a restart, a cold boot, a wake, a serial change and a reopened profile all find the
+saved image and leave it alone. There is no option: no page control, no session-create key, no CLI flag. The state says whether this
+session created its EEPROM from the image: `eepromFactoryInit: {applied, reason}`. (An internal `SessionConfig` field switches it off
+for the Renode-recorded scenarios and the dive benchmark, which compare an erased first boot byte for byte; users cannot reach it. The
+web benchmark tool uses the hook `blankEeprom` for the same reason.)
 
 Everything here is an **emulator fixture with firmware-derived values, not the manufacturer's factory image** (that image is not known),
 established on this engine by static reading of the unchanged images and by synthetic runs. Nothing is a physical-device observation.
@@ -37,7 +46,7 @@ first boot, through the reset path of `0x0801a948`) are left to it.
 
 ## What is left erased, and why
 
-The fixture fills only what it can justify. These records stay entirely `0xFF` after a first boot with the fixture on (a test asserts
+The image fills only what it can justify. These records stay entirely `0xFF` after a first boot from the factory image (a test asserts
 that this list is exactly the erased set).
 
 | Logical ID | Physical | Size | Why it stays erased |
@@ -45,7 +54,7 @@ that this list is exactly the erased set).
 | `0x24`, `0x25` | `0x031`, `0x032` | u8 each | The battery types of B1 and B2. `0xFF` means "not chosen": the default routine writes `0xFF` itself (`0x08009bf8` at `0x0800a120..0x0800a12c`, which a cold boot also does), the voltage task tests for `0xFF` (`0x0801fd88`), and the handset's battery wizard writes the choice. Filling them would skip the wizard. |
 | `0x0c` | `0x016` | u8 | Index 4 of a five-entry setting family (IDs `0x08..0x0c`, setter `0x08009584`); the default routine writes indices 0 to 3 and skips 4. Every consumer tests `== 1` and takes the other branch otherwise (`0x08013f10`, `0x08015818`, `0x08019d8c`, `0x0801a1d0`), so `0xFF` behaves like 0; the raw byte is forwarded to the handset (CAN `0x126`, the settings report `0x08015208`). No firmware default is known. |
 | `0x13` | `0x097` | u8 | Index 4 of a five-entry family (IDs `0x10, 0x8c, 0x11, 0x12, 0x13`, setter `0x08009680`); the default routine skips it. The main only forwards it (CAN `0x7b` from `0x0801314c`) and stores what the handset sends back (`0x080131c8`). No default is known. |
-| `0x4d` | `0x090..0x091` | u16 | Calibration set (IDs `0x3e..0x4d`, loader `0x08008f94`). The setter's index 9 branch loads record `0x4b` instead of `0x4d` (`0x080091f2` jumps to `0x080091ee`, a defect), so no code path can ever write it. Inert: the validity routine `0x08005664` returns 0 whenever record `0x4b` is 0, whatever `0x4d` holds. Calibration bytes are never touched by the fixture. |
+| `0x4d` | `0x090..0x091` | u16 | Calibration set (IDs `0x3e..0x4d`, loader `0x08008f94`). The setter's index 9 branch loads record `0x4b` instead of `0x4d` (`0x080091f2` jumps to `0x080091ee`, a defect), so no code path can ever write it. Inert: the validity routine `0x08005664` returns 0 whenever record `0x4b` is 0, whatever `0x4d` holds. Calibration bytes are never part of the image. |
 | `0x50`, `0x54..0x57` | `0x188`, `0x189..0x18c` | u8 each | Written by CAN-driven setters (`0x0800afc4`, `0x0800b0e0`, `0x0800b108`, `0x0800b130`, `0x0800b14c`) but **never read back**: no code of the image loads these IDs. Dead data in this firmware. (`0x4e`, `0x4f`, `0x51..0x53` are never read either; the default routine fills them.) |
 | `0x5d` | `0x18f` | u8 | Loaded by `0x08009d84` into RAM `0x20002455` and overwritten with 0 right after (`0x08009df4`); nothing writes it. |
 | `0x5f` | `0x09d` | u8 | The default routine calls its setter with 0 (`0x0800a2b0`), but the setter skips the write when RAM already equals the value (RAM is 0), so the first boot's RAM holds 0 and later boots load `0xFF`. The only consumers forward the byte to the handset (CAN `0x183`). Inert in the main; handset effect not analyzed. |
@@ -63,57 +72,64 @@ backup (`0x23`), the dates `0x62` and `0x8a`, the version records (`0x02..0x05`)
    bytes). The wrappers `0x08010344` (read) and `0x08010430` (write) check the ID, the pointer and the size against it, and are the only code
    that loads it (with the table walker `0x08010494`). Both releases carry the same table: SHA-256
    `a69c0b84bdffa90dee14b26daa4eb35c7578b0923247a4ffe9b2c98fef244672`, at `0x080306f2` (TRITON) and `0x08050e38` (NEPTUN).
-2. **What a first boot leaves erased.** A fresh profile was booted with the fixture off and the 2048 bytes mapped to records: 53 of the
-   141 records stay entirely erased after ten virtual seconds (the 21 above plus the 32 tissue words). The same boot with the fixture on
-   differs from it in exactly the inventoried records, byte for byte: every byte the firmware writes (its defaults and its dates) is the same.
+2. **What a first boot leaves erased.** A fresh profile was booted without the image (the internal switch) and the 2048 bytes mapped to
+   records: 53 of the 141 records stay entirely erased after ten virtual seconds (the 21 above plus the 32 tissue words). The same boot
+   from the factory image differs from it in exactly the inventoried records, byte for byte: every byte the firmware writes (its defaults
+   and its dates) is the same.
 3. **Readers and writers.** Every call of the two wrappers in the image was classified by record ID (immediate `movs r0, #ID` before a call
    or tail call); IDs `0x4e..0x57` have writers only, `0x4d` and `0x5d` have no effective writer. Consumers were followed from the getters.
 4. **Effects.** First-use flows on a fresh profile (Li-Ion battery wizard, air calibration through the firmware's CAN protocol, a 20 m dive,
-   the dive pages, a restart, the surface information page) with each candidate record filled alone and together, comparing RAM, CAN
-   frames and LCD frames.
+   the dive pages, a restart, the surface information page) with each candidate record filled alone and together (a study of the
+   earlier fill-the-erased-records fixture, which this image replaced), comparing RAM, CAN frames and LCD frames.
 5. **Original bytes.** The consequential branches were re-read with the engine's own decoder on the unchanged image (`ngc-cli disasm`):
    the default routine and the migration (`0x08009f98`), the setter defect at `0x080091f2`, the no-fly cases (jump table of `0x08008b18`).
    Ghidra names and C-like output were treated as reconstruction.
 
 ## The default routine still runs unchanged
 
-The fixture never writes the validity marker (offset 254) and no inventoried record is read by the default routine as an "initialized"
+The image never writes the validity marker (offset 254) and no inventoried record is read by the default routine as an "initialized"
 flag: the routine reads only the marker (at `0x08009ffc`) and, through its loaders (`0x0800a2c8`, `0x08009814`), serial and settings records
 whose RAM it then overwrites with its own setters. Of the filled records only the serial (loaded, then set to 0 in RAM by `0x0800a330`,
 which writes the old EEPROM value back, so the stored 1 stays) and `0x2b` (never set by the routine) are loaded by it. A test compares a
-first boot with and without the fixture: every byte the firmware writes is identical.
+first boot from the image with a blank one: every byte the firmware writes is identical.
 
 With the serial pre-filled, the firmware's own cached serial is 0 on the first boot and 1 from the next start on (the setter's old-value
 write-back, a firmware behavior); the state's `serialNumber` reads the EEPROM.
 
-## Order with the other fixtures
+## Existing profiles are not repaired
 
-Before every board creation: `eepromFactoryInit` first, then `decoStorageFixture` on the resulting image, and the start at the surface
-on the sensor inputs. With the tissue block filled, the date-erase repair finds no entirely erased block and reports why; it stays for
-runs with the factory init off and for releases where the factory init is skipped. The filled image becomes the profile (it is flagged
-for saving). A brand-new profile (no `eeprom.bin`) starts from 2048 bytes of `0xFF` with the inventory written into it; an existing one
-has only the still-entirely-erased inventoried records filled, the tissue block as one unit, and never a stored byte (a stored NaN is
-data).
+The image applies only when the EEPROM is created. A profile that an older build saved keeps what it holds: if its tissue block was
+never written (the firmware saves the tissues only at power-down, so a profile that was booted and restarted holds a decompression date
+but 32 erased tissue words), the firmware loads NaN tissues and keeps them, and the no-decompression limit stays at 99. The engine does
+not repair that (an earlier `decoStorageFixture` that erased the saved date record was removed); the read-only `decoHealth` report says
+`tissues: invalid`, and the page's warning names the next step: reset the profile (Advanced, Profile and evidence, Reset profile),
+which creates a new, correctly initialized EEPROM. The order at a board creation is now: the factory image for a new EEPROM, then the
+start at the surface on the sensor inputs.
 
 ## Releases
 
 * **TRITON-5.8-65.3**: all of the above.
 * **NEPTUN-5.8-65.3**: its main image is a different build of the application, but it holds the same 568-byte record table (one exact
-  match, three literal-pool references from its accessor code, `0x0801ad40`, `0x0801adec`, `0x0801b124`). The fixture checks the table's
-  hash against the loaded image before it writes, and applies. Beyond the table, on NEPTUN's own first boot the same records stay
-  erased (the only difference is record `0x53`, written on TRITON and not on NEPTUN, which is not in the inventory), its own reset and
-  power-down save write the same tissue words (`0x3f40304d`, He 0), the no-fly record becomes about 2.9 billion seconds after the save as
-  on TRITON, the System info page shows `SN # -00000001`, and a dive reproduces the NaN delta vital capacity and, with the fill, the same
-  finite value as TRITON. NEPTUN's decompression RAM addresses stay unavailable, so its checks run through the EEPROM and CAN frames.
+  match, three literal-pool references from its accessor code, `0x0801ad40`, `0x0801adec`, `0x0801b124`). The engine checks the table's
+  hash against the loaded image before it writes, and applies the image. Beyond the table, on NEPTUN's own first boot the same records
+  stay erased (the only difference is record `0x53`, written on TRITON and not on NEPTUN, which is not in the inventory), its own reset
+  and power-down save write the same tissue words (`0x3f40304d`, He 0), the no-fly record becomes about 2.9 billion seconds after the
+  save as on TRITON, the System info page shows `SN # -00000001`, and a dive reproduces the NaN delta vital capacity and, with the
+  image, the same finite value as TRITON. NEPTUN's decompression RAM addresses stay unavailable, so its checks run through the EEPROM
+  and CAN frames. NEPTUN is optional and its tests were dropped from the repository's suite (the code path and the release table stay);
+  the observations above were made when they existed.
 * A release without a proven table is skipped, and the state says why.
 
 ## Reproduction
 
-`crates/ngc/tests/eeprom_init.rs` (real images; skipped without them) holds the checks quoted here: the inventory per record against the
-image's table in both releases, the erased set after a first boot with and without the fixture, the first-boot comparison, the delta
-vital capacity (finite and rising, handset text `0.00`; NaN, text `nan` and no CAN `0x225` without the fixture), the restart with both
-decompression fixtures off, the order of the tissue words, existing profiles and NEPTUN. `ngc-cli run --data-dir <fresh dir> --seconds 8`
-boots a fresh profile with the fixture; `--no-eeprom-factory-init` reproduces the erased state.
+`crates/ngc/tests/eeprom_init.rs` (real TRITON images; skipped without them) holds the checks quoted here: a new profile is initialized
+once (the report, the saved image, the first-boot comparison with a blank EEPROM, the erased set after a first boot, a Restart and a
+serial change that never apply it again), an entirely erased stored image is a new EEPROM, an existing profile is never touched (several
+shapes, and an older profile with blank tissues stays invalid in `decoHealth`), the delta vital capacity (finite and rising, handset
+text `0.00`), the Restart that loads finite tissues, the order of the tissue words and the inventory against the image's table. The
+contrast with a blank EEPROM (NaN, text `nan`, no CAN `0x225`) is a slow-tier test (`--ignored`). `crates/ngc/src/eeprom_init.rs` has
+the unit tests of the gate. `ngc-cli run --data-dir <fresh dir> --seconds 8` boots a fresh profile from the image; `ngc-cli run`
+without `--data-dir` uses a bare system with an erased EEPROM.
 
 ## Open questions
 

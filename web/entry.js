@@ -106,7 +106,7 @@ export class EntryView {
       this.dropzone.classList.remove('over');
       if (event.dataTransfer && event.dataTransfer.files.length) this.addFiles([...event.dataTransfer.files]);
     });
-    for (const id of ['start-mode', 'start-boot-mode', 'start-adc', 'start-i2c-idle', 'start-eeprom-init', 'start-deco-fixture', 'start-surface', 'start-simultaneous', 'start-paused', 'start-idle-ff']) {
+    for (const id of ['start-mode', 'start-boot-mode', 'start-adc', 'start-i2c-idle', 'start-surface', 'start-simultaneous', 'start-paused', 'start-idle-ff']) {
       byId(id).addEventListener('change', () => this.refresh());
     }
     this.bootButton.addEventListener('click', () => this.boot('stored'));
@@ -513,9 +513,7 @@ export class EntryView {
       bootMode: byId('start-boot-mode').value,
       adcSample: adc,
       i2cIdleHigh: byId('start-i2c-idle').checked,
-      // Fixtures of the profile handling (all on by default) and the page's remembered surface pressure.
-      eepromFactoryInit: byId('start-eeprom-init').checked,
-      decoStorageFixture: byId('start-deco-fixture').checked,
+      // The start-at-the-surface fixture (on by default) and the page's remembered surface pressure.
       startAtSurface: byId('start-surface').checked,
       surfacePressureMbar: parseSurfacePressure(prefs.get('surface-pressure', '')),
       simultaneousStart: byId('start-simultaneous').checked,

@@ -85,10 +85,10 @@ pub struct HostConfig {
     pub i2c_idle_high: bool,
     /// The host's random nonce of the output-history epoch (`historyNonce`, default 0).
     pub history_nonce: u64,
-    /// The EEPROM factory-init fixture (`eepromFactoryInit`, default on; `--no-eeprom-factory-init` of the CLI).
-    pub eeprom_factory_init: bool,
-    /// The pre-boot EEPROM consistency fixture (`decoStorageFixture`, default on; `--no-deco-storage-fixture` of the CLI).
-    pub deco_storage_fixture: bool,
+    /// Benchmark and test hook (`blankEeprom`, default off; the page never sends it and there is no CLI flag): a new EEPROM stays
+    /// erased instead of becoming the factory image, which the Renode-recorded workload of `web/bench-node.mjs --dive` needs to match
+    /// the native dive benchmark (`ngc::scenario::recorded_config`). It is not the user option the factory image does not have.
+    pub blank_eeprom: bool,
     /// The start-at-the-surface fixture (`startAtSurface`, default on; `--no-start-at-surface` of the CLI).
     pub start_at_surface: bool,
     /// The surface pressure in mbar of that fixture (`surfacePressureMbar`, 100 to 30000, default 1013.25).
@@ -108,8 +108,7 @@ impl Default for HostConfig {
             start_paused: false,
             i2c_idle_high: true,
             history_nonce: 0,
-            eeprom_factory_init: true,
-            deco_storage_fixture: true,
+            blank_eeprom: false,
             start_at_surface: true,
             surface_pressure_mbar: ngc::surface_start::DEFAULT_SURFACE_MBAR,
         }
@@ -144,8 +143,7 @@ impl HostConfig {
                 "routineAccelShadow" => config.routine_accel_shadow = flag("routineAccelShadow")?,
                 "startPaused" => config.start_paused = flag("startPaused")?,
                 "i2cIdleHigh" => config.i2c_idle_high = flag("i2cIdleHigh")?,
-                "eepromFactoryInit" => config.eeprom_factory_init = flag("eepromFactoryInit")?,
-                "decoStorageFixture" => config.deco_storage_fixture = flag("decoStorageFixture")?,
+                "blankEeprom" => config.blank_eeprom = flag("blankEeprom")?,
                 "startAtSurface" => config.start_at_surface = flag("startAtSurface")?,
                 "surfacePressureMbar" => {
                     let mbar = value.as_f64().ok_or(ngc::surface_start::SURFACE_RANGE_MESSAGE)?;

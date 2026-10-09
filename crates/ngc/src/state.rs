@@ -31,10 +31,9 @@
 //! * `unavailable` maps the state fields that are `null` because of such an address to the reason (empty for TRITON): for
 //!   NEPTUN `mainBatteryReady`.
 //! * `decoHealth` is `{tissues: "valid"|"invalid"|"unknown", oxygen: "calibrated"|"uncalibrated"|"unknown", details}`, a
-//!   read-only report from side-effect-free peeks ([`crate::deco::health`]); `decoStorageFixture` is `{enabled, applied,
-//!   reason, previousDateRecord}`, `startAtSurface` `{enabled, surfacePressureMbar, applied, oxygenReset,
-//!   changedInputs, note}` and `eepromFactoryInit` `{enabled, applied, reason, records: [{id, name, range, value, reason}],
-//!   note}`: what the three labeled emulator fixtures did at the last board creation.
+//!   read-only report from side-effect-free peeks ([`crate::deco::health`]); `startAtSurface` is `{enabled,
+//!   surfacePressureMbar, applied, oxygenReset, changedInputs, note}` (what that emulator fixture did at the last board creation)
+//!   and `eepromFactoryInit` `{applied, reason}`: whether this session created its EEPROM from the factory image.
 
 use crate::firmware::Firmware;
 use crate::fixtures::{self, UART_CHANNELS};
@@ -151,10 +150,8 @@ pub struct StateView<'a> {
     pub host_pacing: &'a str,
     pub realtime_factor: Option<f64>,
     pub output_history_epoch: &'a str,
-    /// The EEPROM factory-init fixture of the last board creation (`eepromFactoryInit`).
+    /// Whether the session created its EEPROM from the factory image (`eepromFactoryInit`).
     pub eeprom_factory: &'a crate::eeprom_init::FactoryInit,
-    /// The pre-boot EEPROM consistency fixture of the last board creation (`decoStorageFixture`).
-    pub deco_storage: &'a crate::deco::StorageFixture,
     /// The start-at-the-surface fixture of the last board creation (`startAtSurface`).
     pub surface_start: &'a crate::surface_start::SurfaceStart,
 }
@@ -231,11 +228,10 @@ pub fn build(view: &StateView<'_>) -> Json {
     state.insert("routineAccel", routine_accel(system));
     state.insert("machineResets", machine_resets(system));
     state.insert("realtimeFactor", view.realtime_factor);
-    // Decompression state handling (DESIGN.md 17) and the EEPROM factory init (DESIGN.md 18): the read-only health report and the
-    // three labeled emulator fixtures.
+    // Decompression state handling (DESIGN.md 17) and the EEPROM factory image (DESIGN.md 18): the read-only health report and the
+    // two labeled emulator fixtures.
     state.insert("decoHealth", crate::deco::health(system).to_json());
     state.insert("eepromFactoryInit", view.eeprom_factory.to_json());
-    state.insert("decoStorageFixture", view.deco_storage.to_json());
     state.insert("startAtSurface", view.surface_start.to_json());
     state
 }

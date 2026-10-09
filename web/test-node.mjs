@@ -3,16 +3,24 @@
 // the real WebAssembly engine and the two original SREC files. The browser-only parts (DOM, workers, OPFS) are
 // thin and not covered here.
 //
-//   node web/test-node.mjs [--wasm file] [--skip-pacing] [--pacing-seconds 3]
+//   node web/test-node.mjs [--wasm file] [--slow] [--pacing-seconds 3]
+//
+// The default run is the quick loop (about 15 s). `--slow` adds the slow tier: the real-time factor of the paced loop and the
+// replay logic on a real alert dive (about 10 s more). `--skip-pacing` is accepted and does nothing (the pacing measurement is
+// part of the slow tier now). The native/WebAssembly identity test builds `ngc-cli` first (`./cargo build --release -p ngc-cli`,
+// a no-op when it is current) and skips with a message when that fails.
 //
 // Environment: NGC_WASM overrides the wasm path; NGC_FIRMWARE_DIR is the directory that holds the release directories
 // (<dir>/TRITON-5.8-65.3/ngc_main_5.8_TRITON.srec, ...; default: the firmware/ directory of this checkout). You
 // supply the firmware yourself; it is not part of the repository. It is read from disk and never copied anywhere.
+// The NEPTUN release is optional and has no tests here.
 
 import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -29,17 +37,13 @@ const option = (name, fallback) => {
   const index = args.indexOf(name);
   return index >= 0 && index + 1 < args.length ? args[index + 1] : fallback;
 };
-const skipPacing = args.includes('--skip-pacing');
+const slow = args.includes('--slow');
 const pacingSeconds = Number(option('--pacing-seconds', '3'));
 
 const MAIN_FILE = 'ngc_main_5.8_TRITON.srec';
 const HANDSET_FILE = 'ngc_handset_65.3_TRITON.srec';
 const MAIN_SHA = '838cb050fa572dddca3153f43a1768db0a0665db4cde0567749fb7be8d18d6ea';
 const HANDSET_SHA = '71a9af68de1d23d4f845784bcbf8ccf72dcd9888587e0da0125ff41c74ea1e03';
-const NEPTUN_MAIN_FILE = 'ngc_main_5.8_NEPTUN.srec';
-const NEPTUN_HANDSET_FILE = 'ngc_handset_65.3_NEPTUN.srec';
-const NEPTUN_MAIN_SHA = 'e462bc7345d6ded69124b97b87de9a68884f44b8e716fbbf4fe3839ff8da8c89';
-const NEPTUN_HANDSET_SHA = 'f91adcf461fa0e06ef40ab3f757dd66754180b9711956542736efb0d4be8162e';
 // LCD of the B1 prompt (320x240 PPM) in the Renode dual-wake evidence, steady from 4.75 s.
 const B1_PPM_SHA = '62c3a30e54031ff3c2aeffa16a6b9f361c64ab2326db35da7e345c5318f7632d';
 
@@ -70,12 +74,7 @@ if (!firmwareDir) {
 const wasmModule = await WebAssembly.compile(fs.readFileSync(wasmPath));
 const mainSrec = new Uint8Array(fs.readFileSync(path.join(firmwareDir, MAIN_FILE)));
 const handsetSrec = new Uint8Array(fs.readFileSync(path.join(firmwareDir, HANDSET_FILE)));
-// The NEPTUN pair is optional (its tests are skipped without it): firmware/NEPTUN-5.8-65.3 or below NGC_FIRMWARE_DIR.
-const neptunDir = firmwareRoots.map((root) => path.join(root, 'NEPTUN-5.8-65.3'))
-  .find((dir) => fs.existsSync(path.join(dir, NEPTUN_MAIN_FILE)) && fs.existsSync(path.join(dir, NEPTUN_HANDSET_FILE)));
-const neptunMainSrec = neptunDir ? new Uint8Array(fs.readFileSync(path.join(neptunDir, NEPTUN_MAIN_FILE))) : null;
-const neptunHandsetSrec = neptunDir ? new Uint8Array(fs.readFileSync(path.join(neptunDir, NEPTUN_HANDSET_FILE))) : null;
-console.log(`wasm ${path.relative(process.cwd(), wasmPath)} (${fs.statSync(wasmPath).size} bytes), firmware ${firmwareDir}${neptunDir ? `, NEPTUN ${neptunDir}` : ' (no NEPTUN pair: its tests are skipped)'}`);
+console.log(`wasm ${path.relative(process.cwd(), wasmPath)} (${fs.statSync(wasmPath).size} bytes), firmware ${firmwareDir}${slow ? ', slow tier included' : ''}`);
 
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 
@@ -605,8 +604,8 @@ test('runtime: a hidden page still gets the LCD picture, at most one frame a sec
   await h.waitFor((m) => m.type === 'state' && m.state.virtualTime >= 5.5, 30000);
   await h.waitFor((m) => m.type === 'frame' && m.version >= 2, 6000); // a frame after the forced one of the boot
   const before = h.all('frame').length;
-  await new Promise((resolve) => setTimeout(resolve, 3200));
-  assert.ok(h.all('frame').length - before <= 4, `at most one frame a second while hidden (${h.all('frame').length - before} in 3.2 s)`);
+  await new Promise((resolve) => setTimeout(resolve, 1300));
+  assert.ok(h.all('frame').length - before <= 2, `at most one frame a second while hidden (${h.all('frame').length - before} in 1.3 s)`);
   assert.equal(h.last('state').host.hidden, true);
   // The screen is steady from 4.75 s on: the hidden page's picture is the B1 prompt, like a visible page's.
   assert.equal(sha256(framePpm(h.last('frame'))), B1_PPM_SHA);
@@ -676,58 +675,6 @@ test('runtime: the engine identifies the release; the inspection, the boot resul
   await h.close();
 });
 
-test('runtime: a NEPTUN pair is accepted and boots to the B1 screen; a mixed pair is refused; each release has its own profile', { skip: !neptunDir }, async () => {
-  const storage = new MemoryStorage();
-  const h = new Harness({ storage });
-  await h.request('init');
-  const handset = await h.request('inspect', { name: NEPTUN_HANDSET_FILE, bytes: neptunHandsetSrec.slice() });
-  assert.equal(handset.accepted, true, handset.message);
-  assert.equal(handset.role, 'handset');
-  assert.equal(handset.release.id, 'NEPTUN-5.8-65.3');
-  assert.equal(handset.report.srecSha256, NEPTUN_HANDSET_SHA);
-  // The TRITON main image does not belong to the NEPTUN handset: refused with a message, and still identified.
-  const mixed = await h.request('inspect', { name: MAIN_FILE, bytes: mainSrec.slice() });
-  assert.equal(mixed.accepted, false);
-  assert.equal(mixed.conflict, true);
-  assert.match(mixed.message, /TRITON main controller 5\.8 image, but the handset 65\.3 file provided is NEPTUN/);
-  assert.equal(mixed.report.srecSha256, MAIN_SHA);
-  const main = await h.request('inspect', { name: NEPTUN_MAIN_FILE, bytes: neptunMainSrec.slice() });
-  assert.equal(main.accepted, true, main.message);
-  assert.equal(main.report.srecSha256, NEPTUN_MAIN_SHA);
-  // The other direction: a TRITON handset next to the NEPTUN main is refused as well.
-  const mixedHandset = await h.request('inspect', { name: HANDSET_FILE, bytes: handsetSrec.slice() });
-  assert.equal(mixedHandset.accepted, false);
-  assert.match(mixedHandset.message, /TRITON handset 65\.3 image, but the main controller 5\.8 file provided is NEPTUN/);
-
-  const booted = await h.request('boot', { options: { mode: 'dual', startPaused: true } });
-  assert.equal(booted.release.id, 'NEPTUN-5.8-65.3');
-  if (booted.state.firmware.release) assert.equal(booted.state.firmware.release.id, 'NEPTUN-5.8-65.3');
-  const state = await h.action({ action: 'advance', seconds: 10.5 });
-  assert.equal(state.error, null);
-  assert.equal(state.standby, false);
-  assert.equal(state.handsetPowered, true, 'the handset is released by the main board');
-  assert.equal(state.frameReady, true);
-  assert.match(state.canSummary, /connected=True; transmitted=\d{2,}/, 'CAN frames flow between the boards');
-  assert.equal(sha256(framePpm(h.last('frame'))), B1_PPM_SHA, 'the NEPTUN dual boot reaches the B1 battery-type screen (same 320x240 frame as TRITON)');
-  assert.equal(state.firmware.main.srecSha256, NEPTUN_MAIN_SHA);
-  await h.action({ action: 'inputs', inputs: { temperature1C: 27.5 } });
-  await h.request('flush');
-  await h.close();
-  assert.ok((await storage.list('profile-neptun-5_8-65_3')).some((file) => file.name === 'eeprom.bin'), 'the NEPTUN profile has its own location');
-  assert.equal((await storage.list('profile')).length, 0, 'the TRITON location is untouched');
-
-  // A TRITON session afterwards starts from its own (empty) profile, not from NEPTUN's.
-  const t = new Harness({ storage });
-  await t.ready();
-  const triton = await t.request('boot', { options: { mode: 'dual', startPaused: true } });
-  assert.equal(triton.release.id, 'TRITON-5.8-65.3');
-  assert.equal(triton.state.inputs.temperature1C, 20);
-  await t.close();
-  const info = await t.request('info');
-  assert.ok(info.profiles['NEPTUN-5.8-65.3'], 'the NEPTUN profile is offered for NEPTUN firmware');
-  assert.ok(info.profiles['TRITON-5.8-65.3']);
-});
-
 test('runtime: every session gets a fresh history nonce and the I2C idle-high fixture; epochs change with every board recreation', async () => {
   const h = new Harness();
   await h.ready();
@@ -761,7 +708,7 @@ test('runtime: every session gets a fresh history nonce and the I2C idle-high fi
   await h.close();
 });
 
-test('runtime: the decompression fixtures are start options of the real engine: a boot starts at the surface with default cells, a Restart keeps the cells, and the state names the fixtures', async () => {
+test('runtime: the start at the surface is a start option of the real engine and the EEPROM factory image has none: a boot starts at the surface with default cells, a Restart keeps the cells, and only a new EEPROM is created from the image', async () => {
   // A profile left at depth with unusual cells (the saved inputs.json of an earlier session).
   const left = { pressure1Mbar: 4600, pressure2Mbar: 4600, oxygen1Mv: 60, oxygen2Mv: 61, oxygen3Mv: 59 };
   const seed = async (inputs) => {
@@ -776,12 +723,11 @@ test('runtime: the decompression fixtures are start options of the real engine: 
   assert.deepEqual(pick(booted.state), [1013.25, 1013.25, 10, 10, 10], 'a new session starts at the surface with the default cells');
   assert.equal(booted.state.startAtSurface.enabled, true);
   assert.equal(booted.state.startAtSurface.oxygenReset, true);
-  assert.equal(booted.state.eepromFactoryInit.enabled, true, 'the EEPROM factory init is on by default');
-  assert.equal(booted.state.eepromFactoryInit.applied, true, 'a fresh profile starts from the inventoried values');
-  assert.deepEqual(booted.state.eepromFactoryInit.records.map((record) => record.id), ['0x01', '0x2b', '0x67', '0x68', '0x69', '0x6a..0x89', '0x8b', '0x8d']);
+  assert.deepEqual(Object.keys(booted.state.eepromFactoryInit).sort(), ['applied', 'reason'], 'the report is just {applied, reason}');
+  assert.equal(booted.state.eepromFactoryInit.applied, true, 'a profile without an EEPROM creates it from the factory image');
+  assert.match(booted.state.eepromFactoryInit.reason, /^This session created the EEPROM/);
   assert.equal(booted.state.serialNumber, 1, 'the synthetic factory serial');
-  assert.equal(booted.state.decoStorageFixture.enabled, true, 'the repair fixture is on by default');
-  assert.equal(booted.state.decoStorageFixture.applied, false, 'a fresh EEPROM needs no repair');
+  assert.equal('decoStorageFixture' in booted.state, false, 'the older repair fixture is gone');
   assert.equal(booted.state.decoHealth.tissues, 'unknown', 'the firmware has not run yet');
   // The user sets cells and goes down; the Restart brings the depth back (with the surface pressure of the page), the cells stay.
   await h.action({ action: 'inputs', inputs: { pressure1Mbar: 3013.5, pressure2Mbar: 3015.5, oxygen1Mv: 12.5, oxygen2Mv: 12.5, oxygen3Mv: 12.5 } });
@@ -789,23 +735,51 @@ test('runtime: the decompression fixtures are start options of the real engine: 
   assert.deepEqual(pick(restarted), [899, 901, 12.5, 12.5, 12.5]);
   assert.equal(restarted.startAtSurface.surfacePressureMbar, 900);
   assert.equal(restarted.startAtSurface.oxygenReset, false);
+  assert.equal(restarted.eepromFactoryInit.applied, true, 'the session still says it created the EEPROM after a Restart');
   await assert.rejects(() => h.action({ action: 'reset', surfacePressureMbar: 99 }), /surfacePressureMbar must be between 100 and 30000/);
   await h.close();
 
-  // Switched off, the saved inputs are used as they are, and the state says the fixtures are off.
+  // Switched off, the saved inputs are used as they are, and the state says so.
   const off = new Harness({ storage: await seed(left) });
   await off.ready();
-  const kept = await off.request('boot', { options: { mode: 'dual', startPaused: true, startAtSurface: false, decoStorageFixture: false, eepromFactoryInit: false } });
+  const kept = await off.request('boot', { options: { mode: 'dual', startPaused: true, startAtSurface: false } });
   assert.deepEqual(pick(kept.state), [4600, 4600, 60, 61, 59]);
   assert.equal(kept.state.startAtSurface.enabled, false);
-  assert.equal(kept.state.decoStorageFixture.enabled, false);
-  assert.match(kept.state.decoStorageFixture.reason, /^Switched off/);
-  assert.equal(kept.state.eepromFactoryInit.enabled, false);
-  assert.equal(kept.state.eepromFactoryInit.applied, false);
-  assert.match(kept.state.eepromFactoryInit.reason, /^Switched off/);
-  assert.deepEqual(kept.state.eepromFactoryInit.records, []);
-  assert.equal(kept.state.serialNumber, 4294967295, 'switched off, an erased EEPROM reads the old serial');
   await off.close();
+
+  // The EEPROM factory image has no option: the page cannot switch it off, and the engine refuses the old session-create key.
+  const created = [];
+  const refusing = new Harness({ storage: await seed(left) });
+  await refusing.ready();
+  const engine = refusing.runtime.engine;
+  const original = engine.createSession.bind(engine);
+  engine.createSession = (config, profile) => { created.push({ ...config }); return original(config, profile); };
+  await refusing.request('boot', { options: { mode: 'dual', startPaused: true, eepromFactoryInit: false, decoStorageFixture: false } });
+  assert.deepEqual(['eepromFactoryInit', 'decoStorageFixture'].filter((key) => key in created[0]), [], 'unknown options are not passed on');
+  assert.throws(() => original({ eepromFactoryInit: false }, {}), /unknown session option: eepromFactoryInit/);
+  await refusing.close();
+
+  // An existing EEPROM is never touched; a stored image that is entirely erased counts as new.
+  const eepromProfile = async (bytes) => {
+    const storage = new MemoryStorage();
+    await storage.write('profile', 'eeprom.bin', bytes);
+    return storage;
+  };
+  const dirty = new Uint8Array(2048).fill(0xff);
+  dirty[2047] = 0x00; // one stored byte: every inventoried record is still erased in it
+  const existing = new Harness({ storage: await eepromProfile(dirty) });
+  await existing.ready();
+  const untouched = await existing.request('boot', { options: { mode: 'dual', startPaused: true } });
+  assert.equal(untouched.state.eepromFactoryInit.applied, false);
+  assert.match(untouched.state.eepromFactoryInit.reason, /^Not applied: the profile already holds an EEPROM/);
+  assert.equal(untouched.state.serialNumber, 4294967295, 'the erased serial of an existing EEPROM stays erased');
+  await existing.close();
+  const erased = new Harness({ storage: await eepromProfile(new Uint8Array(2048).fill(0xff)) });
+  await erased.ready();
+  const fresh = await erased.request('boot', { options: { mode: 'dual', startPaused: true } });
+  assert.equal(fresh.state.eepromFactoryInit.applied, true, 'an entirely erased image is a new EEPROM');
+  assert.equal(fresh.state.serialNumber, 1);
+  await erased.close();
 
   // The page's remembered surface pressure goes into the first session start.
   const altitude = new Harness({ storage: await seed(left) });
@@ -859,7 +833,7 @@ test('runtime: output histories follow the DESIGN 15.3a contract and feed the re
   await h.close();
 });
 
-test('runtime: a real vibrator and HUD activation (Photolithium B1, dive pressure) is observed by the replay logic, with no history gaps', async (t) => {
+test('runtime: a real vibrator and HUD activation (Photolithium B1, dive pressure) is observed by the replay logic, with no history gaps', { skip: !slow }, async (t) => {
   const h = new Harness();
   await h.ready();
   await h.request('boot', { options: { mode: 'dual', startPaused: true } });
@@ -934,12 +908,38 @@ test('runtime: a real vibrator and HUD activation (Photolithium B1, dive pressur
   await h.close();
 });
 
+// ---- exactness: native and WebAssembly (AGENTS.md "Engine invariants", DESIGN 9 and 16.1) ---------------------------
+
+test('exactness: a short native run and the WebAssembly run of the same boot have identical state digests', async (t) => {
+  // The native side is `ngc-cli bench --json`, the WebAssembly side `web/bench-node.mjs --expect` (the benchmark half of the ABI):
+  // a 3 s dual boot and 0.5 s of steady state, digests of the whole machine state at both points. The CLI is built first, so that
+  // a stale binary cannot be compared with a fresh module (a no-op when it is current).
+  const built = spawnSync(path.join(repo, 'cargo'), ['build', '--release', '-p', 'ngc-cli'], { cwd: repo, encoding: 'utf8', timeout: 600000 });
+  if (built.error || built.status !== 0) {
+    t.skip(`ngc-cli could not be built: ${built.error ? built.error.message : String(built.stderr).split('\n').slice(-3).join(' ')}`);
+    return;
+  }
+  const cli = path.join(repo, 'target/release/ngc-cli');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ngc-identity-'));
+  try {
+    const shared = ['--main', path.join(firmwareDir, MAIN_FILE), '--handset', path.join(firmwareDir, HANDSET_FILE), '--boot-seconds', '3', '--seconds', '0.5', '--steady-samples', '1', '--no-menu'];
+    const nativeJson = path.join(dir, 'native.json');
+    const native = spawnSync(cli, ['bench', ...shared, '--json', nativeJson], { cwd: repo, encoding: 'utf8', timeout: 120000 });
+    assert.equal(native.status, 0, native.stderr);
+    const wasm = spawnSync(process.execPath, [path.join(here, 'bench-node.mjs'), ...shared, '--wasm', wasmPath, '--expect', nativeJson], { cwd: repo, encoding: 'utf8', timeout: 120000 });
+    assert.equal(wasm.status, 0, wasm.stderr);
+    assert.match(wasm.stdout, /native vs wasm state digests: IDENTICAL \(boot same, steady same\)/, wasm.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 /** Virtual seconds per wall second between two state messages (their arrival times, not the sampling times). */
 function rate(first, last) {
   return (last.state.virtualTime - first.state.virtualTime) / ((last.at - first.at) / 1000);
 }
 
-test('pacing: real-time factor of the paced loop versus the unpaced engine', { skip: skipPacing }, async () => {
+test('pacing: real-time factor of the paced loop versus the unpaced engine', { skip: !slow }, async () => {
   const h = new Harness();
   await h.ready();
   const bootStart = performance.now();

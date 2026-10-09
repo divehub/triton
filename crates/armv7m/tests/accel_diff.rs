@@ -41,13 +41,6 @@ const TRITON: Image = Image {
     entries: [0x0800_486c, 0x0800_4568, 0x0800_4c08, 0x0800_4b4c, 0x0802_be20, 0x0802_cc7c, 0x0802_bc90],
 };
 
-/// NEPTUN has the same double-precision helpers at the same addresses; `isfinitef` has the same bytes elsewhere; `expf` and
-/// its worker are laid out differently (they have their own hashes in the routine table).
-const NEPTUN: Image = Image {
-    srec: "firmware/NEPTUN-5.8-65.3/ngc_main_5.8_NEPTUN.srec",
-    entries: [0x0800_486c, 0x0800_4568, 0x0800_4c08, 0x0800_4b4c, 0x0804_bfe8, 0x0804_ce44, 0x0804_be58],
-};
-
 fn load_flash(image: Image) -> Option<Vec<u8>> {
     let text = std::fs::read_to_string(repo_path(image.srec)).ok()?;
     let mut flash = vec![0u8; FLASH_SIZE];
@@ -476,11 +469,11 @@ fn expf_shadow_mode() {
     check_routine(TRITON, I_EXPF, "expf (shadow)", RoutineAccelMode::Shadow, 60, 3000, Args::Float);
 }
 
-/// The routines are found by the SHA-256 of their code bytes: all seven in both main images, at the expected addresses, and
-/// not when a byte of the routine differs.
+/// The routines are found by the SHA-256 of their code bytes: all seven in the TRITON main image, at the expected addresses, and
+/// not when a byte of the routine differs. (The NEPTUN table entries stay in `accel/routines.rs`; their test was dropped.)
 #[test]
 fn routines_are_identified_by_their_code_bytes() {
-    for (image, name) in [(TRITON, "TRITON"), (NEPTUN, "NEPTUN")] {
+    for (image, name) in [(TRITON, "TRITON")] {
         let Some(flash) = load_flash(image) else {
             eprintln!("skipping {name}: firmware not available");
             continue;
@@ -559,17 +552,4 @@ fn hit_path_cost() {
         }
         eprintln!("{name}: plain {:.0} ns/call, accelerated {:.0} ns/call (both include {:.0} sled instructions)", times[0].0, times[1].0, times[0].1 - 0.0);
     }
-}
-
-/// The NEPTUN main image has the same routines (identified by their own code bytes, at their own addresses).
-#[test]
-fn neptun_routines_match_interpretation() {
-    check_routine(NEPTUN, I_DDIV, "neptun ddiv", RoutineAccelMode::On, 100, 3000, Args::DoublePair);
-    check_routine(NEPTUN, I_F2D, "neptun f2d", RoutineAccelMode::On, 50, 2000, Args::SoftFloat);
-    check_routine(NEPTUN, I_D2F, "neptun d2f", RoutineAccelMode::On, 100, 2500, Args::Double);
-    check_routine(NEPTUN, I_UNORD, "neptun unorddf2", RoutineAccelMode::On, 80, 2000, Args::DoublePair);
-    check_routine(NEPTUN, I_ISFINITE, "neptun isfinitef", RoutineAccelMode::On, 40, 2000, Args::Float);
-    check_routine(NEPTUN, I_EXPF_CORE, "neptun expf_core", RoutineAccelMode::On, 80, 3000, Args::Float);
-    check_routine(NEPTUN, I_EXPF, "neptun expf", RoutineAccelMode::On, 80, 3000, Args::Float);
-    check_routine(NEPTUN, I_EXPF, "neptun expf (shadow)", RoutineAccelMode::Shadow, 50, 2000, Args::Float);
 }

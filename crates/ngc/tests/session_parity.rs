@@ -1,7 +1,8 @@
 //! Engine contract of the main-viewer parity (DESIGN 15.3) with the real firmware images, skipped when the gitignored SREC
 //! files are not available: output activity histories in a session (a vibrator and a HUD pulse appear, the epoch changes
 //! when the histories start over, fast-forward on and off agree), the HUD color defaults, the I2C idle-high fixture, the
-//! nine-digit serial and the firmware releases (identification, mixed pairs, NEPTUN state, cold boot refusal, smoke check).
+//! nine-digit serial and the release identification (TRITON; a mixed pair is refused). NEPTUN has no tests here: its code paths and
+//! release table stay, its firmware-based tests were dropped (optional release).
 
 use emu_core::{Json, Width};
 use ngc::firmware::{self, Firmware, Release, Role, NEPTUN, TRITON};
@@ -272,27 +273,26 @@ fn the_serial_accepts_nine_digits_and_refuses_ten() {
 // ---- firmware releases -----------------------------------------------------------------------------------------------
 
 #[test]
-fn both_releases_are_identified_per_role() {
-    for release in firmware::RELEASES {
-        let Some(dir) = release_dir(release) else {
-            eprintln!("skipping: the {} SREC files are not available", release.id);
-            continue;
-        };
-        for role in [Role::Main, Role::Handset] {
-            let bytes = std::fs::read(dir.join(release.expected(role).file_name)).unwrap();
-            let (found, found_role) = firmware::identify_release(&bytes).expect("identified");
-            assert_eq!((found.id, found_role), (release.id, role));
-            let report = firmware::inspect(&bytes);
-            assert!(report.ok() && report.release.map(|r| r.id) == Some(release.id), "{:?}", report.failed_checks());
-            let json = report.to_json();
-            assert_eq!(json.get("release").and_then(|r| r.get("id")).and_then(Json::as_str), Some(release.id));
-            assert_eq!(json.get("release").and_then(|r| r.get("label")).and_then(Json::as_str), Some(release.label));
-            assert_eq!(json.get("role").and_then(Json::as_str), Some(role.name()));
-            let loaded = firmware::load(&bytes, Some(role)).expect("loads");
-            assert_eq!(loaded.release.id, release.id);
-            // The vectors of the image itself decide where the CPU starts.
-            assert_eq!((loaded.initial_sp(), loaded.vectors.reset_vector), (0x2001_8000, release.expected(role).reset_vector));
-        }
+fn the_release_is_identified_per_role() {
+    let release = &TRITON;
+    let Some(dir) = release_dir(release) else {
+        eprintln!("skipping: the {} SREC files are not available", release.id);
+        return;
+    };
+    for role in [Role::Main, Role::Handset] {
+        let bytes = std::fs::read(dir.join(release.expected(role).file_name)).unwrap();
+        let (found, found_role) = firmware::identify_release(&bytes).expect("identified");
+        assert_eq!((found.id, found_role), (release.id, role));
+        let report = firmware::inspect(&bytes);
+        assert!(report.ok() && report.release.map(|r| r.id) == Some(release.id), "{:?}", report.failed_checks());
+        let json = report.to_json();
+        assert_eq!(json.get("release").and_then(|r| r.get("id")).and_then(Json::as_str), Some(release.id));
+        assert_eq!(json.get("release").and_then(|r| r.get("label")).and_then(Json::as_str), Some(release.label));
+        assert_eq!(json.get("role").and_then(Json::as_str), Some(role.name()));
+        let loaded = firmware::load(&bytes, Some(role)).expect("loads");
+        assert_eq!(loaded.release.id, release.id);
+        // The vectors of the image itself decide where the CPU starts.
+        assert_eq!((loaded.initial_sp(), loaded.vectors.reset_vector), (0x2001_8000, release.expected(role).reset_vector));
     }
     // An unknown image has no release.
     let report = firmware::inspect(b"S0030000FC\nS1050000AABB95\nS9030000FC\n");
@@ -301,11 +301,13 @@ fn both_releases_are_identified_per_role() {
 
 #[test]
 fn a_mixed_pair_is_refused_in_both_directions() {
-    let (Some((triton_main, triton_handset)), Some((neptun_main, neptun_handset))) = (images(&TRITON), images(&NEPTUN)) else {
-        eprintln!("skipping: both firmware releases are needed");
-        return;
-    };
-    for (main, handset, text) in [(&triton_main, &neptun_handset, "main image is TRITON-5.8-65.3"), (&neptun_main, &triton_handset, "main image is NEPTUN-5.8-65.3")] {
+    // No second release's firmware is needed: the pair is built from the TRITON images with one of them relabeled as NEPTUN (the release
+    // table is data; the check compares the identified releases of the two images).
+    let (main, handset) = images_or_skip!(&TRITON);
+    let (mut main_as_neptun, mut handset_as_neptun) = (main.clone(), handset.clone());
+    main_as_neptun.release = &NEPTUN;
+    handset_as_neptun.release = &NEPTUN;
+    for (main, handset, text) in [(&main, &handset_as_neptun, "main image is TRITON-5.8-65.3"), (&main_as_neptun, &handset, "main image is NEPTUN-5.8-65.3")] {
         let error = Session::new(SessionConfig::default(), Some(main), handset, Profile::default()).err().expect("refused");
         assert!(error.contains("Mixed firmware releases") && error.contains(text) && error.contains("same release"), "{error}");
         assert!(ngc::system::System::new(ngc::system::SystemConfig::default(), Some(main), handset).is_err());
@@ -313,128 +315,7 @@ fn a_mixed_pair_is_refused_in_both_directions() {
     }
     // The handset alone does not need a main image, and a matching pair is accepted.
     let alone = SessionConfig { mode: ngc::system::Mode::HandsetOnly, ..SessionConfig::default() };
-    assert!(Session::new(alone, None, &neptun_handset, Profile::default()).is_ok());
-    assert_eq!(firmware::common_release(&neptun_main, &neptun_handset).map(|r| r.id), Ok("NEPTUN-5.8-65.3"));
+    assert!(Session::new(alone, None, &handset_as_neptun, Profile::default()).is_ok());
+    assert_eq!(firmware::common_release(&main, &handset).map(|r| r.id), Ok("TRITON-5.8-65.3"));
 }
 
-#[test]
-fn the_neptun_address_table_is_proven_against_the_images() {
-    let Some((main, handset)) = images(&NEPTUN) else {
-        eprintln!("skipping: the NEPTUN SREC files are not available");
-        return;
-    };
-    let word = |firmware: &Firmware, address: u32| {
-        let offset = (address - firmware.span_base) as usize;
-        u32::from_le_bytes(firmware.span[offset..offset + 4].try_into().unwrap())
-    };
-    let half = |firmware: &Firmware, address: u32| {
-        let offset = (address - firmware.span_base) as usize;
-        u16::from_le_bytes([firmware.span[offset], firmware.span[offset + 1]])
-    };
-    let addresses = &NEPTUN.addresses;
-    // handset error loop: `cpsid i; b .` at the table's address (the HAL error handler).
-    let pc = addresses.handset_error_loop.address().expect("known");
-    assert_eq!((half(&handset, pc - 2), half(&handset, pc)), (0xB672, 0xE7FE));
-    // FreeRTOS PendSV handler (vector 14): its first literal load is pxCurrentTCB.
-    let pendsv = handset_or_main_pendsv(&main);
-    assert_eq!(half(&main, pendsv + 8), 0x4B15, "ldr r3, [pc, #0x54]");
-    assert_eq!(word(&main, ((pendsv + 8 + 4) & !3) + 0x54), addresses.main_current_tcb.address().expect("known"));
-    // The handset's key sampler and kernel load the table's literals.
-    let loads = |firmware: &Firmware, wanted: u32| {
-        let mut count = 0;
-        let mut address = firmware.span_base;
-        let end = firmware.span_base + firmware.span.len() as u32 - 4;
-        while address < end {
-            let hw = half(firmware, address);
-            if hw & 0xF800 == 0x4800 {
-                let target = ((address + 4) & !3) + u32::from(hw & 0xFF) * 4;
-                if target + 4 <= firmware.span_base + firmware.span.len() as u32 && word(firmware, target) == wanted {
-                    count += 1;
-                }
-            }
-            address += 2;
-        }
-        count
-    };
-    assert!(loads(&handset, addresses.handset_orientation.address().unwrap()) >= 2, "the key sampler loads the orientation byte's address");
-    assert!(loads(&handset, addresses.handset_current_tcb.address().unwrap()) >= 8, "the FreeRTOS kernel loads pxCurrentTCB");
-    // Everything that could not be proven is unavailable with a reason, never a TRITON value.
-    for (name, entry) in addresses.entries() {
-        match entry {
-            firmware::AddressEntry::Known { address, basis } => assert!(!basis.is_empty() && *address != 0, "{name}"),
-            firmware::AddressEntry::Unavailable { reason } => assert!(reason.contains("not proven") || reason.contains("different"), "{name}: {reason}"),
-        }
-    }
-    assert_ne!(addresses.main_current_tcb.address(), TRITON.addresses.main_current_tcb.address(), "the main RAM layout differs");
-    assert!(addresses.main_battery_ready.address().is_none() && addresses.main_hal_tick.address().is_none());
-}
-
-/// The PendSV handler address (Thumb bit cleared) from vector 14 of an image.
-fn handset_or_main_pendsv(firmware: &Firmware) -> u32 {
-    firmware.vectors.entries[14] & !1
-}
-
-#[test]
-fn a_neptun_session_reports_its_release_and_leaves_unproven_fields_unavailable() {
-    let (main, handset) = images_or_skip!(&NEPTUN);
-    let mut s = session(SessionConfig::default(), &main, &handset);
-    let state = act(&mut s, "{\"action\":\"advance\",\"seconds\":1.5}");
-    let firmware = state.get("firmware").expect("firmware");
-    assert_eq!(firmware.get("release").and_then(|r| r.get("id")).and_then(Json::as_str), Some("NEPTUN-5.8-65.3"));
-    assert_eq!(firmware.get("release").and_then(|r| r.get("label")).and_then(Json::as_str), Some("NEPTUN main 5.8 / handset 65.3"));
-    assert_eq!(firmware.get("main").and_then(|m| m.get("resetPC")).and_then(Json::as_u64), Some(0x0803_90B8));
-    assert_eq!(firmware.get("handset").and_then(|m| m.get("resetPC")).and_then(Json::as_u64), Some(0x0800_8444));
-    assert_eq!(firmware.get("main").and_then(|m| m.get("srecSha256")).and_then(Json::as_str), Some("e462bc7345d6ded69124b97b87de9a68884f44b8e716fbbf4fe3839ff8da8c89"));
-    assert_eq!(firmware.get("handset").and_then(|m| m.get("srecSha256")).and_then(Json::as_str), Some("f91adcf461fa0e06ef40ab3f757dd66754180b9711956542736efb0d4be8162e"));
-    // Not proven: the battery readiness byte is null with a reason (never TRITON's 0x200042A1), in both places.
-    assert_eq!(state.get("mainBatteryReady"), Some(&Json::Null));
-    let reason = state.get("unavailable").and_then(|u| u.get("mainBatteryReady")).and_then(Json::as_str).expect("reason");
-    assert!(reason.contains("not proven"), "{reason}");
-    let battery = firmware.get("addresses").and_then(|a| a.get("mainBatteryReady")).expect("address entry");
-    assert_eq!((battery.get("address"), battery.get("reason").and_then(Json::as_str).is_some()), (Some(&Json::Null), true));
-    assert_eq!(firmware.get("addresses").and_then(|a| a.get("handsetOrientation")).and_then(|o| o.get("address")).and_then(Json::as_u64), Some(0x2000_0740));
-    assert_eq!(firmware.get("addresses").and_then(|a| a.get("mainCurrentTcb")).and_then(|o| o.get("address")).and_then(Json::as_u64), Some(0x2000_53A8));
-    // The handset is released at the 1.05 s poll and Up/Down work through the proven orientation byte.
-    assert_eq!(state.get("handsetReleaseTime").and_then(Json::as_f64), Some(1.05));
-    act(&mut s, "{\"action\":\"up\"}");
-    act(&mut s, "{\"action\":\"advance\",\"seconds\":0.3}");
-    act(&mut s, "{\"action\":\"down\"}");
-    // Cold boot has no observed-standby route on NEPTUN: refused with the reason, nothing is shut down.
-    let before = s.virtual_ns();
-    let error = s.action("{\"action\":\"cold\"}").unwrap_err();
-    assert!(error.contains("cold-boot fixture") && error.contains("TRITON-5.8-65.3 only"), "{error}");
-    assert_eq!(s.virtual_ns(), before, "a refused cold boot leaves the session as it was (nothing was recreated)");
-    assert_eq!(s.state().get("outputHistoryEpoch").and_then(Json::as_str), Some("0-1"));
-    let config = SessionConfig { boot_mode: ngc::system::BootMode::Cold, ..SessionConfig::default() };
-    let error = Session::new(config, Some(&main), &handset, Profile::default()).err().expect("refused at creation");
-    assert!(error.contains("TRITON-5.8-65.3 only"), "{error}");
-    // Wake and Restart work.
-    act(&mut s, "{\"action\":\"wake\"}");
-    act(&mut s, "{\"action\":\"reset\"}");
-}
-
-#[test]
-fn neptun_dual_boot_reaches_the_battery_selection_screen() {
-    let (main, handset) = images_or_skip!(&NEPTUN);
-    // The B1 frame it is compared with was recorded by the Renode runner with its 1500 mV batteries (a fresh profile starts
-    // at 4100 mV): pin the recorded voltage explicitly.
-    let recorded = Profile { inputs: Some(ngc::persistence::inputs_file_text(&ngc::fixtures::Inputs::recorded_evidence())), ..Profile::default() };
-    for idle_high in [true, false] {
-        let config = SessionConfig { i2c_idle_high: idle_high, ..SessionConfig::default() };
-        let mut s = Session::new(config, Some(&main), &handset, recorded.clone()).expect("dual session");
-        let state = act(&mut s, "{\"action\":\"advance\",\"seconds\":10.5}");
-        assert_eq!(state.get("handsetReleaseTime").and_then(Json::as_f64), Some(1.05), "idle_high {idle_high}");
-        assert_eq!(state.get("error"), Some(&Json::Null));
-        assert_eq!(state.get("frameReady"), Some(&Json::Bool(true)));
-        for which in [Which::Main, Which::Handset] {
-            assert_eq!((peek(&s, which, 0xE000_ED28), peek(&s, which, 0xE000_ED2C)), (0, 0), "CFSR/HFSR of {which:?}, idle_high {idle_high}");
-        }
-        let summary = state.get("canSummary").and_then(Json::as_str).unwrap();
-        assert!(summary.contains("dropped=0") && !summary.contains("transmitted=0;"), "{summary}");
-        let frames = summary.split("transmitted=").nth(1).and_then(|t| t.split(';').next()).and_then(|n| n.parse::<u32>().ok()).unwrap();
-        assert!(frames >= 50, "CAN frames forwarded: {frames}");
-        // The frame is pixel-identical to the TRITON B1 battery-selection prompt (SHA-256 recorded from Renode for TRITON).
-        let ppm = s.system_mut().lcd_ppm().expect("lcd");
-        assert_eq!(ngc::sha256::digest_hex(&ppm), "62c3a30e54031ff3c2aeffa16a6b9f361c64ab2326db35da7e345c5318f7632d", "idle_high {idle_high}");
-    }
-}

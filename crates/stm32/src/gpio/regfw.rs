@@ -28,7 +28,7 @@
 //! Usage pattern (the model state and the register file are separate struct members so that callbacks
 //! can borrow the model mutably while the engine borrows the register file):
 //!
-//! ```ignore
+//! ```text
 //! struct Device { regs: RegisterFile, dev: DeviceState }
 //! impl Peripheral for Device {
 //!     fn read(&mut self, offset: u32, _w: Width, ctx: &mut Ctx<'_>) -> u32 { self.regs.read(offset, &mut self.dev, ctx) }

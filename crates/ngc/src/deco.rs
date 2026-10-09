@@ -1,5 +1,4 @@
-//! Decompression state handling: a read-only health report and a labeled storage fixture (DESIGN.md "Decompression
-//! state handling").
+//! Decompression state handling: the read-only `decoHealth` report (DESIGN.md "Decompression state handling").
 //!
 //! The original TRITON main 5.8 firmware keeps 16 tissue records (N2 and He pressure floats) in RAM and loads them from
 //! 32 EEPROM words at start-up. Its initializer (`0x08008308`) resets the tissues when the saved *last decompression
@@ -10,23 +9,19 @@
 //! uncalibrated in the measured-ppO2 mode the ppO2 is NaN and the limit stays at 99 as well. Both are behaviors of the
 //! original firmware, not of this engine.
 //!
-//! This module adds two things, both for the TRITON main image only (the addresses are in
-//! [`crate::firmware::ReleaseAddresses`]; another release reports *unknown* with the reason):
+//! A new EEPROM no longer has the first problem: the factory image ([`crate::eeprom_init`]) fills the stored tissue block with
+//! the surface values the firmware's own reset computes. An older profile whose stored tissues are blank still loads NaN; the engine
+//! does not repair an existing EEPROM, it only reports it, and a profile reset creates an initialized one.
 //!
-//! * [`health`]: peeks (no side effects) at the RAM words above and reports whether the tissues are finite and whether
-//!   the oxygen cells are calibrated. It changes nothing.
-//! * [`storage_fixture`]: **an emulator fixture, on by default and switchable**. Before a board is created it looks at
-//!   the stored EEPROM image and, if the tissue block is entirely erased while the date record is set, erases the date
-//!   record so that the firmware takes its own four-day reset path. It touches no other byte: not the oxygen
-//!   calibration, not the tissue words, no RAM. It runs *after* the EEPROM factory-init fixture ([`crate::eeprom_init`]), which
-//!   fills a never-saved tissue block with its surface values: with that fixture on, the block is no longer entirely erased and
-//!   this repair applies only to profiles whose factory init is switched off (or skipped for the release).
+//! [`health`] peeks (no side effects) at the RAM words above and reports whether the tissues are finite and whether the oxygen
+//! cells are calibrated. It changes nothing. It is available for the TRITON main image only (the addresses are in
+//! [`crate::firmware::ReleaseAddresses`]; another release reports *unknown* with the reason).
 //!
 //! Evidence class: the layout and the firmware behavior were established on this engine with Renode-hooked runs of the
 //! unchanged TRITON images (a synthetic reproduction, not a physical observation); the engine's decompression arithmetic
 //! equals Renode's bit for bit.
 
-use crate::firmware::{AddressEntry, Release};
+use crate::firmware::AddressEntry;
 use crate::system::{Mode, System, Which};
 use emu_core::{Json, Width};
 
@@ -197,157 +192,4 @@ fn oxygen_health(system: &System, mode_entry: &AddressEntry, ppo2_entry: &Addres
         return (text.to_string(), OxygenHealth::Uncalibrated, detail);
     }
     ("Unknown: the ppO2 is zero (not computed yet, or the cells read 0 mV).".to_string(), OxygenHealth::Unknown, detail)
-}
-
-// ---- the storage fixture -------------------------------------------------------------------------------------------------
-
-/// What the pre-boot EEPROM consistency fixture did at the last board creation (`decoStorageFixture` of the state).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StorageFixture {
-    /// The switch: `SessionConfig::deco_storage_fixture`.
-    pub enabled: bool,
-    /// The date record was erased at the last board creation.
-    pub applied: bool,
-    /// Why it was or was not applied.
-    pub reason: String,
-    /// The erased date record (a packed RTC calendar), when it was applied.
-    pub previous_date: Option<u32>,
-}
-
-impl StorageFixture {
-    /// Before any board exists: nothing was applied yet.
-    pub fn idle(enabled: bool) -> Self {
-        Self { enabled, applied: false, reason: "No board has been created yet.".to_string(), previous_date: None }
-    }
-
-    fn skipped(enabled: bool, reason: impl Into<String>) -> Self {
-        Self { enabled, applied: false, reason: reason.into(), previous_date: None }
-    }
-
-    /// `{"enabled", "applied", "reason", "previousDateRecord"}`; the last is the hex of the erased record or null.
-    pub fn to_json(&self) -> Json {
-        Json::object()
-            .with("enabled", self.enabled)
-            .with("applied", self.applied)
-            .with("reason", self.reason.as_str())
-            .with("previousDateRecord", self.previous_date.map(|date| format!("0x{date:08x}")))
-    }
-}
-
-/// The pre-boot EEPROM consistency fixture (an emulator fixture; see the module documentation).
-///
-/// `image` is the stored EEPROM image that is about to be loaded into the board (`None`: a fresh profile). If the stored
-/// tissue block (physical bytes `0x0ff..=0x17e`) is entirely `0xFF` while the last-decompression date record (`0x17f..=0x182`)
-/// is not, the date record is set to `0xFF` in `image`, and the firmware then resets the tissues itself. Nothing else is
-/// written. Skipped, with the reason, when switched off, in a handset-only run and for a release whose record layout is not
-/// proven.
-pub fn storage_fixture(enabled: bool, dual: bool, release: &Release, image: Option<&mut [u8]>) -> StorageFixture {
-    storage_fixture_after(enabled, dual, release, image, false)
-}
-
-/// [`storage_fixture`] for an image the EEPROM factory-init fixture ([`crate::eeprom_init`], which runs first) has just been over:
-/// `factory_filled_tissues` says it filled the stored tissue block at this board creation, which only changes the wording of the
-/// "not needed" reason (the block is not entirely erased any more, so there is nothing to repair).
-pub fn storage_fixture_after(enabled: bool, dual: bool, release: &Release, image: Option<&mut [u8]>, factory_filled_tissues: bool) -> StorageFixture {
-    if !enabled {
-        return StorageFixture::skipped(false, "Switched off (decoStorageFixture: false, or --no-deco-storage-fixture).");
-    }
-    if !dual {
-        return StorageFixture::skipped(true, "Not applicable: a handset-only run has no main board and no EEPROM.");
-    }
-    let addresses = &release.addresses;
-    let (Some(block), Some(date)) = (addresses.eeprom_tissue_block.address(), addresses.eeprom_deco_date.address()) else {
-        let reason = addresses.eeprom_tissue_block.reason().or_else(|| addresses.eeprom_deco_date.reason()).unwrap_or("no record layout");
-        return StorageFixture::skipped(true, format!("Skipped for {}: the EEPROM record layout is not proven for this release ({reason}).", release.id));
-    };
-    let (block, date) = (block as usize, date as usize);
-    let Some(image) = image else {
-        return StorageFixture::skipped(true, "Not needed: there is no saved EEPROM yet (a fresh profile); the firmware resets the tissues itself.");
-    };
-    if image.len() != EEPROM_BYTES || block + EEPROM_TISSUE_BYTES > image.len() || date + EEPROM_DATE_BYTES > image.len() {
-        return StorageFixture::skipped(true, format!("Skipped: the EEPROM image has {} bytes, not {EEPROM_BYTES}.", image.len()));
-    }
-    if image[block..block + EEPROM_TISSUE_BYTES].iter().any(|&byte| byte != 0xFF) {
-        let reason = if factory_filled_tissues {
-            "Not needed: the stored tissue block was filled with its firmware-derived values by the EEPROM factory-init fixture, so the firmware loads finite tissues."
-        } else {
-            "Not needed: the stored tissue block holds saved data."
-        };
-        return StorageFixture::skipped(true, reason);
-    }
-    let record = &mut image[date..date + EEPROM_DATE_BYTES];
-    if record.iter().all(|&byte| byte == 0xFF) {
-        return StorageFixture::skipped(true, "Not needed: the saved decompression date is erased, so the firmware resets the tissues itself.");
-    }
-    let previous = u32::from_le_bytes([record[0], record[1], record[2], record[3]]);
-    record.fill(0xFF);
-    StorageFixture {
-        enabled: true,
-        applied: true,
-        reason: "The stored tissue block (EEPROM 0x0ff..0x17e) is entirely erased but the saved decompression date (0x17f) is set, so the firmware would load 32 erased words as NaN tissues; \
-                 the date record was erased and the firmware takes its own four-day reset path (emulator fixture)."
-            .to_string(),
-        previous_date: Some(previous),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::firmware::{NEPTUN, TRITON};
-
-    fn image(tissues: u8, date: [u8; 4]) -> Vec<u8> {
-        let mut image = vec![0xFF; EEPROM_BYTES];
-        image[0x38..0x3E].copy_from_slice(&[0xE8, 0x03, 0xE8, 0x03, 0xE8, 0x03]);
-        image[0x3E..0x41].copy_from_slice(&[0x09, 0x09, 0x09]);
-        image[0xFF..0x17F].fill(tissues);
-        image[0x17F..0x183].copy_from_slice(&date);
-        image
-    }
-
-    #[test]
-    fn an_erased_tissue_block_with_a_saved_date_loses_only_the_date_record() {
-        let mut stored = image(0xFF, [0x54, 0x04, 0x10, 0x50]);
-        let before = stored.clone();
-        let report = storage_fixture(true, true, &TRITON, Some(&mut stored));
-        assert!(report.applied && report.enabled, "{report:?}");
-        assert_eq!(report.previous_date, Some(0x5010_0454));
-        assert_eq!(&stored[0x17F..0x183], &[0xFF; 4]);
-        // Every other byte is untouched, the oxygen calibration included.
-        assert_eq!(&stored[..0x17F], &before[..0x17F]);
-        assert_eq!(&stored[0x183..], &before[0x183..]);
-        assert_eq!(&stored[0x38..0x41], &before[0x38..0x41]);
-        assert_eq!(report.to_json().get("previousDateRecord").and_then(Json::as_str), Some("0x50100454"));
-    }
-
-    #[test]
-    fn the_fixture_is_skipped_with_a_reason_everywhere_else() {
-        let reason = |report: &StorageFixture| report.reason.clone();
-        // Saved tissues: nothing to repair.
-        let mut saved = image(0x3F, [1, 2, 3, 4]);
-        let report = storage_fixture(true, true, &TRITON, Some(&mut saved));
-        assert!(!report.applied && reason(&report).contains("holds saved data"), "{report:?}");
-        assert_eq!(&saved[0x17F..0x183], &[1, 2, 3, 4]);
-        // One non-erased tissue byte is enough to keep the date.
-        let mut partly = image(0xFF, [1, 2, 3, 4]);
-        partly[0x17E] = 0x00;
-        assert!(!storage_fixture(true, true, &TRITON, Some(&mut partly)).applied);
-        // Erased date: the firmware already takes the reset path.
-        let mut erased = image(0xFF, [0xFF; 4]);
-        let report = storage_fixture(true, true, &TRITON, Some(&mut erased));
-        assert!(!report.applied && reason(&report).contains("date is erased"), "{report:?}");
-        // Switched off, handset only, no image, NEPTUN, a wrong image size.
-        let mut off = image(0xFF, [1, 2, 3, 4]);
-        let report = storage_fixture(false, true, &TRITON, Some(&mut off));
-        assert!(!report.enabled && !report.applied && reason(&report).starts_with("Switched off"), "{report:?}");
-        assert_eq!(&off[0x17F..0x183], &[1, 2, 3, 4], "switched off: nothing is written");
-        assert!(reason(&storage_fixture(true, false, &TRITON, None)).starts_with("Not applicable"));
-        assert!(reason(&storage_fixture(true, true, &TRITON, None)).contains("no saved EEPROM"));
-        let mut neptun = image(0xFF, [1, 2, 3, 4]);
-        let report = storage_fixture(true, true, &NEPTUN, Some(&mut neptun));
-        assert!(!report.applied && reason(&report).contains("NEPTUN-5.8-65.3") && reason(&report).contains("not proven"), "{report:?}");
-        assert_eq!(&neptun[0x17F..0x183], &[1, 2, 3, 4], "NEPTUN: nothing is written");
-        let mut short = vec![0xFF; 100];
-        assert!(reason(&storage_fixture(true, true, &TRITON, Some(&mut short))).contains("100 bytes"));
-    }
 }

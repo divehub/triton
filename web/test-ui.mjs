@@ -1479,9 +1479,7 @@ test('structure: every element the scripts look up exists in index.html, and the
   assert.doesNotMatch(html, /<details class="variations" open/, 'Sensor variations start closed');
   assert.match(html, /name="serialNumber"[^>]*max="999999999"/);
   assert.match(html, /<input type="checkbox" id="start-i2c-idle" checked>/, 'the I2C idle-high fixture is a start option, on by default');
-  assert.match(html, /<input type="checkbox" id="start-eeprom-init" checked>/, 'the EEPROM factory init is a start option, on by default');
-  assert.ok(html.indexOf('id="start-eeprom-init"') < html.indexOf('id="start-deco-fixture"'), 'it sits next to the decompression fixtures, first because it runs first');
-  assert.match(html, /<input type="checkbox" id="start-deco-fixture" checked>/, 'the stored decompression state repair is a start option, on by default');
+  assert.doesNotMatch(html, /start-eeprom-init|start-deco-fixture/, 'the EEPROM factory image and the older repair have no start option any more');
   assert.match(html, /<input type="checkbox" id="start-surface" checked>/, 'the start at the surface is a start option, on by default');
   assert.match(html, /<input type="checkbox" id="remember" checked>/, 'Remember these files starts checked');
 });
@@ -2694,11 +2692,15 @@ test('deco: only a proven bad state warns, and each warning names the next step'
   assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'unknown', oxygen: 'unknown' } }), [], 'unknown (NEPTUN, handset only, not yet running) never warns');
   assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'valid', oxygen: 'calibrated' } }), []);
   assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'valid', oxygen: 'uncalibrated' } }), [], 'uncalibrated oxygen is not shown as a warning');
-  const restart = 'Decompression state invalid: restart the boards to let the firmware reset it.';
-  assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'invalid', oxygen: 'calibrated' } }), [{ id: 'tissues', text: restart }]);
-  assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'invalid', oxygen: 'uncalibrated' }, decoStorageFixture: { enabled: true } }).map((w) => w.id), ['tissues']);
-  const off = deco.decoWarnings({ decoHealth: { tissues: 'invalid', oxygen: 'calibrated' }, decoStorageFixture: { enabled: false } });
-  assert.match(off[0].text, /^Decompression state invalid: the repair fixture is off\. Close the session, check .* under Start options and boot again\.$/);
+  // The next step is to reset the profile, which creates an initialized EEPROM; the text names the page's controls.
+  const reset = "Decompression state invalid: this profile's stored tissues are blank. Reset the profile (Advanced → Profile and evidence → Reset profile) to start with an initialized EEPROM.";
+  assert.equal(deco.INVALID_TISSUES_WARNING, reset);
+  assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'invalid', oxygen: 'calibrated' } }), [{ id: 'tissues', text: reset }]);
+  assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'invalid', oxygen: 'uncalibrated' } }).map((w) => w.id), ['tissues']);
+  // Every control the text names exists on the page: the Advanced panel, its "Profile and evidence" section and the reset button.
+  assert.match(html, /<summary>Advanced ·/);
+  assert.match(html, /<h3 id="profile-heading">Profile and evidence<\/h3>/);
+  assert.match(html, /<button type="button" id="profile-reset" class="danger">Reset profile…<\/button>/);
   // The surface pressure setting: a finite number inside the engine's range, else null; a blank text is not zero.
   assert.equal(deco.parseSurfacePressure('900'), 900);
   assert.equal(deco.parseSurfacePressure(1013.25), 1013.25);
@@ -2709,14 +2711,12 @@ test('deco: only a proven bad state warns, and each warning names the next step'
   assert.match(deco.healthLine({ decoHealth: { tissues: 'unknown', oxygen: 'valid', details: { tissues: 'Unknown for NEPTUN-5.8-65.3: not proven.' } } }), /tissues unknown.*Unknown for NEPTUN-5\.8-65\.3: not proven\./);
   assert.equal(deco.healthLine({}), null);
   assert.deepEqual(deco.fixtureLines({}), []);
-  const lines = deco.fixtureLines({ decoStorageFixture: { enabled: true, applied: true, reason: 'Repaired.' }, startAtSurface: { enabled: true, surfacePressureMbar: 900, note: 'Depth 0.' } });
-  assert.deepEqual(lines, ['Fixture: stored decompression state repair (applied at the last start). Repaired.', 'Fixture: start at the surface (on, surface 900 mbar). Depth 0.']);
-  // The EEPROM factory init comes first: how many records it filled, switched off, or not needed.
-  const records = [{ id: '0x01', range: '0x000..0x003', value: '1', reason: 'x' }, { id: '0x67', range: '0x0b8..0x0bb', value: '0.0', reason: 'y' }];
-  assert.deepEqual(deco.fixtureLines({ eepromFactoryInit: { enabled: true, applied: true, reason: 'Filled.', records }, startAtSurface: { enabled: false } }), ['Fixture: EEPROM factory init (applied at the last start, 2 records filled). Filled.', 'Fixture: start at the surface (off).']);
-  assert.equal(deco.fixtureLines({ eepromFactoryInit: { enabled: true, applied: true, reason: 'One.', records: records.slice(0, 1) } })[0], 'Fixture: EEPROM factory init (applied at the last start, 1 record filled). One.');
-  assert.equal(deco.fixtureLines({ eepromFactoryInit: { enabled: true, applied: false, reason: 'Not needed.', records: [] } })[0], 'Fixture: EEPROM factory init (on, not needed at the last start). Not needed.');
-  assert.equal(deco.fixtureLines({ eepromFactoryInit: { enabled: false, applied: false, reason: 'Switched off.', records: [] } })[0], 'Fixture: EEPROM factory init (off). Switched off.');
+  assert.deepEqual(deco.fixtureLines({ startAtSurface: { enabled: true, surfacePressureMbar: 900, note: 'Depth 0.' } }), ['Fixture: start at the surface (on, surface 900 mbar). Depth 0.']);
+  // The EEPROM factory image comes first: whether this session created its EEPROM from it, or the profile already had one.
+  assert.deepEqual(deco.fixtureLines({ eepromFactoryInit: { applied: true, reason: 'Created.' }, startAtSurface: { enabled: false } }), ['Fixture: EEPROM factory image (this session created the EEPROM from it). Created.', 'Fixture: start at the surface (off).']);
+  assert.equal(deco.fixtureLines({ eepromFactoryInit: { applied: false, reason: 'Not applied: the profile already holds an EEPROM.' } })[0], 'Fixture: EEPROM factory image (not applied). Not applied: the profile already holds an EEPROM.');
+  // The older repair fixture is gone: a state from an older engine that still carries its member shows no line for it.
+  assert.deepEqual(deco.fixtureLines({ decoStorageFixture: { enabled: true, applied: true, reason: 'Repaired.' } }), []);
 });
 
 test('page: the decompression warnings show only for a proven bad state, name the next step and go away with it', async () => {
@@ -2728,29 +2728,27 @@ test('page: the decompression warnings show only for a proven bad state, name th
   show({ oxygen: 'uncalibrated' });
   assert.equal(m.document.getElementById('deco-health').hidden, true, 'uncalibrated oxygen is not shown as a warning');
   show({ oxygen: 'uncalibrated', tissues: 'invalid' });
-  assert.deepEqual(shownWarnings(m), ['Decompression state invalid: restart the boards to let the firmware reset it.']);
+  assert.deepEqual(shownWarnings(m), [deco.INVALID_TISSUES_WARNING]);
   show({ oxygen: 'calibrated', tissues: 'invalid' });
-  assert.deepEqual(shownWarnings(m), ['Decompression state invalid: restart the boards to let the firmware reset it.']);
+  assert.deepEqual(shownWarnings(m), [deco.INVALID_TISSUES_WARNING]);
+  assert.match(shownWarnings(m)[0], /^Decompression state invalid: this profile's stored tissues are blank\. Reset the profile \(Advanced → Profile and evidence → Reset profile\) to start with an initialized EEPROM\.$/);
   show({ oxygen: 'unknown', tissues: 'unknown' });
   assert.equal(m.document.getElementById('deco-health').hidden, true, 'unknown never warns (NEPTUN reports it)');
-  show({ tissues: 'invalid' }, { decoStorageFixture: { enabled: false, applied: false, reason: 'Switched off.' } });
-  assert.match(shownWarnings(m)[0], /the repair fixture is off/);
   // An engine build without the report: no member, no warning, nothing breaks.
   m.view.onState({ state: { ...initialState, inputs: { ...initialInputs } }, host: { ...hostBase } });
   assert.equal(m.document.getElementById('deco-health').hidden, true);
   // The region is a live status region with the warnings inside, and Advanced describes the report and the fixtures.
   assert.match(html, /<section id="deco-health" class="deco-health" aria-label="Decompression state" role="status" hidden>/);
   show({ tissues: 'invalid' }, {
-    eepromFactoryInit: { enabled: true, applied: true, reason: 'Eight records were filled.', records: new Array(8).fill({ id: '0x67', range: '0x0b8..0x0bb', value: '0.0', reason: 'z' }) },
-    decoStorageFixture: { enabled: true, applied: true, reason: 'The date record was erased.', previousDateRecord: '0x50100454' },
+    eepromFactoryInit: { applied: true, reason: 'This session created the EEPROM from the factory image.' },
     startAtSurface: { enabled: true, surfacePressureMbar: 1013.25, note: 'Depth 0 at every start.' },
   });
   m.document.getElementById('firmware-details').open = true;
   m.view.render();
   const info = m.document.getElementById('session-info').textContent;
   assert.match(info, /Decompression state \(read-only report\): tissues invalid, oxygen calibrated\./);
-  assert.match(info, /Fixture: EEPROM factory init \(applied at the last start, 8 records filled\)\. Eight records were filled\./);
-  assert.match(info, /Fixture: stored decompression state repair \(applied at the last start\)\. The date record was erased\./);
+  assert.match(info, /Fixture: EEPROM factory image \(this session created the EEPROM from it\)\. This session created the EEPROM from the factory image\./);
+  assert.doesNotMatch(info, /stored decompression state repair/);
   assert.match(info, /Fixture: start at the surface \(on, surface 1013\.25 mbar\)\. Depth 0 at every start\./);
 });
 
@@ -2768,53 +2766,50 @@ test('page: the cold boot hint sits at the Cold boot button and appears in the s
   assert.equal(m.el('start-cold-hint').hidden, true);
 });
 
-test('entry and runtime: the profile fixtures are start options, on by default, with the remembered surface pressure', async () => {
+test('entry and runtime: the start at the surface is a start option, on by default, with the remembered surface pressure; the factory image has no option', async () => {
   const m = await mountEntry();
-  assert.equal(m.el('start-eeprom-init').checked && m.el('start-deco-fixture').checked && m.el('start-surface').checked, true, 'all three fixtures start checked');
-  assert.deepEqual(plain(m.view.options()), { ...plain(m.view.options()), eepromFactoryInit: true, decoStorageFixture: true, startAtSurface: true, surfacePressureMbar: null });
-  m.el('start-eeprom-init').checked = false;
-  assert.equal(m.view.options().eepromFactoryInit, false, 'the factory init is switched off on its own');
-  assert.equal(m.view.options().decoStorageFixture, true);
-  m.el('start-eeprom-init').checked = true;
-  m.el('start-deco-fixture').checked = false;
+  assert.equal(m.el('start-surface').checked, true, 'the start at the surface starts checked');
+  assert.deepEqual(plain(m.view.options()), { ...plain(m.view.options()), startAtSurface: true, surfacePressureMbar: null });
+  for (const removed of ['eepromFactoryInit', 'decoStorageFixture']) assert.equal(removed in m.view.options(), false, `${removed} is not a start option any more`);
   m.el('start-surface').checked = false;
   globalThis.window.localStorage.setItem('ngc-wasm.surface-pressure', '900');
   const options = m.view.options();
-  assert.deepEqual([options.eepromFactoryInit, options.decoStorageFixture, options.startAtSurface, options.surfacePressureMbar], [true, false, false, 900]);
+  assert.deepEqual([options.startAtSurface, options.surfacePressureMbar], [false, 900]);
   globalThis.window.localStorage.setItem('ngc-wasm.surface-pressure', '50');
   assert.equal(m.view.options().surfacePressureMbar, null, 'a remembered value outside the engine\'s range is not sent');
 
-  // The worker passes them on: on unless switched off; the surface pressure only when valid.
-  assert.deepEqual(Object.fromEntries(['eepromFactoryInit', 'decoStorageFixture', 'startAtSurface'].map((key) => [key, Runtime.normalizeConfig({})[key]])), { eepromFactoryInit: true, decoStorageFixture: true, startAtSurface: true });
+  // The worker passes them on: on unless switched off; the surface pressure only when valid. The removed keys are not passed on.
+  assert.equal(Runtime.normalizeConfig({}).startAtSurface, true);
   assert.equal('surfacePressureMbar' in Runtime.normalizeConfig({}), false);
   assert.equal('surfacePressureMbar' in Runtime.normalizeConfig({ surfacePressureMbar: 50 }), false);
-  assert.deepEqual(Runtime.normalizeConfig({ decoStorageFixture: false, startAtSurface: false, surfacePressureMbar: 900 }), { ...Runtime.normalizeConfig({}), decoStorageFixture: false, startAtSurface: false, surfacePressureMbar: 900 });
-  assert.equal(Runtime.normalizeConfig({ eepromFactoryInit: false }).eepromFactoryInit, false);
+  assert.deepEqual(Runtime.normalizeConfig({ startAtSurface: false, surfacePressureMbar: 900 }), { ...Runtime.normalizeConfig({}), startAtSurface: false, surfacePressureMbar: 900 });
+  const stale = Runtime.normalizeConfig({ eepromFactoryInit: false, decoStorageFixture: false });
+  assert.equal('eepromFactoryInit' in stale || 'decoStorageFixture' in stale, false, 'an old option never reaches the engine');
 
   const engine = new FakeEngine();
   const h = new RuntimeHarness(engine);
   await h.request('init');
   await h.inspect('main', 'TRITON-5.8-65.3');
   await h.inspect('handset', 'TRITON-5.8-65.3');
-  await h.request('boot', { options: { mode: 'dual', startPaused: true, decoStorageFixture: false, surfacePressureMbar: 950 } });
+  await h.request('boot', { options: { mode: 'dual', startPaused: true, surfacePressureMbar: 950 } });
   const first = engine.created[0].config;
-  assert.deepEqual([first.eepromFactoryInit, first.decoStorageFixture, first.startAtSurface, first.surfacePressureMbar], [true, false, true, 950]);
+  assert.deepEqual([first.startAtSurface, first.surfacePressureMbar], [true, 950]);
   // An action that recreates the boards and carries a surface pressure changes the session's setting; a profile import then uses it.
   await h.request('action', { request: { action: 'reset', surfacePressureMbar: 900 } });
   await h.request('action', { request: { action: 'inputs', inputs: { oxygen1Mv: 11 }, surfacePressureMbar: 123 } });
   await h.request('import-profile', { files: [{ name: 'eeprom.bin', data: new Uint8Array([9]) }] });
   assert.equal(engine.created[1].config.surfacePressureMbar, 900, 'the Restart\'s value, not the boot\'s, and not one carried by another action');
-  assert.equal(engine.created[1].config.decoStorageFixture, false, 'the fixture switch survives a profile import');
+  assert.equal(engine.created[1].config.startAtSurface, true, 'the fixture switch survives a profile import');
   await h.request('close-session');
   // An older engine build that does not know the options: they are dropped one at a time and the page can say so.
   const older = new FakeEngine();
-  older.rejectOptions = ['eepromFactoryInit', 'decoStorageFixture', 'startAtSurface', 'surfacePressureMbar'];
+  older.rejectOptions = ['startAtSurface', 'surfacePressureMbar'];
   const o = new RuntimeHarness(older);
   await o.request('init');
   await o.inspect('main', 'TRITON-5.8-65.3');
   await o.inspect('handset', 'TRITON-5.8-65.3');
   await o.request('boot', { options: { mode: 'dual', startPaused: true, surfacePressureMbar: 900 } });
-  assert.deepEqual([...older.unsupportedOptions].sort(), ['decoStorageFixture', 'eepromFactoryInit', 'startAtSurface', 'surfacePressureMbar']);
+  assert.deepEqual([...older.unsupportedOptions].sort(), ['startAtSurface', 'surfacePressureMbar']);
   await o.request('close-session');
 });
 
@@ -2894,9 +2889,10 @@ test('page: a new session starts at 0 m with the engine\'s default cells whateve
   assert.equal(h.posts().length, 0, 'showing the new session sends nothing');
 });
 
-test('structure: deco.js is a published page module and the engine option list names the profile fixture options', () => {
+test('structure: deco.js is a published page module and the engine option list names the start-at-the-surface options', () => {
   const build = fs.readFileSync(path.join(here, '..', 'deploy', 'build_site.py'), 'utf8');
   assert.match(build, /"deco\.js"/, 'deco.js is on the site allowlist on purpose');
   const engineSource = fs.readFileSync(path.join(here, 'engine.js'), 'utf8');
-  assert.match(engineSource, /OPTIONAL_OPTIONS = \[[^\]]*'eepromFactoryInit'[^\]]*'decoStorageFixture'[^\]]*'startAtSurface'[^\]]*'surfacePressureMbar'/);
+  assert.match(engineSource, /OPTIONAL_OPTIONS = \[[^\]]*'startAtSurface'[^\]]*'surfacePressureMbar'/);
+  assert.doesNotMatch(engineSource, /OPTIONAL_OPTIONS = \[[^\]]*'(eepromFactoryInit|decoStorageFixture)'/, 'the removed options are not retried without');
 });

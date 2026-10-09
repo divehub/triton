@@ -1,69 +1,64 @@
-//! The decompression state handling with the real firmware images (skipped when the gitignored SREC files are not
-//! available): the read-only `decoHealth` report and the two labeled emulator fixtures, the pre-boot EEPROM consistency
-//! fixture and the start at the surface (`crates/ngc/src/deco.rs`, `surface_start.rs`; DESIGN.md "Decompression state
-//! handling").
+//! The decompression state handling with the real TRITON firmware images (skipped when the gitignored SREC files are not
+//! available): the read-only `decoHealth` report and the start at the surface (`crates/ngc/src/deco.rs`, `surface_start.rs`;
+//! DESIGN.md "Decompression state handling").
 //!
 //! What they establish (synthetic reproductions on the functional model, not physical observations):
 //!
 //! * on a first boot the original TRITON firmware resets its tissues and saves the decompression date but never saves the
-//!   tissues, so the next start loads 32 erased words as NaN and keeps them: the no-decompression limit stays at 99 minutes
-//!   at depth. With the fixture off the engine reproduces that and `decoHealth` reports it; with the fixture on (the default)
-//!   the tissues are finite after the Restart and the limit falls below 99 at depth;
-//! * the fixture writes no byte but the date record: the oxygen calibration, the tissue block and the rest are untouched;
+//!   tissues, so with a blank EEPROM (the factory image switched off through the internal field) the next start loads 32 erased
+//!   words as NaN and keeps them: the no-decompression limit stays at 99 minutes at depth, and `decoHealth` reports it. The new
+//!   EEPROM of a real session does not have this problem (`eeprom_init.rs`); nothing repairs an older profile;
+//! * the health report follows the oxygen calibration, and a cold boot makes the firmware clear it again;
 //! * every board creation starts at the surface pressure, a new session also with the oxygen cells at their defaults.
 //!
 //! The oxygen calibration goes through the firmware's own protocol (the CAN commands the handset's calibration menu sends:
 //! enter, air, 1000 mbar, test, commit after the success reply); no calibration flag or ppO2 value is set directly.
-//!
-//! The date-erase repair is exercised on its own here: the EEPROM factory init ([`ngc::eeprom_init`], `eeprom_init.rs`), which
-//! runs first and fills a never-saved tissue block, is switched off in these sessions (`repair_only`), because with it on the
-//! block is no longer erased and the repair has nothing to do.
 
 use emu_core::{Json, Width};
 use ngc::deco::{EEPROM_BYTES, EEPROM_DATE_BYTES, EEPROM_TISSUE_BYTES};
-use ngc::firmware::{self, Firmware, Release, Role, NEPTUN, TRITON};
+use ngc::firmware::{self, Firmware, Role, TRITON};
 use ngc::fixtures::Inputs;
 use ngc::persistence::inputs_file_text;
 use ngc::session::{Profile, Session, SessionConfig};
 use ngc::system::Which;
 use std::path::PathBuf;
 
-/// Physical EEPROM offsets of the records (see `ReleaseAddresses`): tissue block, date record, oxygen calibration.
+/// Physical EEPROM offsets of the records (see `ReleaseAddresses`): tissue block and date record.
 const TISSUES: usize = 0x0FF;
 const DATE: usize = 0x17F;
-const CALIBRATION: std::ops::Range<usize> = 0x38..0x47;
 /// Main RAM of the TRITON image (see `ReleaseAddresses`): the raw no-decompression limit.
 const RAW_NDL: u32 = 0x2000_2108;
 /// About 35 m of EN13319 water on 1013.25 mbar.
 const DEEP_MBAR: f64 = 4600.0;
 
-fn images(release: &Release) -> Option<(Firmware, Firmware)> {
+fn images() -> Option<(Firmware, Firmware)> {
     // `NGC_FIRMWARE_DIR` (the directory that holds the release directories), else the repository's `firmware/`.
     let roots = [std::env::var_os("NGC_FIRMWARE_DIR").map(PathBuf::from), Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../firmware"))];
     let dir = roots
         .into_iter()
         .flatten()
-        .map(|root| root.join(release.id))
-        .find(|d| d.join(release.main.file_name).is_file() && d.join(release.handset.file_name).is_file())?;
-    let main = firmware::load(&std::fs::read(dir.join(release.main.file_name)).ok()?, Some(Role::Main)).ok()?;
-    let handset = firmware::load(&std::fs::read(dir.join(release.handset.file_name)).ok()?, Some(Role::Handset)).ok()?;
+        .map(|root| root.join(TRITON.id))
+        .find(|d| d.join(TRITON.main.file_name).is_file() && d.join(TRITON.handset.file_name).is_file())?;
+    let main = firmware::load(&std::fs::read(dir.join(TRITON.main.file_name)).ok()?, Some(Role::Main)).ok()?;
+    let handset = firmware::load(&std::fs::read(dir.join(TRITON.handset.file_name)).ok()?, Some(Role::Handset)).ok()?;
     Some((main, handset))
 }
 
 macro_rules! images_or_skip {
-    ($release:expr) => {
-        match images($release) {
+    () => {
+        match images() {
             Some(images) => images,
             None => {
-                eprintln!("skipping: the {} SREC files are not available", $release.id);
+                eprintln!("skipping: the {} SREC files are not available", TRITON.id);
                 return;
             }
         }
     };
 }
 
-/// The default configuration without the EEPROM factory init: what the date-erase repair is tested against.
-fn repair_only() -> SessionConfig {
+/// The default configuration with the EEPROM factory image switched off (the internal field): a blank EEPROM, as an older build's
+/// first boot left it.
+fn blank() -> SessionConfig {
     SessionConfig { eeprom_factory_init: false, ..SessionConfig::default() }
 }
 
@@ -110,10 +105,6 @@ fn input(state: &Json, key: &str) -> f64 {
     state.get("inputs").and_then(|i| i.get(key)).and_then(Json::as_f64).unwrap_or_else(|| panic!("input {key}"))
 }
 
-fn fixture_flag(state: &Json, group: &str, key: &str) -> bool {
-    matches!(state.get(group).and_then(|g| g.get(key)), Some(Json::Bool(true)))
-}
-
 /// The air calibration the handset's menu drives, sent as the same CAN commands (standard identifiers, from the handset's
 /// controller): `0x42` enter, `0x44` air (21 %), `0x49` 1000 mbar, `0x52` test, then `0x55` commit once the main board
 /// answered `0x54` (success). The inputs are the defaults (three 10 mV cells, 1013.25 mbar), which the firmware's acceptance
@@ -134,113 +125,45 @@ fn calibrate_oxygen(session: &mut Session) {
     advance(session, 2.0);
 }
 
-/// A first boot of a fresh profile, calibrated through the firmware's protocol: the EEPROM then holds the calibration and
-/// a saved decompression date but no tissues.
-fn calibrated_first_boot(config: SessionConfig, main: &Firmware, handset: &Firmware) -> Session {
-    let mut session = Session::new(config, Some(main), handset, Profile::default()).expect("dual session");
+#[test]
+fn a_restart_after_a_blank_first_boot_loads_nan_tissues_and_the_health_report_says_so() {
+    let (main, handset) = images_or_skip!();
+    let mut session = Session::new(blank(), Some(&main), &handset, Profile::default()).expect("dual session");
     advance(&mut session, 8.0);
     calibrate_oxygen(&mut session);
     let image = eeprom(&session);
     assert_eq!(&image[0x38..0x3E], &[0xE8, 0x03, 0xE8, 0x03, 0xE8, 0x03], "the firmware stored 10.00 mV for three cells");
     assert_eq!(&image[0x3E..0x41], &[0x09, 0x09, 0x09], "enabled and freshly calibrated");
-    session
-}
+    let first = state(&session);
+    assert_eq!((health(&first, "tissues"), health(&first, "oxygen")), ("valid".to_string(), "calibrated".to_string()), "the first boot reset its tissues itself");
+    // The unit goes under water and is restarted: the saved profile holds a date and an erased tissue block.
+    set_pressure(&mut session, DEEP_MBAR);
+    advance(&mut session, 3.0);
+    let stored = eeprom(&session);
+    assert!(stored[TISSUES..TISSUES + EEPROM_TISSUE_BYTES].iter().all(|&b| b == 0xFF), "the start-up never saves the tissues");
+    assert!(stored[DATE..DATE + EEPROM_DATE_BYTES].iter().any(|&b| b != 0xFF), "but it saves the decompression date");
 
-#[test]
-fn a_restart_after_a_first_boot_gives_finite_tissues_and_an_ndl_below_99_with_the_fixture_and_the_nan_state_without_it() {
-    let (main, handset) = images_or_skip!(&TRITON);
-    for fixture in [true, false] {
-        let label = if fixture { "fixture on (the default)" } else { "fixture off" };
-        let config = SessionConfig { deco_storage_fixture: fixture, ..repair_only() };
-        let mut session = calibrated_first_boot(config, &main, &handset);
-        let first = state(&session);
-        assert_eq!((health(&first, "tissues"), health(&first, "oxygen")), ("valid".to_string(), "calibrated".to_string()), "{label}: the first boot reset its tissues itself");
-        // The unit goes under water and is restarted: the saved profile holds a date and an erased tissue block.
-        set_pressure(&mut session, DEEP_MBAR);
-        advance(&mut session, 3.0);
-        let stored = eeprom(&session);
-        assert!(stored[TISSUES..TISSUES + EEPROM_TISSUE_BYTES].iter().all(|&b| b == 0xFF), "{label}: the start-up never saves the tissues");
-        assert!(stored[DATE..DATE + EEPROM_DATE_BYTES].iter().any(|&b| b != 0xFF), "{label}: but it saves the decompression date");
-
-        let restarted = act(&mut session, "{\"action\":\"reset\"}");
-        assert_eq!(fixture_flag(&restarted, "decoStorageFixture", "applied"), fixture, "{label}: {:?}", restarted.get("decoStorageFixture"));
-        assert_eq!(fixture_flag(&restarted, "decoStorageFixture", "enabled"), fixture);
-        advance(&mut session, 4.0);
-        let after = state(&session);
-        assert_eq!(health(&after, "oxygen"), "calibrated", "{label}: the calibration survives a Restart");
-        // Back at the surface after the Restart (the start-at-the-surface fixture); now the dive.
-        assert_eq!((input(&after, "pressure1Mbar"), input(&after, "pressure2Mbar")), (1013.25, 1013.25), "{label}: Restart starts at the surface");
-        let descended = set_pressure(&mut session, DEEP_MBAR).get("virtualTime").and_then(Json::as_f64).unwrap_or(0.0);
-        let mut ndl = raw_ndl(&session);
-        for _ in 0..12 {
-            advance(&mut session, 2.5);
-            ndl = raw_ndl(&session);
-            if fixture && ndl < 99 {
-                break;
-            }
-        }
-        let deep = state(&session);
-        let now = deep.get("virtualTime").and_then(Json::as_f64).unwrap_or(0.0);
-        println!("{label}: raw NDL {ndl} min {:.1} s after the descent, tissues {}", now - descended, health(&deep, "tissues"));
-        if fixture {
-            assert_eq!(health(&deep, "tissues"), "valid", "{label}: {:?}", deep.get("decoHealth"));
-            assert!(ndl < 99, "{label}: the no-decompression limit falls below 99 at depth, was {ndl}");
-            assert!(ndl > 0, "{label}: and is a plausible number of minutes, was {ndl}");
-        } else {
-            // The original firmware's own behavior, reproduced: 32 NaN words, kept (the elapsed time is under four days).
-            assert_eq!(health(&deep, "tissues"), "invalid", "{label}: {:?}", deep.get("decoHealth"));
-            let details = deep.get("decoHealth").and_then(|h| h.get("details")).expect("details");
-            assert_eq!(details.get("nonFiniteTissueWords").and_then(Json::as_u64), Some(32), "{label}: {details:?}");
-            advance(&mut session, 15.0);
-            assert_eq!(raw_ndl(&session), 99, "{label}: the limit stays at 99 with NaN tissues (20 s at depth)");
-            assert!(!fixture_flag(&state(&session), "decoStorageFixture", "applied"));
-        }
-    }
-}
-
-#[test]
-fn the_fixture_writes_the_date_record_and_nothing_else() {
-    let (main, handset) = images_or_skip!(&TRITON);
-    let first = calibrated_first_boot(repair_only(), &main, &handset);
-    let profile = first.shutdown();
-    let saved = profile.eeprom.clone().expect("the first boot saved its EEPROM");
-    assert!(saved[TISSUES..TISSUES + EEPROM_TISSUE_BYTES].iter().all(|&b| b == 0xFF) && saved[DATE..DATE + EEPROM_DATE_BYTES].iter().any(|&b| b != 0xFF));
-
-    // Creating the sessions starts the boards but runs nothing: the EEPROM is what the fixture left it.
-    let open = |fixture: bool, profile: &Profile| {
-        let config = SessionConfig { deco_storage_fixture: fixture, ..repair_only() };
-        Session::new(config, Some(&main), &handset, profile.clone()).expect("reopen")
-    };
-    let mut on = open(true, &profile);
-    let off = open(false, &profile);
-    let (on_image, off_image) = (eeprom(&on), eeprom(&off));
-    assert_eq!(&off_image[..], &saved[..], "switched off: the saved image is loaded as it is");
-    assert_eq!(&on_image[DATE..DATE + EEPROM_DATE_BYTES], &[0xFF; 4], "switched on: the date record is erased");
-    let differing: Vec<usize> = (0..EEPROM_BYTES).filter(|&i| on_image[i] != off_image[i]).collect();
-    assert!(differing.iter().all(|&i| (DATE..DATE + EEPROM_DATE_BYTES).contains(&i)), "no other byte differs, got {differing:?}");
-    assert_eq!(&on_image[CALIBRATION], &saved[CALIBRATION], "the oxygen calibration (values, flags, gas, pressure, time) is untouched");
-    assert_eq!(&on_image[TISSUES..TISSUES + EEPROM_TISSUE_BYTES], &saved[TISSUES..TISSUES + EEPROM_TISSUE_BYTES], "the tissue block is untouched");
-    // The state and the profile carry it.
-    let report = state(&on);
-    assert!(fixture_flag(&report, "decoStorageFixture", "applied"));
-    let previous = report.get("decoStorageFixture").and_then(|f| f.get("previousDateRecord")).and_then(Json::as_str).expect("the erased record is named").to_string();
-    assert_eq!(previous, format!("0x{:08x}", u32::from_le_bytes([saved[DATE], saved[DATE + 1], saved[DATE + 2], saved[DATE + 3]])));
-    assert_eq!(&on.export_profile().eeprom.expect("eeprom")[DATE..DATE + EEPROM_DATE_BYTES], &[0xFF; 4], "the repaired image is the profile from now on");
-    assert!(!fixture_flag(&state(&off), "decoStorageFixture", "applied"));
-    assert_eq!(state(&off).get("decoStorageFixture").and_then(|f| f.get("reason")).and_then(Json::as_str).map(|r| r.starts_with("Switched off")), Some(true));
-
-    // Saved tissues are left alone: with any non-erased byte in the block the date record stays.
-    let mut with_tissues = saved.clone();
-    with_tissues[TISSUES + 5] = 0x3F;
-    let kept = open(true, &Profile { eeprom: Some(with_tissues.to_vec()), ..profile.clone() });
-    let image = eeprom(&kept);
-    assert_eq!(&image[..], &with_tissues[..]);
-    assert!(!fixture_flag(&state(&kept), "decoStorageFixture", "applied"));
+    let restarted = act(&mut session, "{\"action\":\"reset\"}");
+    assert!(restarted.get("decoStorageFixture").is_none(), "there is no repair fixture any more");
+    advance(&mut session, 4.0);
+    let after = state(&session);
+    assert_eq!(health(&after, "oxygen"), "calibrated", "the calibration survives a Restart");
+    // Back at the surface after the Restart (the start-at-the-surface fixture); now the dive.
+    assert_eq!((input(&after, "pressure1Mbar"), input(&after, "pressure2Mbar")), (1013.25, 1013.25), "Restart starts at the surface");
+    set_pressure(&mut session, DEEP_MBAR);
+    advance(&mut session, 15.0);
+    // The original firmware's own behavior, reproduced: 32 NaN words, kept (the elapsed time is under four days), so the limit
+    // stays at 99 and the read-only report says that the tissues are invalid.
+    let deep = state(&session);
+    assert_eq!(health(&deep, "tissues"), "invalid", "{:?}", deep.get("decoHealth"));
+    let details = deep.get("decoHealth").and_then(|h| h.get("details")).expect("details");
+    assert_eq!(details.get("nonFiniteTissueWords").and_then(Json::as_u64), Some(32), "{details:?}");
+    assert_eq!(raw_ndl(&session), 99, "the limit stays at 99 with NaN tissues");
 }
 
 #[test]
 fn every_board_creation_starts_at_the_surface_and_a_new_session_resets_the_oxygen_cells() {
-    let (main, handset) = images_or_skip!(&TRITON);
+    let (main, handset) = images_or_skip!();
     // A profile left under water with unusual oxygen cells.
     let left_under_water = Inputs { pressure_mbar: [4600.5, 4601.5], oxygen_mv: [60.0, 61.0, 59.0], battery_mv: [1500.0, 1500.0], ..Inputs::defaults() };
     let profile = Profile { inputs: Some(inputs_file_text(&left_under_water)), ..Profile::default() };
@@ -301,7 +224,7 @@ fn every_board_creation_starts_at_the_surface_and_a_new_session_resets_the_oxyge
 
 #[test]
 fn the_health_report_follows_the_oxygen_calibration_and_a_cold_boot_clears_it() {
-    let (main, handset) = images_or_skip!(&TRITON);
+    let (main, handset) = images_or_skip!();
     let mut session = Session::new(SessionConfig::default(), Some(&main), &handset, Profile::default()).expect("session");
     // Before the firmware starts, nothing is known (RAM is zero).
     let early = state(&session);
@@ -334,37 +257,4 @@ fn the_health_report_follows_the_oxygen_calibration_and_a_cold_boot_clears_it() 
     let cold = state(&session);
     assert_eq!(&eeprom(&session)[0x3E..0x41], &[0x01, 0x01, 0x01], "the firmware rewrote the cell flags (0x09 to 0x01) on the cold-boot wake cause");
     assert_eq!(health(&cold, "oxygen"), "uncalibrated", "{:?}", cold.get("decoHealth"));
-}
-
-#[test]
-fn a_neptun_session_reports_unknown_with_the_reason_and_skips_the_storage_fixture() {
-    let (main, handset) = images_or_skip!(&NEPTUN);
-    // A saved profile shaped like the TRITON case (erased tissue block, set date): the layout of the decompression records is not proven
-    // for NEPTUN's application (its RAM addresses are not either), so the date-erase repair leaves it alone.
-    let mut image = vec![0xFF; EEPROM_BYTES];
-    image[DATE..DATE + EEPROM_DATE_BYTES].copy_from_slice(&[0x54, 0x04, 0x00, 0xB0]);
-    let profile = Profile { eeprom: Some(image.clone()), ..Profile::default() };
-    // With the factory init on (the default) the erased inventoried records are filled, the tissue block included, and the date record is
-    // still left alone; the repair reports its own reason.
-    let filled = Session::new(SessionConfig::default(), Some(&main), &handset, profile.clone()).expect("session");
-    let with_init = eeprom(&filled);
-    assert_eq!(&with_init[DATE..DATE + EEPROM_DATE_BYTES], &[0x54, 0x04, 0x00, 0xB0], "NEPTUN: the date record is not touched");
-    assert_eq!(&with_init[TISSUES..TISSUES + 8], &[0x4D, 0x30, 0x40, 0x3F, 0, 0, 0, 0], "NEPTUN: the factory init fills the tissue block");
-    let reason = state(&filled).get("decoStorageFixture").and_then(|f| f.get("reason")).and_then(Json::as_str).unwrap_or_default().to_string();
-    assert!(reason.contains("NEPTUN-5.8-65.3") && reason.contains("not proven"), "{reason}");
-    // With it off, the saved image is loaded as it is.
-    let mut session = Session::new(repair_only(), Some(&main), &handset, profile).expect("session");
-    assert_eq!(&eeprom(&session)[..], &image[..], "NEPTUN: the EEPROM is loaded as it is");
-    let booted = advance(&mut session, 3.0);
-    assert_eq!((health(&booted, "tissues"), health(&booted, "oxygen")), ("unknown".to_string(), "unknown".to_string()));
-    let details = booted.get("decoHealth").and_then(|h| h.get("details")).expect("details");
-    for member in ["tissues", "oxygen"] {
-        let text = details.get(member).and_then(Json::as_str).unwrap_or_default();
-        assert!(text.contains("NEPTUN-5.8-65.3") && text.contains("not proven"), "{member}: {text}");
-    }
-    let fixture = booted.get("decoStorageFixture").expect("decoStorageFixture");
-    assert_eq!((fixture.get("enabled"), fixture.get("applied")), (Some(&Json::Bool(true)), Some(&Json::Bool(false))));
-    assert!(fixture.get("reason").and_then(Json::as_str).unwrap_or_default().contains("NEPTUN-5.8-65.3"), "{fixture:?}");
-    // The start at the surface is release-independent.
-    assert_eq!(booted.get("startAtSurface").and_then(|r| r.get("applied")), Some(&Json::Bool(true)));
 }

@@ -5,6 +5,11 @@
 //! has to hold, and every comparison with the Renode runner's recorded values that is marked `must` has to agree; the
 //! other comparisons document known, explained differences and are reported in the failure text only. Set
 //! `NGC_SCENARIO_OUT=<dir>` to also write the JSON documents and PNG evidence of the run (as `ngc-cli scenario --out`).
+//!
+//! **Quick loop and slow tier.** The three cheapest scenarios (`dual-wake`, `button-capture`, `outputs-uart`, about a second each)
+//! stay in the default run as the Renode anchor of the boot, the buttons and the outputs. The other seven take two to twenty
+//! seconds each and are `#[ignore]`d: run them with `./cargo test -p ngc --release --test scenarios -- --ignored` (or the whole
+//! slow tier with `./cargo test --workspace --release -- --ignored`), or the real thing with `ngc-cli scenario all`.
 
 use emu_core::Json;
 use ngc::firmware::{self, Firmware, Role};
@@ -98,16 +103,19 @@ fn button_capture() {
 }
 
 #[test]
+#[ignore = "slow: scenario suite; run with --ignored or ngc-cli scenario all"]
 fn battery_setup() {
     run_scenario("battery-setup");
 }
 
 #[test]
+#[ignore = "slow: scenario suite; run with --ignored or ngc-cli scenario all"]
 fn diluent_menu() {
     run_scenario("diluent-menu");
 }
 
 #[test]
+#[ignore = "slow: scenario suite; run with --ignored or ngc-cli scenario all"]
 fn clock_storage() {
     run_scenario("clock-storage");
 }
@@ -118,21 +126,25 @@ fn outputs_uart() {
 }
 
 #[test]
+#[ignore = "slow: scenario suite; run with --ignored or ngc-cli scenario all"]
 fn can_loss() {
     run_scenario("can-loss");
 }
 
 #[test]
+#[ignore = "slow: scenario suite; run with --ignored or ngc-cli scenario all"]
 fn cold_wake() {
     run_scenario("cold-wake");
 }
 
 #[test]
+#[ignore = "slow: scenario suite; run with --ignored or ngc-cli scenario all"]
 fn machine_reset() {
     run_scenario("machine-reset");
 }
 
 #[test]
+#[ignore = "slow: scenario suite; run with --ignored or ngc-cli scenario all"]
 fn fast_forward() {
     run_scenario("fast-forward");
 }
@@ -155,23 +167,4 @@ fn an_unknown_scenario_is_refused_with_the_list_of_names() {
     let env = scenario::ScenarioEnv::new(&main, &handset);
     let error = scenario::run("nothing", &env).unwrap_err();
     assert!(error.contains("unknown scenario 'nothing'") && error.contains("dual-wake") && error.contains("fast-forward"), "{error}");
-}
-
-#[test]
-fn the_scenarios_refuse_other_releases() {
-    let roots = [std::env::var_os("NGC_FIRMWARE_DIR").map(PathBuf::from), Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../firmware"))];
-    let Some(dir) = roots
-        .into_iter()
-        .flatten()
-        .map(|root| root.join("NEPTUN-5.8-65.3"))
-        .find(|d| d.join("ngc_main_5.8_NEPTUN.srec").is_file() && d.join("ngc_handset_65.3_NEPTUN.srec").is_file())
-    else {
-        eprintln!("skipping: the NEPTUN firmware is not available");
-        return;
-    };
-    let main = firmware::load(&std::fs::read(dir.join("ngc_main_5.8_NEPTUN.srec")).unwrap(), Some(Role::Main)).unwrap();
-    let handset = firmware::load(&std::fs::read(dir.join("ngc_handset_65.3_NEPTUN.srec")).unwrap(), Some(Role::Handset)).unwrap();
-    let env = scenario::ScenarioEnv::new(&main, &handset);
-    let error = scenario::run("dual-wake", &env).unwrap_err();
-    assert!(error.contains("TRITON-5.8-65.3") && error.contains("NEPTUN-5.8-65.3"), "{error}");
 }

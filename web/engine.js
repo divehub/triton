@@ -8,7 +8,7 @@
 export const PROFILE_FILES = ['eeprom.bin', 'nor.ngc', 'rtc-state.json', 'inputs.json', 'led-colors.json'];
 const PROFILE_KIND = { 'eeprom.bin': 0, 'nor.ngc': 1, 'rtc-state.json': 2, 'inputs.json': 3, 'led-colors.json': 4 };
 /** Session options an older engine build does not know (see `createSession`). */
-const OPTIONAL_OPTIONS = ['historyNonce', 'i2cIdleHigh', 'eepromFactoryInit', 'decoStorageFixture', 'startAtSurface', 'surfacePressureMbar'];
+const OPTIONAL_OPTIONS = ['historyNonce', 'i2cIdleHigh', 'startAtSurface', 'surfacePressureMbar'];
 
 /** A failure reported by the engine (verification, validation, bad profile); `message` is user-readable. */
 export class EngineError extends Error {
@@ -132,14 +132,14 @@ export class Engine {
   /**
    * Creates the session from the kept firmware.
    * @param {object} config {mode: 'dual'|'handset', bootMode: 'handset-wake'|'cold', simultaneousStart, idleFastForward,
-   *   adcSample, startPaused, historyNonce, i2cIdleHigh, eepromFactoryInit, decoStorageFixture, startAtSurface,
-   *   surfacePressureMbar}
+   *   adcSample, startPaused, historyNonce, i2cIdleHigh, startAtSurface, surfacePressureMbar, blankEeprom (benchmark and test
+   *   hook, the page never sends it)}
    * @param {Object<string, Uint8Array|string>} profile files by name (PROFILE_FILES)
    *
-   * `historyNonce`, `i2cIdleHigh` (DESIGN 15.3) and the profile options `eepromFactoryInit` (DESIGN 18), `decoStorageFixture`,
-   * `startAtSurface` and `surfacePressureMbar` (DESIGN 17) are options of newer engine builds; an older module
-   * rejects unknown options, so they are dropped one at a time when the engine says it does not know them. What the engine
-   * did not understand is kept in `unsupportedOptions` for the page to report.
+   * `historyNonce`, `i2cIdleHigh` (DESIGN 15.3) and the profile options `startAtSurface` and `surfacePressureMbar` (DESIGN 17)
+   * are options of newer engine builds; an older module rejects unknown options, so they are dropped one at a time when the
+   * engine says it does not know them. What the engine did not understand is kept in `unsupportedOptions` for the page to
+   * report. (The EEPROM factory image of DESIGN 18 has no option: the engine applies it when it creates a new EEPROM.)
    */
   createSession(config = {}, profile = {}) {
     const options = { ...config };

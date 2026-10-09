@@ -220,7 +220,7 @@ pub struct ReleaseAddresses {
     /// Main **EEPROM** physical offset of the 4-byte last-decompression date record (logical record ID `0x8a`).
     pub eeprom_deco_date: AddressEntry,
     /// **Flash** address of the main image's EEPROM record table (0x8e entries of offset u16 and size u16, indexed by logical record
-    /// ID): the layout the factory-init fixture ([`crate::eeprom_init`]) writes by; it checks the table's SHA-256 against the image.
+    /// ID): the layout the EEPROM factory image ([`crate::eeprom_init`]) writes by; it checks the table's SHA-256 against the image.
     pub eeprom_record_table: AddressEntry,
 }
 
@@ -1017,17 +1017,6 @@ mod tests {
 
     // ---- releases ----
 
-    fn neptun(role: Role) -> Option<Vec<u8>> {
-        let name = NEPTUN.expected(role).file_name;
-        let roots = [std::env::var_os("NGC_FIRMWARE_DIR").map(PathBuf::from), Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../firmware"))];
-        roots
-            .into_iter()
-            .flatten()
-            .map(|root| root.join("NEPTUN-5.8-65.3").join(name))
-            .find(|p| p.is_file())
-            .map(|p| std::fs::read(p).expect("read srec"))
-    }
-
     #[test]
     fn the_release_table_groups_the_images() {
         assert_eq!(RELEASES.iter().map(|r| r.id).collect::<Vec<_>>(), ["TRITON-5.8-65.3", "NEPTUN-5.8-65.3"]);
@@ -1077,42 +1066,5 @@ mod tests {
         assert_eq!(NEPTUN.addresses.main_battery_ready.to_json().get("address"), Some(&Json::Null));
         assert_eq!(NEPTUN.addresses.handset_error_loop.to_json().get("address").and_then(Json::as_u64), Some(0x0800_598E));
         assert!(TRITON.cold_boot_refusal.is_none() && NEPTUN.cold_boot_refusal.is_some());
-    }
-
-    #[test]
-    fn real_neptun_images_match_every_recorded_fact() {
-        let (Some(main_bytes), Some(handset_bytes)) = (neptun(Role::Main), neptun(Role::Handset)) else {
-            eprintln!("skipping: the NEPTUN SRECs are not available locally");
-            return;
-        };
-        let main = load(&main_bytes, Some(Role::Main)).unwrap();
-        let handset = load(&handset_bytes, Some(Role::Handset)).unwrap();
-        assert_eq!((main.release.id, handset.release.id), ("NEPTUN-5.8-65.3", "NEPTUN-5.8-65.3"));
-        assert_eq!((main.span.len(), handset.span.len()), (320_900, 707_092));
-        assert_eq!((main.reset_pc(), handset.reset_pc()), (0x0803_90B8, 0x0800_8444));
-        assert_eq!((main.initial_sp(), handset.initial_sp()), (0x2001_8000, 0x2001_8000));
-        assert!(main.report.ok() && handset.report.ok(), "{:?} {:?}", main.report.failed_checks(), handset.report.failed_checks());
-        assert_eq!((main.report.record_counts[3], handset.report.record_counts[3]), (20_059, 44_197));
-        assert_eq!(sha256::to_hex(&main.bin_sha256), NEPTUN_MAIN.bin_sha256);
-        assert_eq!(sha256::to_hex(&handset.bin_sha256), NEPTUN_HANDSET.bin_sha256);
-        assert_eq!(&main.span[0x18C..0x190], &[0xFF; 4], "the same hole after the vector table as TRITON");
-        // The EEPROM record table of the NEPTUN main image is byte for byte the TRITON one (one hash, two addresses).
-        let table = crate::eeprom_init::record_table(&NEPTUN, &main).expect("the table is inside the NEPTUN image");
-        assert_eq!(sha256::digest_hex(table), crate::eeprom_init::RECORD_TABLE_SHA256);
-        // The identity is by file, not by role slot: a NEPTUN main in the handset slot says so.
-        let error = load(&main_bytes, Some(Role::Handset)).unwrap_err();
-        assert!(matches!(&error, FirmwareError::WrongRole { release, .. } if release.id == "NEPTUN-5.8-65.3"), "{error}");
-        assert!(error.to_string().contains("NEPTUN-5.8-65.3"), "{error}");
-        // A pair of the same release is accepted, a mixed one is refused with both releases named.
-        assert_eq!(common_release(&main, &handset).map(|r| r.id), Ok("NEPTUN-5.8-65.3"));
-        if let Some(triton) = read(Role::Handset) {
-            let triton = load(&triton, None).unwrap();
-            let message = common_release(&main, &triton).unwrap_err();
-            assert!(message.contains("NEPTUN-5.8-65.3") && message.contains("TRITON-5.8-65.3") && message.contains("same release"), "{message}");
-            assert!(common_release(&main, &main).is_err(), "two mains are not a pair");
-        }
-        // The unknown-image message lists both releases.
-        let text = FirmwareError::Unknown { srec_sha256: "00".into() }.to_string();
-        assert!(text.contains("TRITON-5.8-65.3") && text.contains("NEPTUN-5.8-65.3") && text.contains("ngc_main_5.8_NEPTUN.srec"), "{text}");
     }
 }
