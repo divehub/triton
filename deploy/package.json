@@ -4,6 +4,6 @@
   "private": true,
   "description": "On-demand firmware proxy of the NGC WebAssembly emulator (api/firmware.mjs): one Vercel Function, no static site. No dependencies.",
   "engines": {
-    "node": "22.x"
+    "node": "24.x"
   }
 }

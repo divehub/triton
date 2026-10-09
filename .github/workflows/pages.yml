@@ -29,10 +29,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Node 22 is what the web tests were written and run with.
+      # Node 24 is what the web and proxy tests are run with.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       # The pinned toolchain of rust-toolchain.toml; ./cargo uses the cargo on PATH when tools/rust does not exist.
       - name: Install Rust 1.98.1 with the wasm32 target

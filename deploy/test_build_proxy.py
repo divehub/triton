@@ -48,7 +48,7 @@ class Configuration(TempTree):
         self.assertFalse([key for key in build_proxy.FORBIDDEN_VERCEL_KEYS if key in config])
         text = (build_proxy.DEPLOY / "vercel.json").read_text()
         self.assertNotIn("Content-Security-Policy", text, "the page (and its CSP) lives on GitHub Pages")
-        self.assertEqual(json.loads((build_proxy.DEPLOY / "package.json").read_text())["engines"], {"node": "22.x"})
+        self.assertEqual(json.loads((build_proxy.DEPLOY / "package.json").read_text())["engines"], {"node": "24.x"})
 
     def test_forbidden_vercel_settings_are_refused(self):
         original = json.loads((self.deploy / "vercel.json").read_text())

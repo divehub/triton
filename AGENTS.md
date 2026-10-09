@@ -57,7 +57,7 @@ The recorded test data (`testdata/`, `crates/*/tests/**`) contains register-leve
 
 ## Dependencies and tools
 
-- No crates.io dependencies. Python helpers use only the standard library; Node code uses only Node v22 built-ins. Announce any new tool or dependency in the pull request, with its source, version and hash; prefer existing tools.
+- No crates.io dependencies. Python helpers use only the standard library; Node code uses only Node 24 built-ins. Announce any new tool or dependency in the pull request, with its source, version and hash; prefer existing tools.
 - The web app has no build step beyond `web/build.py`, loads no external script, style or font, and has no inline script or style. Keep the Content-Security-Policy of `web/index.html` identical to `web/serve.py`'s (`deploy/build_site.py` fails otherwise).
 - GitHub Actions: `.github/workflows/pages.yml` uses only GitHub's own actions. Do not add third-party actions without a reason and a pinned version.
 

@@ -140,7 +140,7 @@ Steps, commands and checks: [deploy/README.md](deploy/README.md).
 ## Status (2026-10-09)
 
 - **Performance, TRITON** (Apple M1 Max):
-  - WebAssembly in Node v22, 10 ms slices: boot about 9×, steady state at the surface about 24×, menu redraw 15–16× real time with the exact idle-loop fast-forward; about 1.05× with it disabled.
+  - WebAssembly in Node 24, 10 ms slices: boot about 9×, steady state at the surface 22–25×, menu redraw 15–16× real time with the exact idle-loop fast-forward; about 1.05× with it disabled.
   - Dive with valid tissues (20 m, Node): 11.8× on average and 5.6× during the main board's decompression bursts (natively 17× and 7.5×), with the exact routine acceleration and interpreter fast paths of DESIGN section 16. Before them: 2.85× and 1.1×.
   - In-app Chromium: paced 1.00×.
 - **Fidelity against fresh Renode 1.17.0 runs of the TRITON SRECs, with the I2C idle-high fixture off:**
