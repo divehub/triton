@@ -1,5 +1,7 @@
 //! `button-capture`: synthetic PE3/PE5 low pulses go through the real TIM3 input capture, IRQ 29 and the original
-//! callback at `0x08005B18` of the handset firmware (handset only, like `emulation/main-boot/button-probe.resc`).
+//! callback at `0x08005B18` of the handset firmware (handset only, like `emulation/main-boot/button-probe.resc`). Like every recorded
+//! scenario it runs with the Renode button model (`recorded_config`: pins low until TIM3 is configured, then high); the pull-up model
+//! of the default configuration is tested by `crates/ngc/tests/custom_firmware.rs` and `buttons_capture.rs`.
 //!
 //! The callback accepts a low width of 150..700 timer counts (122.88..573.44 ms at the firmware's 1 220.703125 Hz
 //! capture clock): a 204.8 ms pulse (250 counts) sets the pending flag of its input (`0x200005BD` for PE3,

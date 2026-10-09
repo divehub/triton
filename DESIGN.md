@@ -518,3 +518,47 @@ The tissue block is the surface equilibrium at 1.013 bar whatever surface-pressu
 - **Slow tier**: `./cargo test --workspace --release -- --ignored` (23 tests, about 77 s: the dive benchmark identity on, off and shadow 41 s, every scenario with the routine acceleration on and off 16 s, the seven heavier scenarios 19 s, the NaN contrast of the factory image 3 s, the micro-benchmarks that were already ignored), `ngc-cli scenario all` (20 s), `ngc-cli bench --dive --verify-routine-accel` (49 s) and `node web/test-node.mjs --slow` (the pacing measurement and the replay logic on a real alert dive, about 10 s).
 - **Exactness invariants stay in the quick loop**, each on a short real-firmware run: idle fast-forward on and off (`session_parity.rs`, 2.5 s of boot, a HUD and a vibrator pulse, histories and both fingerprints), routine acceleration on, off and shadow (`routine_accel.rs`: a 4 s boot and 10 s of descent, 38 000 replaced calls, one checkpoint of fingerprint, FPSCR/VFP, predecode cache, retire counts and LCD; plus the two cheapest scenarios byte for byte), native against WebAssembly (`web/test-node.mjs`: a 3 s boot and 0.5 s of steady state, digests compared through `ngc-cli bench --json` and `web/bench-node.mjs --expect`). The per-routine differential tests (`accel_diff.rs`, `accel_synthetic.rs`) and the interpreter's shadow checks (`fast_it.rs`) stay as they are.
 - **NEPTUN**: all tests that needed its firmware were dropped (the routine match, the address proofs, the dual-boot smoke test, the `decoHealth` unknown report, the factory image on a fresh profile, the mixed-pair and scenario refusals, the web pair test). The code paths, the release table and its firmware-free unit tests stay. The mixed-pair refusal is still tested, with a TRITON image relabeled in the release table.
+
+## 20. Custom (native) firmware builds (2026-10-09)
+
+The private analysis workspace is rewriting both firmwares in Rust (Embassy, `thumbv7em-none-eabihf`). Its requirements for this emulator (WASM-01..05) are: SREC admission without release hashes, a native runtime adapter without original-RAM diagnostics, isolated profiles, and pin-driven controls. User decisions: SREC only; one shared custom profile area (the user resets it before loading a new build); performance is not a goal yet; orientation handling is out of scope (fixed default); buttons keep the fixed 204.8 ms taps and the staggered Confirm.
+
+### 20.1 Admission (engine `firmware.rs`, ABI, entry screen)
+
+- A **custom** load takes an SREC for an explicit role (the slot decides; content cannot, both native builds share a reset vector) and skips release identification. It keeps the structural checks: S-record syntax, checksums, record counts, no overlapping data, every byte inside `0x08004000..0x08100000`, a vector table at `0x08004000`, an initial SP that is 8-byte aligned in `0x20000000 < SP <= 0x20018000`, a Thumb reset vector pointing into loaded flash, and an S7/S9/S8 entry (when present) equal to the reset vector. Bytes inside the loaded span that no record covers are `0x00` (the native export materializes its gaps; the legacy `0xFF` reconstruction of the original images is unchanged).
+- Release: `CUSTOM` (label "Custom build"), every original firmware address unavailable with the reason "custom build: original firmware addresses do not apply". In custom mode both boards are custom; there is no mixed original/custom session.
+- ABI: `ngc_firmware_inspect_custom(ptr, len)` returns the structural report JSON (checks, SHA-256 of the SREC and of the reconstructed binary, span, initial SP, reset PC, entry); `ngc_set_custom_firmware(role, ptr, len)` verifies structurally and keeps the image. `ngc_set_firmware` and the original path are unchanged. Session creation with custom images reports `firmware.release = {id: "CUSTOM", label: "Custom build"}` plus per-role `srecSha256`, `binSha256`, `stack`, `resetPC` and `custom: true`.
+
+### 20.2 Native runtime adapter
+
+- With `CUSTOM`: no terminal-handler PC stop, no original-RAM diagnostics (battery ready, mode, `decoHealth` all unknown with the reason), no routine acceleration unless code bytes match (already true), no factory EEPROM image (the original record table is absent, so a new EEPROM stays blank and the firmware initializes it).
+- Health for every release: the state gains per-board `faults: {cfsr, hfsr, lockup}`. Progress for custom builds is read from UART output (the existing console).
+- Standby: detected from hardware state (the core sleeping in WFI/WFE with `SCR.SLEEPDEEP` set and the PWR low-power mode selecting standby or shutdown) when the PWR model allows it; otherwise Cold boot is refused for custom builds with a clear message.
+- Restart, Cold (if allowed), Wake and a machine reset keep the custom images.
+
+### 20.3 Buttons (one electrical path for every firmware)
+
+- The original-RAM orientation byte (`0x20000740`) is no longer read. Up is PE5 (mask 2), Down is PE3 (mask 1): the mapping of the default orientation value 1 that a fresh profile uses. Confirm stays the two overlapping 204.8 ms presses, PE5 second, 50 virtual ms later (or as today). Taps stay 204.8 ms.
+- PE3/PE5 rest high from reset (an external pull-up), not only after TIM3 capture is configured. A press is accepted whenever no other gesture runs; before the firmware configures its inputs it simply has no effect, as on hardware. The `navigationOrientation` state field goes away.
+- Original-firmware behavior must stay identical: scenarios, the dive benchmark identity and the fast tier. If the idle-high change alters a Renode-recorded comparison, pin it in `scenario::recorded_config` like the other fixtures.
+
+### 20.4 Profiles (page)
+
+- One shared OPFS/IndexedDB profile area for custom builds (`custom`), separate from TRITON and NEPTUN; Reset profile clears it. Titles say "Custom build". Remembered custom files are kept separately from remembered original files.
+- The entry screen offers custom mode explicitly ("Use custom firmware builds", release verification skipped), with one SREC picker per board (`.srec`), the structural report and both SHA-256 values. URL loading stays for original releases only.
+
+### 20.5 Ownership
+
+| WP | Owns |
+| --- | --- |
+| NATIVE-ENGINE | `crates/**`, `docs/releases.md`, `docs/eeprom.md` |
+| NATIVE-WEB | `web/**` (develops against 20.1 JSON with a fake engine first) |
+| Planner | `DESIGN.md`, `README.md`, `AGENTS.md`, git |
+
+### 20.6 As implemented (2026-10-09)
+
+- **Admission.** `firmware::load_custom` and the ABI exports as in 20.1; errors read `custom <role> build rejected: name: detail; ...`. The S7/S8/S9 entry is compared with the reset vector ignoring the Thumb bit. A custom/original mix is refused at session creation ("Mixed firmware: ...").
+- **Standby.** Detected from hardware state on the 50 ms grid: the main core entered sleep with `SLEEPDEEP` set while `PWR_CR1.LPMS` selects standby (3) or shutdown (4); a non-timing observation counter (`Cpu::deep_sleep_entries`) latches it because emulated peripherals can wake the core at once. Original images keep the earlier register-only check. Cold boot is therefore allowed for custom builds.
+- **Wake fixture.** For custom builds it writes `PWR.SR1 = 0x104` and `RCC.CSR = 0` only; the original application marker `RTC.BKP1R = 0x32F0` is not written (it would overwrite native backup state).
+- **Buttons.** PE3/PE5 are high from reset (external pull-up) with no readiness gate; Up = PE5, Down = PE3 for every firmware. Renode's timer drops an input change while a channel is still an output and forgets the level, so the first press after configuring capture was lost; an opt-in `Stm32Timer::with_external_pull_ups()`, enabled only for the handset TIM3, remembers the pin level (a deliberate departure from Renode for that one timer; every Renode golden transcript still passes). Because the new default removes two zero-width capture interrupts after the original firmware's init, `scenario::recorded_config` keeps the old gated model (`SessionConfig::button_pull_up = false`); scenarios and the dive benchmark stay byte-identical. The session-create hook `blankEeprom` (benchmark only) also selects the recorded button model so the web dive benchmark keeps matching the native one.
+- **Native smoke (the user's work-in-progress builds, converted locally from `firmware.bin`).** All structural checks pass. The main scans its erased NOR for about 15 virtual s before raising the handset supply (PE3), so the handset starts at about 15.15 s (`--simultaneous-start` skips that). UART boot lines, LCD output (panel ID `0x798552`), CAN traffic and pin-driven keys (`KEY mask=1/2/3`) work; no faults; only harmless unmodeled-register warnings (GPIO `ASCR`, some I2C and TIM15 tag bits).

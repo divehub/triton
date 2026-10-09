@@ -11,6 +11,11 @@
 // storage area (TRITON keeps the original `profile` area). Every session creation passes a random `historyNonce`
 // and the `i2cIdleHigh` fixture option.
 //
+// Custom builds (DESIGN 20): the files of a custom session are held apart from the original releases' (`this.custom`, not
+// `this.firmware`), verified structurally for the role of the slot they were chosen for (`inspect-custom`), kept in the engine
+// with `setCustomFirmware`, remembered in their own storage area and run with the one shared `custom` profile area. A boot is
+// either an original or a custom one (`custom: true`); the two never share files, profile or remembered firmware.
+//
 // Pacing (see README.md): the engine runs in slices of 10 virtual ms. Each timer tick compares the virtual time
 // with `epochVirtual + elapsed wall time * speed` and runs slices until it has caught up or its wall-clock
 // budget (10 ms) is used, so incoming UI messages are handled between slices. A backlog above 250 virtual ms is
@@ -20,7 +25,7 @@
 
 import { parseSurfacePressure } from './deco.js';
 import { Engine, EngineError, PROFILE_FILES } from './engine.js';
-import { DEFAULT_RELEASE_ID, RELEASE_IDS, describeRelease, mixedPairMessage, profileArea, releaseOf } from './releases.js';
+import { CUSTOM_RELEASE_ID, DEFAULT_RELEASE_ID, RELEASE_IDS, describeRelease, firmwareArea, mixedPairMessage, profileArea, releaseOf } from './releases.js';
 import { makeZip } from './zip.js';
 import { MemoryStorage } from './storage.js';
 
@@ -112,6 +117,7 @@ export class Runtime {
     this.storage = null;
     this.storageProblems = [];
     this.firmware = { main: null, handset: null };
+    this.custom = { main: null, handset: null }; // the files of custom mode, apart from `firmware` (DESIGN 20.4)
     this.queue = Promise.resolve();
     this.crashed = null;
 
@@ -202,30 +208,34 @@ export class Runtime {
   }
 
   /**
-   * What the entry screen needs: engine, storage backend, the remembered firmware pair and the stored profile of
-   * every known release (`profiles[releaseId]`, null when there is none).
+   * What the entry screen needs: engine, storage backend, the remembered firmware pair (`remembered` for the original
+   * releases, `rememberedCustom` for custom builds) and the stored profile of every known release and of the custom builds
+   * (`profiles[releaseId]`, null when there is none; the custom profile is `profiles.CUSTOM`).
    */
   async on_info() {
     return {
       engine: this.engine.name,
       storage: { kind: this.storage.kind, persistent: this.storage.persistent, problems: this.storageProblems },
       remembered: await this.rememberedInfo(),
+      rememberedCustom: await this.rememberedInfo(true),
+      customSupported: !!this.engine.supportsCustom,
       profiles: await this.profilesInfo(),
       releases: RELEASE_IDS.map((id) => describeRelease(id)),
     };
   }
 
-  async rememberedInfo() {
+  async rememberedInfo(custom = false) {
+    const area = firmwareArea(custom);
     try {
-      const raw = await this.storage.read('firmware', 'index.json');
+      const raw = await this.storage.read(area, 'index.json');
       if (!raw) return null;
       const index = JSON.parse(new TextDecoder().decode(raw));
-      const stored = new Set((await this.storage.list('firmware')).map((file) => file.name));
+      const stored = new Set((await this.storage.list(area)).map((file) => file.name));
       const files = {};
       for (const role of ROLES) {
         if (index[role] && stored.has(`${role}.srec`)) {
           // An index written before releases existed has no `release`: those files are the TRITON pair.
-          files[role] = { ...index[role], release: describeRelease(index[role].release || DEFAULT_RELEASE_ID) };
+          files[role] = { ...index[role], release: describeRelease(custom ? CUSTOM_RELEASE_ID : index[role].release || DEFAULT_RELEASE_ID) };
         }
       }
       return Object.keys(files).length ? files : null;
@@ -248,7 +258,7 @@ export class Runtime {
 
   async profilesInfo() {
     const profiles = {};
-    for (const id of RELEASE_IDS) profiles[id] = await this.profileInfo(id);
+    for (const id of [...RELEASE_IDS, CUSTOM_RELEASE_ID]) profiles[id] = await this.profileInfo(id);
     return profiles;
   }
 
@@ -290,8 +300,33 @@ export class Runtime {
     return result;
   }
 
-  async on_clear_firmware({ role }) {
-    if (ROLES.includes(role)) this.firmware[role] = null;
+  /**
+   * Structural check of a custom build for `role` (the slot decides the role: both native builds share a reset vector, so the
+   * content cannot). There is no release identification. A file the engine accepts is kept for the role; any new file for the
+   * role replaces the earlier one, so a refused file leaves the slot empty here as it does on the page.
+   */
+  async on_inspect_custom({ role, name, bytes }) {
+    if (!ROLES.includes(role)) throw new EngineError('Choose the main or the handset slot for a custom build');
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const result = { name, size: data.length, accepted: false, role, release: describeRelease(CUSTOM_RELEASE_ID), message: '', report: null };
+    this.custom[role] = null;
+    if (data.length > MAX_FIRMWARE_BYTES) {
+      result.message = `The file is ${data.length} bytes; a firmware image is far smaller than ${MAX_FIRMWARE_BYTES / (1024 * 1024)} MiB. Choose the .srec file.`;
+      return result;
+    }
+    const report = this.engine.inspectCustomFirmware(data);
+    result.report = report;
+    if (report && report.ok === true) {
+      this.custom[role] = { name, size: data.length, bytes: data, report, release: result.release };
+      result.accepted = true;
+    } else {
+      result.message = refusalMessage(report || {});
+    }
+    return result;
+  }
+
+  async on_clear_firmware({ role, custom = false }) {
+    if (ROLES.includes(role)) (custom ? this.custom : this.firmware)[role] = null;
     return {};
   }
 
@@ -300,12 +335,13 @@ export class Runtime {
    * roles; a remembered file that does not match a held file of the other role (or the other remembered file) is
    * reported and not used.
    */
-  async on_use_remembered() {
+  async on_use_remembered({ custom = false } = {}) {
+    if (custom) return this.useRememberedCustom();
     const problems = [];
     const index = await this.readFirmwareIndex();
     const candidates = {};
     for (const role of ROLES) {
-      const bytes = await this.storage.read('firmware', `${role}.srec`);
+      const bytes = await this.storage.read(firmwareArea(false), `${role}.srec`);
       if (!bytes) continue;
       const report = this.engine.inspectFirmware(bytes);
       if (report.ok && report.role === role) {
@@ -329,37 +365,64 @@ export class Runtime {
     };
   }
 
-  async readFirmwareIndex() {
+  /**
+   * The remembered custom pair, verified again for the slot each file was stored for (`main.srec` is the main build). They
+   * live in their own storage area and are never offered to the original releases.
+   */
+  async useRememberedCustom() {
+    const problems = [];
+    const index = await this.readFirmwareIndex(true);
+    const accepted = [];
+    for (const role of ROLES) {
+      const bytes = await this.storage.read(firmwareArea(true), `${role}.srec`);
+      if (!bytes) continue;
+      const report = this.engine.inspectCustomFirmware(bytes);
+      if (report && report.ok === true) {
+        const name = (index[role] && index[role].name) || `${role}.srec`;
+        this.custom[role] = { name, size: bytes.length, bytes, report, release: describeRelease(CUSTOM_RELEASE_ID), remembered: true };
+        accepted.push({ role, name, size: bytes.length, report, release: this.custom[role].release });
+      } else {
+        problems.push(`${role}: ${refusalMessage(report || {})}`);
+      }
+    }
+    return { accepted, problems };
+  }
+
+  async readFirmwareIndex(custom = false) {
     try {
-      const raw = await this.storage.read('firmware', 'index.json');
+      const raw = await this.storage.read(firmwareArea(custom), 'index.json');
       return raw ? JSON.parse(new TextDecoder().decode(raw)) : {};
     } catch (_) {
       return {};
     }
   }
 
-  async on_forget() {
-    await this.storage.clear('firmware');
+  async on_forget({ custom = false } = {}) {
+    await this.storage.clear(firmwareArea(custom));
     return {};
   }
 
   /**
-   * Stores the verified SRECs in the origin-private file system (one remembered pair: remembering another release
-   * replaces it). Firmware is never put anywhere else (no IndexedDB).
+   * Stores the verified SRECs in the origin-private file system (one remembered pair per kind: remembering another release
+   * replaces the earlier original pair, and a custom pair replaces the earlier custom pair; the two kinds never touch each
+   * other). Firmware is never put anywhere else (no IndexedDB).
    */
-  async rememberFirmware() {
+  async rememberFirmware(custom = false) {
     if (this.storage.kind !== 'opfs') {
       throw new EngineError('Remembering firmware files needs the origin-private file system, which this browser does not provide here');
     }
-    await this.storage.clear('firmware');
+    const area = firmwareArea(custom);
+    const held = custom ? this.custom : this.firmware;
+    await this.storage.clear(area);
     const index = {};
     for (const role of ROLES) {
-      const slot = this.firmware[role];
+      const slot = held[role];
       if (!slot) continue;
-      await this.storage.write('firmware', `${role}.srec`, slot.bytes);
-      index[role] = { name: slot.name, size: slot.size, sha256: slot.report.srecSha256, release: (slot.release || describeRelease(DEFAULT_RELEASE_ID)).id, savedAt: this.wallClock() };
+      await this.storage.write(area, `${role}.srec`, slot.bytes);
+      const release = custom ? describeRelease(CUSTOM_RELEASE_ID) : slot.release || describeRelease(DEFAULT_RELEASE_ID);
+      index[role] = { name: slot.name, size: slot.size, sha256: slot.report.srecSha256, release: release.id, savedAt: this.wallClock() };
     }
-    await this.storage.write('firmware', 'index.json', new TextEncoder().encode(JSON.stringify(index)));
+    await this.storage.write(area, 'index.json', new TextEncoder().encode(JSON.stringify(index)));
   }
 
   // ---- sessions --------------------------------------------------------------------------------
@@ -388,8 +451,12 @@ export class Runtime {
     return config;
   }
 
-  /** The release of the firmware a session with `config` needs (both roles must come from the same release). */
-  bootRelease(config) {
+  /**
+   * The release of the firmware a session with `config` needs (both roles must come from the same release). Custom builds
+   * are one release of their own, whatever the files are.
+   */
+  bootRelease(config, custom = false) {
+    if (custom) return describeRelease(CUSTOM_RELEASE_ID);
     const roles = config.mode === 'dual' ? ROLES : ['handset'];
     const releases = roles.map((role) => this.firmware[role] && this.firmware[role].release).filter(Boolean);
     const first = releases[0] || describeRelease(DEFAULT_RELEASE_ID);
@@ -431,21 +498,28 @@ export class Runtime {
     this.engine.setHostInfo(factor, pacing);
   }
 
-  installFirmware(config) {
+  /** Gives the engine the images of the boot: the original files, or (`custom`) the custom builds, never both. */
+  installFirmware(config, custom = false) {
     for (const role of ROLES) this.engine.clearFirmware(role);
     const needed = config.mode === 'dual' ? ROLES : ['handset'];
+    const held = custom ? this.custom : this.firmware;
     for (const role of needed) {
-      const slot = this.firmware[role];
+      const slot = held[role];
       if (!slot) throw new EngineError(`The ${role} firmware file has not been provided`);
-      this.engine.setFirmware(role, slot.bytes);
+      if (custom) this.engine.setCustomFirmware(role, slot.bytes);
+      else this.engine.setFirmware(role, slot.bytes);
     }
   }
 
-  async on_boot({ options, remember = false, profile: profileMode = 'stored' }) {
+  async on_boot({ options, remember = false, profile: profileMode = 'stored', custom = false }) {
     const config = Runtime.normalizeConfig(options);
     await this.closeSession({ save: true });
-    this.installFirmware(config);
-    const releaseInfo = this.bootRelease(config);
+    // The save time and the capture name belong to the earlier session's profile (another release, or custom builds): a new
+    // session starts without them.
+    this.lastCapture = null;
+    this.lastSave = { wall: null, error: null };
+    this.installFirmware(config, custom);
+    const releaseInfo = this.bootRelease(config, custom);
     const area = profileArea(releaseInfo.id);
     let persist = profileMode !== 'none';
     let unlock = null;
@@ -468,14 +542,14 @@ export class Runtime {
     }
     if (remember) {
       try {
-        await this.rememberFirmware();
+        await this.rememberFirmware(custom);
       } catch (error) {
         this.notice('warning', `The firmware files could not be remembered in this browser: ${describeError(error).message}`);
       }
     }
     this.generation += 1;
     this.profileEpoch += 1;
-    this.session = { config, persist, unlock, generation: this.generation, releaseInfo, area };
+    this.session = { config, persist, unlock, generation: this.generation, releaseInfo, area, custom: !!custom };
     this.lastCheckpointWall = this.now();
     this.afterSessionChange({ postFrame: true });
     this.startTimers();

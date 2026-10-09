@@ -15,7 +15,7 @@
 //! | `exti` | `0x40010400` | `Exti` (24 lines): `[0-4] -> nvic@[6-10]`, `[5-9] -> exti5to9`, `[10-15] -> exti10to15` |
 //! | `exti5to9`, `exti10to15` | not mapped | `CombinedInput` (5 / 6 inputs) `-> nvic@23` / `nvic@40` |
 //! | `gpioA`..`gpioH` | `0x48000000 + 0x400 * n` | `Gpio` (mode reset `0xABFFFFFF` for A, `0xFFFFFEBF` for B), `gpioC 1 -> exti@1` |
-//! | `timer3`, `timer6` | `0x40000400`, `0x40001000` | STM32 timer, 80 MHz, limit `0xFFFF`, `-> nvic@29` / `nvic@54` |
+//! | `timer3`, `timer6` | `0x40000400`, `0x40001000` | STM32 timer, 80 MHz, limit `0xFFFF`, `-> nvic@29` / `nvic@54` (TIM3 remembers the level of its pull-up button inputs) |
 //! | `usart3` | `0x40004800` | `Usart` (80 MHz) `IRQ -> nvic@39` |
 //! | `can1` | `0x40006400` | `StmCan`, `[0-3] -> nvic@[19-22]` |
 //! | `i2c1` | `0x40005400` | `Stm32F7I2c`, `EventInterrupt -> nvic@31`, `ErrorInterrupt -> nvic@32` |
@@ -25,7 +25,7 @@
 //! | `timer2`, `timer15` | `0x40000000`, `0x40014000` | arithmetic-PWM timers, `-> nvic@28` / `nvic@24` |
 //! | `crc` | `0x40023000` | `Crc` (F0, configurable polynomial) |
 //! | `adc` | `0x50040000` | `NgcAdc` (sample value 400) |
-//! | `buttons` | `0x61000200` | `NGCHandsetButtons` on `timer3`: `PE3 -> gpioE@3 | timer3@0`, `PE5 -> gpioE@5 | timer3@2` |
+//! | `buttons` | `0x61000200` | `NGCHandsetButtons`, pins high from reset (pull-up): `PE3 -> gpioE@3 | timer3@0`, `PE5 -> gpioE@5 | timer3@2` |
 //! | `outputTelemetry` | `0x61000300` | `NGCBoardTelemetry` (handset), `gpioB 15 -> outputTelemetry@0` |
 
 use crate::board::{Board, BoardConfig};
@@ -97,11 +97,14 @@ pub struct HandsetOptions {
     pub adc_sample: u32,
     /// `connector Connect can1 ngcCAN` was done (dual run): the controller has a `FrameSent` subscriber.
     pub can_link: bool,
+    /// The button pins `PE3` / `PE5` rest high from reset through an external pull-up (default, DESIGN.md 20.3). `false` is the Renode
+    /// model of the recordings: low until TIM3 is configured for capture, then high with two zero-width capture edges.
+    pub button_pull_up: bool,
 }
 
 impl Default for HandsetOptions {
     fn default() -> Self {
-        Self { adc_sample: DEFAULT_ADC_SAMPLE, can_link: false }
+        Self { adc_sample: DEFAULT_ADC_SAMPLE, can_link: false, button_pull_up: true }
     }
 }
 
@@ -194,7 +197,13 @@ fn assemble(board: &mut Board<Cpu>, options: HandsetOptions) -> Result<HandsetId
     }
     let gpio: [PeriphId; 8] = gpio_ids.try_into().map_err(|_| "gpio ids".to_string())?;
 
-    let timer3 = mapped(board, 0x4000_0400, 0x400, "timer3", models::timer("timer3", PERIPHERAL_HZ, 0xFFFF))?;
+    // TIM3 captures the button pins: with the pull-up they are high before the firmware configures the capture, which the timer has to
+    // remember (the Renode-gated buttons of the recorded scenarios set them high only afterwards, with a plain `STM32_Timer`).
+    let timer3 = if options.button_pull_up {
+        mapped(board, 0x4000_0400, 0x400, "timer3", models::button_timer("timer3", PERIPHERAL_HZ, 0xFFFF))?
+    } else {
+        mapped(board, 0x4000_0400, 0x400, "timer3", models::timer("timer3", PERIPHERAL_HZ, 0xFFFF))?
+    };
     let timer6 = mapped(board, 0x4000_1000, 0x400, "timer6", models::timer("timer6", PERIPHERAL_HZ, 0xFFFF))?;
     let usart3 = mapped(board, 0x4000_4800, 0x400, "usart3", Box::new(Usart::new("usart3", PERIPHERAL_HZ as u32)))?;
     let can1 = mapped(board, 0x4000_6400, 0x400, "can1", Box::new(stm32::can::StmCan::new("can1")))?;
@@ -208,7 +217,7 @@ fn assemble(board: &mut Board<Cpu>, options: HandsetOptions) -> Result<HandsetId
     let timer15 = mapped(board, 0x4001_4000, 0x400, "timer15", models::lazy_pwm_timer("timer15", PERIPHERAL_HZ, 0xFFFF))?;
     let crc = mapped(board, 0x4002_3000, 0x400, "crc", Box::new(Crc::new("crc", Stm32Series::F0, true)))?;
     let adc = mapped(board, 0x5004_0000, 0x400, "adc", Box::new(NgcAdc::new("adc", options.adc_sample)))?;
-    let buttons = mapped(board, 0x6100_0200, 0x100, "buttons", models::handset_buttons("buttons", 0x4000_0400))?;
+    let buttons = mapped(board, 0x6100_0200, 0x100, "buttons", models::handset_buttons("buttons", options.button_pull_up, 0x4000_0400))?;
     let telemetry = mapped(board, 0x6100_0300, 0x100, "outputTelemetry", models::telemetry("outputTelemetry", true))?;
 
     // --- connections, in `.repl` order ---------------------------------------------------------------

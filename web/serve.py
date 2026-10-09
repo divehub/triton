@@ -133,9 +133,10 @@ def main():
     parser.add_argument("--quiet", action="store_true", help="do not log requests")
     parser.add_argument("--dev-firmware", metavar="DIR", action="append", default=[],
                         help="DEVELOPMENT AID, off by default: also serve the original SREC files of DIR (the four known TRITON / NEPTUN names, "
-                        "nothing else) at /dev-firmware/<name>, which the page loads when opened as /?dev-firmware (TRITON) or "
-                        "/?dev-firmware=neptun (for automated browser checks; normal use asks for the files). May be repeated to serve "
-                        "several release directories.")
+                        "nothing else) at /dev-firmware/<name>, which the page loads when opened as /?dev-firmware (TRITON), "
+                        "/?dev-firmware=neptun or /?dev-firmware=custom (the TRITON files in the custom-build slots, through the "
+                        "structural checks only) (for automated browser checks; normal use asks for the files). May be repeated to "
+                        "serve several release directories.")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")

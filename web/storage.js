@@ -6,9 +6,10 @@
 //   IdbStorage     IndexedDB (fallback when OPFS is unavailable, e.g. some private-browsing modes)
 //   MemoryStorage  no persistence (last resort, and the Node tests)
 //
-// Areas: 'firmware' (the remembered SREC pair) and one profile area per firmware release ('profile' for TRITON, the
-// location of the first version of this app, and 'profile-<release>' for the others; see releases.js). Names are
-// plain file names.
+// Areas: 'firmware' (the remembered SREC pair), one profile area per firmware release ('profile' for TRITON, the
+// location of the first version of this app, and 'profile-<release>' for the others; see releases.js), and for custom
+// builds (DESIGN 20.4) 'firmware-custom' (their remembered pair) and 'custom' (the one profile shared by every custom
+// build), none of which is ever shared with the areas above. Names are plain file names.
 
 import { storageAreas } from './releases.js';
 
@@ -150,8 +151,9 @@ export class OpfsStorage {
 export class IdbStorage {
   static open() {
     return new Promise((resolve, reject) => {
-      // Version 2 adds the profile stores of the other firmware releases; the stores of version 1 are kept.
-      const request = indexedDB.open(ROOT, 2);
+      // Version 2 adds the profile stores of the other firmware releases; version 3 the stores of custom builds (their profile
+      // and their remembered firmware); the stores of the earlier versions are kept.
+      const request = indexedDB.open(ROOT, 3);
       request.onupgradeneeded = () => {
         const db = request.result;
         for (const store of new Set(['profile', ...storageAreas()])) {

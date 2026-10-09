@@ -87,7 +87,9 @@ pub struct HostConfig {
     pub history_nonce: u64,
     /// Benchmark and test hook (`blankEeprom`, default off; the page never sends it and there is no CLI flag): a new EEPROM stays
     /// erased instead of becoming the factory image, which the Renode-recorded workload of `web/bench-node.mjs --dive` needs to match
-    /// the native dive benchmark (`ngc::scenario::recorded_config`). It is not the user option the factory image does not have.
+    /// the native dive benchmark (`ngc::scenario::recorded_config`). It selects that recorded workload as a whole: it also keeps the
+    /// handset buttons as the Renode model of the recordings (`SessionConfig::button_pull_up` false). It is not the user option the
+    /// factory image does not have.
     pub blank_eeprom: bool,
     /// The start-at-the-surface fixture (`startAtSurface`, default on; `--no-start-at-surface` of the CLI).
     pub start_at_surface: bool,

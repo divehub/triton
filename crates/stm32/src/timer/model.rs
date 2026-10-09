@@ -93,6 +93,10 @@ pub(crate) struct Cfg {
     /// `initialLimit`: reset value of ARR and width of the counter (`floor(log2(initialLimit)) + 1` bits).
     pub initial_limit: u32,
     pub bits: u32,
+    /// Remember the level an external source drives on a channel input while the channel is an output ([`St::ext`]): off for every
+    /// instance that must reproduce Renode (the recorded transcripts), on for the handset's TIM3, whose inputs are the
+    /// pull-up-high button pins ([`super::Stm32Timer::with_external_pull_ups`]).
+    pub remember_external_pins: bool,
 }
 
 impl Cfg {
@@ -179,6 +183,11 @@ pub(crate) struct St {
     pub ccmr: [[u32; 4]; 2],
     /// `Connections[i].IsSet`: the level of each channel pin.
     pub pins: [bool; 4],
+    /// The level an external source last drove on each channel input, also while the channel was in output mode (where Renode's
+    /// `OnGPIO` drops the event and forgets the level). A pin that was already high when the firmware switches the channel to
+    /// capture is high for the timer too and produces no edge; see `Model::adopt_external_level`. `None`: never driven, or the
+    /// instance does not remember ([`Cfg::remember_external_pins`], the Renode-exact default).
+    pub ext: [Option<bool>; 4],
     /// Levels of the interrupt outputs (`IRQ`, break, update, trigger, commutation, capture/compare).
     pub irq: [bool; 6],
     /// `NGCLazyPwmTimer.suppressed` (arithmetic mode): the stock events are elided. Only ever true under
@@ -209,6 +218,7 @@ impl St {
             ch: [Chan::default(); 4],
             ccmr: [[0; 4]; 2],
             pins: [false; 4],
+            ext: [None; 4],
             irq: [false; 6],
             engaged: false,
             external_input: false,

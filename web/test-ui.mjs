@@ -20,7 +20,8 @@ import { Engine, EngineError } from './engine.js';
 import { ActionQueue, BASIC_IDS, ConditionsController } from './conditions.js';
 import { handsetKeyAction } from './keys.js';
 import { Cursor, PulseQueue, ReplayController, describeEntry, driveText, historyText } from './replay.js';
-import { DEFAULT_RELEASE_ID, RELEASES, describeRelease, mixedPairMessage, pairConflict, profileArea, releaseOf, storageAreas } from './releases.js';
+import { CUSTOM_RELEASE_ID, DEFAULT_RELEASE_ID, RELEASES, RELEASE_IDS, describeRelease, firmwareArea, mixedPairMessage, pairConflict, profileArea, releaseOf, storageAreas } from './releases.js';
+import * as faults from './faults.js';
 import { FirmwareFetchError, MAX_FETCH_BYTES, configuredProxyUrl, fetchFirmware, loopbackProxyUrl, normalizeFirmwareUrl, proxyEndpoint } from './firmware-url.js';
 import { FIRMWARE_PROXY_URL } from './config.js';
 import * as sensors from './sensors.js';
@@ -1589,7 +1590,7 @@ test('releases: the table, the report mapping and the per-release storage areas'
   assert.equal(profileArea('TRITON-5.8-65.3'), 'profile', 'TRITON keeps the location of the first version');
   assert.equal(profileArea('NEPTUN-5.8-65.3'), 'profile-neptun-5_8-65_3');
   assert.notEqual(profileArea('NEPTUN-5.8-65.3'), profileArea('TRITON-5.8-65.3'));
-  assert.deepEqual(storageAreas(), ['firmware', 'profile', 'profile-neptun-5_8-65_3']);
+  assert.deepEqual(storageAreas(), ['firmware', 'profile', 'profile-neptun-5_8-65_3', 'firmware-custom', 'custom']);
   assert.deepEqual(releaseOf({ ok: true, release: { id: 'NEPTUN-5.8-65.3', label: 'NEPTUN 5.8 / 65.3' } }), { id: 'NEPTUN-5.8-65.3', name: 'NEPTUN', label: 'NEPTUN 5.8 / 65.3' });
   assert.deepEqual(releaseOf({ ok: true, release: { id: 'TRITON-5.8-65.3' } }), describeRelease('TRITON-5.8-65.3'));
   assert.equal(releaseOf({ ok: true }).id, 'TRITON-5.8-65.3', 'an engine without the release table only knew TRITON');
@@ -1608,11 +1609,40 @@ class FakeEngine {
     this.unsupportedOptions = new Set();
     this.rejectOptions = rejectOptions;
     this.firmware = {};
+    this.customImages = {}; // images given with setCustomFirmware (DESIGN 20.1), apart from the original ones
+    this.supportsCustom = true;
     this.created = [];
     this.seeds = [];
     this.active = false;
     this.clock = 0;
   }
+
+  /**
+   * The structural report of DESIGN 20.1 for a custom build. A file is "S0custom:<tag>": `bad` fails the initial-SP check, a
+   * file that does not start with S0 is not an S-record.
+   */
+  inspectCustomFirmware(bytes) {
+    if (!this.supportsCustom) throw new EngineError('This engine build has no support for custom firmware builds.');
+    const body = new TextDecoder().decode(bytes);
+    const base = {
+      custom: true, role: null, release: { id: 'CUSTOM', label: 'Custom build' }, srecBytes: bytes.length, header: 'custom', recordCounts: { S0: 1 },
+      segments: [{ start: 0x08004000, end: 0x08005000 }], entry: null, error: null,
+    };
+    if (!body.startsWith('S0')) {
+      return { ...base, ok: false, srecSha256: 'cd'.repeat(32), binSha256: null, span: null, checks: [{ name: 'srec-syntax', ok: false, detail: 'record 1: not an S-record' }], error: 'record 1: not an S-record', message: 'srec-syntax: record 1: not an S-record' };
+    }
+    const names = ['srec-syntax', 'address-bounds', 'span', 'vector-table', 'initial-sp', 'reset-vector', 'entry-point'];
+    const bad = body.endsWith(':bad');
+    return {
+      ...base,
+      ok: !bad, srecSha256: `sha-${body}`, binSha256: `bin-${body}`, span: { start: 0x08004000, end: 0x08005000 },
+      initialSp: bad ? 0x20019000 : 0x20018000, resetPc: 0x08004411, entry: 0x08004411,
+      checks: names.map((name) => ({ name, ok: !(bad && name === 'initial-sp'), detail: bad && name === 'initial-sp' ? '0x20019000 is above 0x20018000' : 'ok' })),
+      message: bad ? 'initial-sp: 0x20019000 is above 0x20018000' : null,
+    };
+  }
+
+  setCustomFirmware(role, bytes) { this.customImages[role] = new TextDecoder().decode(bytes); }
 
   inspectFirmware(bytes) {
     const [role, release] = new TextDecoder().decode(bytes).split(':');
@@ -1623,7 +1653,7 @@ class FakeEngine {
   }
 
   setFirmware(role, bytes) { this.firmware[role] = new TextDecoder().decode(bytes); }
-  clearFirmware(role) { delete this.firmware[role]; }
+  clearFirmware(role) { delete this.firmware[role]; delete this.customImages[role]; }
 
   createSession(config, profile) {
     this.unsupportedOptions = new Set();
@@ -1634,7 +1664,7 @@ class FakeEngine {
         this.unsupportedOptions.add(name);
       }
     }
-    this.created.push({ config: options, requested: { ...config }, profile: { ...profile }, firmware: { ...this.firmware } });
+    this.created.push({ config: options, requested: { ...config }, profile: { ...profile }, firmware: { ...this.firmware }, custom: { ...this.customImages } });
     this.active = true;
   }
 
@@ -2753,7 +2783,7 @@ test('page: the decompression warnings show only for a proven bad state, name th
 });
 
 test('page: the cold boot hint sits at the Cold boot button and appears in the start options when a cold boot is chosen', async () => {
-  assert.match(html, /<button type="button" data-action="cold" title="[^"]*oxygen calibration[^"]*">Cold boot<\/button>/);
+  assert.match(html, /<button type="button" id="cold-boot" data-action="cold" title="[^"]*oxygen calibration[^"]*">Cold boot<\/button>/);
   assert.match(/<p id="cold-hint"[^>]*>([^<]*)<\/p>/.exec(html)[1], /Cold boot: the firmware clears the oxygen-cell calibration.*Calibrate again afterwards: Menu → Calibration → Air → Auto → Start → Save\./);
   const m = await mountEntry();
   assert.equal(m.el('start-cold-hint').hidden, true, 'the default boot is a handset wake: no hint');
@@ -2895,4 +2925,585 @@ test('structure: deco.js is a published page module and the engine option list n
   const engineSource = fs.readFileSync(path.join(here, 'engine.js'), 'utf8');
   assert.match(engineSource, /OPTIONAL_OPTIONS = \[[^\]]*'startAtSurface'[^\]]*'surfacePressureMbar'/);
   assert.doesNotMatch(engineSource, /OPTIONAL_OPTIONS = \[[^\]]*'(eepromFactoryInit|decoStorageFixture)'/, 'the removed options are not retried without');
+});
+
+// =====================================================================================================
+// custom (native) firmware builds, DESIGN 20: the mode choice, the structural report, isolated profiles, the fault report
+// =====================================================================================================
+
+const customSrec = (tag) => `S0custom:${tag}`;
+/** A chosen or dropped file: a fresh object per use (the worker takes its buffer). */
+const customFile = (name, tag) => {
+  const bytes = text(customSrec(tag));
+  return { name, size: bytes.length, arrayBuffer: async () => bytes.buffer };
+};
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+const until = async (predicate) => {
+  for (let turn = 0; turn < 200 && !predicate(); turn++) await flush();
+  assert.ok(predicate(), 'the condition was not reached');
+};
+const names = (files) => files.map((file) => file.name).sort();
+
+test('custom: the release is named by the page and has the one shared profile area and a remembered-firmware area of its own', () => {
+  assert.deepEqual(describeRelease('CUSTOM', 'Custom build'), { id: 'CUSTOM', name: 'Custom build', label: 'Custom build', custom: true });
+  assert.equal(describeRelease(CUSTOM_RELEASE_ID).custom, true);
+  assert.equal(describeRelease('TRITON-5.8-65.3').custom, undefined, 'an original release never carries the custom flag');
+  assert.ok(!RELEASE_IDS.includes(CUSTOM_RELEASE_ID), 'custom builds are not in the release table');
+  assert.equal(releaseOf({ ok: true, release: { id: 'CUSTOM', label: 'Custom build' } }).custom, true);
+  assert.equal(profileArea('CUSTOM'), 'custom');
+  const areas = [profileArea('CUSTOM'), profileArea('TRITON-5.8-65.3'), profileArea('NEPTUN-5.8-65.3'), firmwareArea(false), firmwareArea(true)];
+  assert.equal(new Set(areas).size, 5, 'no two kinds share a storage area');
+  assert.ok(areas.every((area) => storageAreas().includes(area)), 'IndexedDB creates a store for each');
+});
+
+test('engine: the custom-firmware exports map the role like the original ones, and an older module is told so', () => {
+  const calls = [];
+  const memory = new ArrayBuffer(1 << 16);
+  const bytes = new Uint8Array(memory);
+  let top = 4096;
+  const encoder = new TextEncoder();
+  const exports = {
+    memory: { buffer: memory },
+    ngc_init() {},
+    ngc_engine() { return 0; },
+    ngc_version() { return 1; },
+    ngc_output_ptr() { return 100; },
+    ngc_alloc(length) { const at = top; top += length + 8; return at; },
+    ngc_free() {},
+    ngc_firmware_inspect_custom(ptr, length) { calls.push(['inspect', length]); const json = encoder.encode('{"ok":true,"custom":true}'); bytes.set(json, 100); return json.length; },
+    ngc_set_custom_firmware(role, ptr, length) { calls.push(['set', role, length]); return role === 1 && length === 1 ? 1 : 0; },
+    ngc_error() { const message = encoder.encode('initial-sp: too high'); bytes.set(message, 100); return message.length; },
+  };
+  const engine = new Engine({ exports }, null);
+  assert.equal(engine.supportsCustom, true);
+  assert.deepEqual(engine.inspectCustomFirmware(new Uint8Array([1, 2, 3])), { ok: true, custom: true });
+  engine.setCustomFirmware('main', new Uint8Array([1, 2]));
+  assert.throws(() => engine.setCustomFirmware('handset', new Uint8Array([1])), (error) => error instanceof EngineError && /initial-sp: too high/.test(error.message));
+  assert.deepEqual(calls.filter((call) => call[0] === 'set').map((call) => call[1]), [0, 1], 'main is role 0, handset role 1');
+  const older = new Engine({ exports: { ...exports, ngc_firmware_inspect_custom: undefined, ngc_set_custom_firmware: undefined } }, null);
+  assert.equal(older.supportsCustom, false);
+  assert.throws(() => older.inspectCustomFirmware(new Uint8Array(1)), /no support for custom firmware/);
+  assert.throws(() => older.setCustomFirmware('main', new Uint8Array(1)), /no support for custom firmware/);
+});
+
+test('runtime (fake engine): a custom build is checked for the role of its slot, held apart from the original files and booted with the shared custom profile', async () => {
+  const engine = new FakeEngine();
+  const storage = new MemoryStorage();
+  const h = new RuntimeHarness(engine, storage);
+  const info = await h.request('init');
+  assert.equal(info.customSupported, true);
+  assert.equal(info.rememberedCustom, null);
+  assert.equal(info.profiles.CUSTOM, null);
+  // The slot decides the role (both native builds share a reset vector): this "handset" file serves the main slot.
+  const asMain = await h.request('inspect-custom', { role: 'main', name: 'native_handset.srec', bytes: text(customSrec('a')) });
+  assert.equal(asMain.accepted, true);
+  assert.equal(asMain.role, 'main');
+  assert.equal(asMain.release.custom, true);
+  assert.equal(asMain.report.role, null, 'the engine report names no role for a custom build');
+  assert.equal((await h.request('inspect-custom', { role: 'handset', name: 'h.srec', bytes: text(customSrec('b')) })).accepted, true);
+  // A refused file is explained with the report and leaves the slot empty (the earlier file is replaced, not kept).
+  const bad = await h.request('inspect-custom', { role: 'handset', name: 'bad.srec', bytes: text(customSrec('x:bad')) });
+  assert.equal(bad.accepted, false);
+  assert.match(bad.message, /^initial-sp: /);
+  assert.equal(bad.report.checks.find((check) => !check.ok).name, 'initial-sp');
+  assert.equal(h.runtime.custom.handset, null);
+  assert.equal((await h.request('inspect-custom', { role: 'handset', name: 'h.srec', bytes: text(customSrec('b')) })).accepted, true);
+  await assert.rejects(() => h.request('inspect-custom', { role: 'both', name: 'x.srec', bytes: text(customSrec('c')) }), /main or the handset slot/);
+  assert.equal(h.runtime.firmware.main, null, 'no original file was touched');
+
+  // Booting custom gives the engine the custom images only, and the release is the custom build.
+  const booted = await h.request('boot', { options: { mode: 'dual', startPaused: true }, custom: true });
+  assert.equal(booted.release.id, 'CUSTOM');
+  assert.equal(booted.release.custom, true);
+  assert.equal(booted.hostStatus.release.name, 'Custom build');
+  assert.deepEqual(engine.created[0].custom, { main: customSrec('a'), handset: customSrec('b') });
+  assert.deepEqual(engine.created[0].firmware, {});
+  await h.request('flush');
+  await h.request('close-session');
+  assert.ok(h.runtime.lastSave.wall, 'the custom session saved its profile');
+  assert.deepEqual(names(await storage.list('custom')), ['eeprom.bin', 'inputs.json'], 'the custom profile area');
+  assert.equal((await storage.list('profile')).length, 0, 'TRITON\'s area stays empty');
+  assert.equal((await storage.list(profileArea('NEPTUN-5.8-65.3'))).length, 0);
+
+  // Isolation both ways: markers in each area are seen only by their own kind of session.
+  await storage.write('custom', 'led-colors.json', text('{"marker":"custom"}'));
+  await storage.write('profile', 'led-colors.json', text('{"marker":"triton"}'));
+  await h.inspect('main', 'TRITON-5.8-65.3');
+  await h.inspect('handset', 'TRITON-5.8-65.3');
+  assert.equal(h.runtime.custom.main.name, 'native_handset.srec', 'inspecting original files leaves the custom ones');
+  assert.equal(h.runtime.firmware.main.release.name, 'TRITON');
+  const original = await h.request('boot', { options: { mode: 'dual', startPaused: true } });
+  assert.equal(original.release.id, 'TRITON-5.8-65.3');
+  assert.equal(original.hostStatus.storage.lastSave, null, 'a new session does not inherit the earlier session\'s save time');
+  assert.deepEqual(engine.created.at(-1).custom, {}, 'an original boot gets no custom image');
+  assert.ok(engine.created.at(-1).firmware.main);
+  assert.equal(new TextDecoder().decode(engine.created.at(-1).profile['led-colors.json']), '{"marker":"triton"}');
+  await h.request('close-session');
+  await h.request('boot', { options: { mode: 'dual', startPaused: true }, custom: true });
+  assert.equal(new TextDecoder().decode(engine.created.at(-1).profile['led-colors.json']), '{"marker":"custom"}');
+  assert.deepEqual(engine.created.at(-1).firmware, {}, 'a custom boot gets no original image');
+
+  // Reset profile erases the profile of the session's kind only.
+  await h.request('reset-profile');
+  assert.equal((await storage.list('custom')).length, 0);
+  assert.ok((await storage.list('profile')).length > 0, 'TRITON\'s profile is untouched');
+  await h.request('close-session');
+  await storage.write('custom', 'eeprom.bin', new Uint8Array([1]));
+  assert.ok((await h.request('info')).profiles.CUSTOM, 'the entry screen sees the custom profile');
+  await h.request('reset-profile', { release: 'CUSTOM' });
+  assert.equal((await storage.list('custom')).length, 0, 'without a session the entry screen resets the custom area');
+  assert.ok((await storage.list('profile')).length > 0);
+
+  // Clearing a slot of one kind leaves the other kind's.
+  await h.request('clear-firmware', { role: 'main', custom: true });
+  assert.equal(h.runtime.custom.main, null);
+  assert.ok(h.runtime.firmware.main);
+  await assert.rejects(() => h.request('boot', { options: { mode: 'dual', startPaused: true }, custom: true }), /main firmware file has not been provided/);
+});
+
+test('runtime (fake engine): remembered custom builds live in their own area and never mix with the remembered original pair', async () => {
+  const storage = new MemoryStorage();
+  storage.kind = 'opfs';
+  const h = new RuntimeHarness(new FakeEngine(), storage);
+  await h.request('init');
+  await h.request('inspect-custom', { role: 'main', name: 'm.srec', bytes: text(customSrec('m')) });
+  await h.request('inspect-custom', { role: 'handset', name: 'h.srec', bytes: text(customSrec('h')) });
+  await h.request('boot', { options: { mode: 'dual', startPaused: true }, remember: true, custom: true });
+  await h.request('close-session');
+  assert.deepEqual(names(await storage.list('firmware-custom')), ['handset.srec', 'index.json', 'main.srec']);
+  assert.equal((await storage.list('firmware')).length, 0);
+  const info = await h.request('info');
+  assert.equal(info.remembered, null, 'the original banner has nothing to offer');
+  assert.equal(info.rememberedCustom.main.name, 'm.srec');
+  assert.equal(info.rememberedCustom.main.release.custom, true);
+  // Remembering an original pair afterwards does not replace the custom pair.
+  await h.inspect('main', 'TRITON-5.8-65.3');
+  await h.inspect('handset', 'TRITON-5.8-65.3');
+  await h.request('boot', { options: { mode: 'dual', startPaused: true }, remember: true });
+  await h.request('close-session');
+  assert.equal((await storage.list('firmware-custom')).length, 3);
+  assert.equal((await storage.list('firmware')).length, 3);
+  assert.equal((await h.request('info')).remembered.main.release.name, 'TRITON');
+
+  // A later visit verifies the custom files again, for the slot each was stored for, and keeps them apart from the original slots.
+  const later = new RuntimeHarness(new FakeEngine(), storage);
+  await later.request('init');
+  const used = await later.request('use-remembered', { custom: true });
+  assert.deepEqual(used.accepted.map((file) => file.role).sort(), ['handset', 'main']);
+  assert.deepEqual(used.problems, []);
+  assert.equal(later.runtime.custom.main.remembered, true);
+  assert.equal(later.runtime.firmware.main, null);
+  // A remembered build that no longer passes the structural checks is reported and not used.
+  await storage.write('firmware-custom', 'main.srec', text(customSrec('z:bad')));
+  const broken = new RuntimeHarness(new FakeEngine(), storage);
+  await broken.request('init');
+  const refused = await broken.request('use-remembered', { custom: true });
+  assert.deepEqual(refused.accepted.map((file) => file.role), ['handset']);
+  assert.match(refused.problems[0], /^main: initial-sp: /);
+  assert.equal(broken.runtime.custom.main, null);
+  // Forget (custom) leaves the original pair.
+  await later.request('forget', { custom: true });
+  assert.equal((await storage.list('firmware-custom')).length, 0);
+  assert.equal((await storage.list('firmware')).length, 3);
+});
+
+test('entry (custom mode): the explicit choice swaps the original sources for one card per board, with no URL loading', async () => {
+  const m = await mountEntry(); // the default fetch fails the test: nothing may be fetched
+  assert.match(html, /<input type="checkbox" id="custom-mode"><span><strong>Use custom firmware builds<\/strong> \(release verification skipped\)/, 'unchecked by default');
+  assert.match(html, /<input id="custom-file-main" type="file" accept="\.srec" hidden>/);
+  assert.match(html, /<input id="custom-file-handset" type="file" accept="\.srec" hidden>/);
+  assert.equal(m.el('custom-mode').checked, false);
+  assert.equal(m.el('original-mode').hidden, false);
+  assert.equal(m.el('custom-mode-panel').hidden, true);
+  m.el('custom-mode').checked = true;
+  m.el('custom-mode').dispatch('change');
+  assert.equal(m.view.customMode, true);
+  assert.equal(m.el('original-mode').hidden, true, 'the normal TRITON / NEPTUN loading is out of the way');
+  assert.equal(m.el('custom-mode-panel').hidden, false);
+  assert.equal(m.el('lead-custom').hidden, false);
+  assert.equal(m.el('lead-original').hidden, true);
+  assert.equal(m.el('fact-custom').hidden, false);
+  assert.equal(m.el('fact-original').hidden, true);
+  assert.match(m.document.getElementById('subtitle').textContent, /^Custom firmware builds/);
+  assert.equal(m.el('boot').disabled, true);
+  assert.equal(m.el('boot-hint').textContent, 'Provide both custom builds to continue.');
+  for (const role of ['main', 'handset']) assert.equal(m.el(`custom-slot-${role}`).querySelector('[data-part="state"]').textContent, 'Waiting for the file. Choose file…');
+  // No URL loading in custom mode, even with the pre-filled fields.
+  assert.equal(m.el('url-main').value.startsWith('https://'), true);
+  await m.view.loadUrls();
+  assert.equal(m.calls.length, 0);
+  // A cold boot is explained for custom builds, not with the original firmware's calibration hint.
+  m.el('start-boot-mode').value = 'cold';
+  m.el('start-boot-mode').dispatch('change');
+  assert.equal(m.el('start-cold-hint').hidden, true);
+  assert.equal(m.el('start-cold-hint-custom').hidden, false);
+  assert.match(m.el('start-cold-hint-custom').textContent, /refuses the boot and says why/);
+  // Back to the normal loading.
+  m.el('custom-mode').checked = false;
+  m.el('custom-mode').dispatch('change');
+  assert.equal(m.el('original-mode').hidden, false);
+  assert.equal(m.el('custom-mode-panel').hidden, true);
+  assert.equal(m.document.getElementById('subtitle').textContent, 'TRITON or NEPTUN main 5.8 + handset 65.3 · WebAssembly functional model');
+  assert.equal(m.el('start-cold-hint').hidden, false);
+});
+
+test('entry (custom mode): the card decides the role; each card shows the structural report; failures stay in view; only .srec files', async () => {
+  const m = await mountEntry();
+  m.view.setCustomMode(true);
+  const card = (role) => m.el(`custom-slot-${role}`);
+  const state = (role) => card(role).querySelector('[data-part="state"]').textContent;
+
+  // The file chooser of a card: the input of that board.
+  const input = m.el('custom-file-handset');
+  input.files = [customFile('app_handset.srec', 'h')];
+  input.dispatch('change');
+  await until(() => m.view.custom.slots.handset);
+  assert.equal(card('handset').classList.contains('ok'), true);
+  assert.match(card('handset').querySelector('.slot-title').textContent, /^✓ Handset \(custom build\)$/);
+  assert.match(card('handset').querySelector('.slot-file').textContent, /^app_handset\.srec · \d+ bytes$/);
+  assert.equal(card('handset').querySelector('button.slot-remove').getAttribute('aria-label'), 'Remove the handset build');
+  const details = card('handset').querySelector('details');
+  assert.equal(details.open, false, 'the report starts collapsed');
+  assert.equal(details.querySelector('summary').textContent, '7 of 7 checks passed · SHA-256 · span · SP · reset PC');
+  assert.match(details.textContent, /SREC SHA-256 sha-S0custom:h/);
+  assert.match(details.textContent, /Binary SHA-256 bin-S0custom:h/);
+  assert.match(details.textContent, /Span 0x08004000–0x08005000 \(4\.0 KiB; the end is exclusive\)/);
+  assert.match(details.textContent, /Initial SP 0x20018000/);
+  assert.match(details.textContent, /Reset PC 0x08004411/);
+  assert.match(details.textContent, /✓ initial-sp: ok/);
+  assert.equal(m.view.custom.slots.handset.role, 'handset', 'the slot decided the role (the engine report names none)');
+  assert.equal(m.el('boot-hint').textContent, 'Still needed: the main build.');
+  // A refresh keeps the opened details.
+  details.open = true;
+  m.view.refresh();
+  assert.equal(card('handset').querySelector('details'), details);
+  assert.equal(details.open, true);
+
+  // A drop onto the main card: the card is the target, and drag feedback follows it.
+  const over = card('main').dispatch('dragover');
+  assert.equal(over.defaultPrevented, true);
+  assert.equal(card('main').classList.contains('over'), true);
+  card('main').dispatch('dragleave');
+  assert.equal(card('main').classList.contains('over'), false);
+  const drop = card('main').dispatch('drop', { dataTransfer: { files: [customFile('native_main.srec', 'm')] } });
+  assert.equal(drop.defaultPrevented, true);
+  await until(() => m.view.custom.slots.main);
+  assert.match(card('main').querySelector('.slot-title').textContent, /^✓ Main \(custom build\)$/);
+  assert.equal(m.el('custom-status').textContent, '');
+  assert.equal(m.el('boot').disabled, false);
+  assert.equal(m.el('boot-hint').textContent, 'Both custom builds passed the structural checks.');
+
+  // More than one file on a card: the first is used and the rest are said to be ignored.
+  card('main').dispatch('drop', { dataTransfer: { files: [customFile('first.srec', 'm2'), customFile('second.srec', 'm3')] } });
+  await until(() => m.view.custom.slots.main && m.view.custom.slots.main.name === 'first.srec');
+  assert.equal(m.el('custom-status').textContent, 'One file per board: using first.srec and ignoring 1 other file.');
+  // A drop outside the cards does nothing (and says where to drop).
+  const loose = m.document.dispatch('drop', { dataTransfer: { files: [customFile('lost.srec', 'l')] } });
+  assert.equal(loose.defaultPrevented, true, 'the browser does not open the file');
+  assert.match(m.el('custom-status').textContent, /Drop each file onto its own card/);
+  assert.equal(m.view.custom.slots.main.name, 'first.srec');
+
+  // Only .srec files: anything else is refused on the card and empties the slot (here and in the worker).
+  await m.view.addCustomFiles('main', [customFile('main.bin', 'm')]);
+  assert.equal(m.view.custom.slots.main, null);
+  assert.equal(m.runtime.runtime.custom.main, null);
+  assert.equal(card('main').classList.contains('bad'), true);
+  assert.equal(card('main').classList.contains('ok'), false);
+  assert.match(card('main').textContent, /main\.bin was not accepted/);
+  assert.match(card('main').textContent, /\.srec files only/);
+  assert.equal(m.el('boot').disabled, true);
+  // A structural failure keeps the engine's message and the failed check in view, outside the closed details.
+  await m.view.addCustomFiles('main', [customFile('native.srec', 'q:bad')]);
+  assert.equal(card('main').classList.contains('bad'), true);
+  assert.match(card('main').textContent, /native\.srec was not accepted/);
+  const failed = card('main').querySelector('.check-list.failed');
+  assert.equal(card('main').querySelectorAll('p.bad-text').length, 0, 'the failed check says it; the engine\'s message is not repeated');
+  assert.match(failed.textContent, /^✗ initial-sp: 0x20019000 is above 0x20018000$/);
+  assert.notEqual(failed.parent.tagName, 'DETAILS', 'a failure is never folded away');
+  assert.match(card('main').querySelector('details').textContent, /SREC SHA-256 sha-S0custom:q:bad/);
+  assert.match(state('main'), /Choose another file…/);
+  // Not an S-record at all.
+  await m.view.addCustomFiles('main', [{ name: 'notes.srec', size: 5, arrayBuffer: async () => text('hello').buffer }]);
+  assert.match(card('main').querySelector('.check-list.failed').textContent, /^✗ srec-syntax: record 1: not an S-record$/);
+  // A good file replaces the refusal; Remove returns the card to waiting.
+  await m.view.addCustomFiles('main', [customFile('again.srec', 'm4')]);
+  assert.equal(card('main').classList.contains('bad'), false);
+  assert.equal(card('main').classList.contains('ok'), true);
+  card('main').querySelector('button.slot-remove').click();
+  await until(() => !m.view.custom.slots.main);
+  assert.equal(state('main'), 'Waiting for the file. Choose file…');
+  assert.equal(m.runtime.runtime.custom.main, null);
+});
+
+test('entry (custom mode): the page boots custom builds; the original files, the profile notes and the remembered pair stay apart', async () => {
+  const answers = proxyFor({
+    [MAIN_FETCHED]: () => proxyBody(srec('main', 'TRITON-5.8-65.3')),
+    [HANDSET_FETCHED]: () => proxyBody(srec('handset', 'TRITON-5.8-65.3')),
+  });
+  const booted = [];
+  const m = await mountEntry({ storageKind: 'opfs', respond: answers, booted: (result, info) => booted.push({ result, info }) });
+  const note = () => m.el('profile-note').textContent;
+  const profile = (name) => ({ files: [{ name }], modified: 1 });
+  m.view.show({ engine: 'fake', storage: { kind: 'opfs', problems: [] }, remembered: null, rememberedCustom: null, profiles: { 'TRITON-5.8-65.3': profile('eeprom.bin'), CUSTOM: profile('inputs.json') } });
+  // The original pair first.
+  m.type('main', MAIN_EXAMPLE);
+  m.type('handset', HANDSET_EXAMPLE);
+  await m.view.loadUrls();
+  assert.equal(m.el('boot').disabled, false);
+  assert.match(note(), /A saved TRITON profile \(eeprom\.bin; updated .*\) is restored when you boot TRITON firmware/);
+  assert.doesNotMatch(note(), /custom/);
+
+  // Custom mode: its own cards are empty, so booting is not possible yet; the profile note is the shared custom profile.
+  m.view.setCustomMode(true);
+  assert.equal(m.el('boot').disabled, true, 'the original files do not stand in for custom builds');
+  assert.match(note(), /A saved custom-build profile \(inputs\.json; updated .*\) is shared by every custom build and is restored when you boot one\. Reset it before loading a build/);
+  assert.doesNotMatch(note(), /TRITON/);
+  assert.match(note(), /Reset the saved custom-build profile…/);
+  await m.view.addCustomFiles('handset', [customFile('h.srec', 'h')]);
+  await m.view.addCustomFiles('main', [customFile('m.srec', 'm')]);
+  assert.equal(m.el('boot').disabled, false);
+  assert.equal(m.view.activeSlots(), m.view.custom.slots);
+  assert.equal(m.view.release().custom, true);
+  assert.equal(m.view.slots.main.release.name, 'TRITON', 'the original slots were not touched');
+
+  // Back to the original mode: its files are still there, the custom ones are not offered.
+  m.view.setCustomMode(false);
+  assert.equal(m.view.activeSlots(), m.view.slots);
+  assert.equal(m.el('boot').disabled, false);
+  assert.match(m.el('release-line').textContent, /^Release: TRITON-5\.8-65\.3 label\. Both files are from this release\./, 'the original release line, not a custom one');
+  assert.match(note(), /TRITON profile/);
+  assert.notEqual(m.runtime.runtime.firmware.main, m.runtime.runtime.custom.main);
+  await m.view.boot('stored');
+  assert.equal(booted.at(-1).info.custom, false);
+  assert.equal(booted.at(-1).result.release.id, 'TRITON-5.8-65.3');
+  assert.deepEqual(m.engine.created.at(-1).custom, {});
+  assert.deepEqual(names(await m.runtime.storage.list('firmware')), ['handset.srec', 'index.json', 'main.srec']);
+  assert.equal((await m.runtime.storage.list('firmware-custom')).length, 0, 'booting the original files remembers nothing as custom');
+  await m.runtime.request('close-session');
+
+  // Booting custom builds: the worker is asked for a custom boot, the engine gets the custom images only, and remembering
+  // (on by default) stores them in the custom area.
+  m.view.show(await m.runtime.request('info'));
+  m.view.setCustomMode(true);
+  await m.view.boot('stored');
+  assert.equal(booted.at(-1).info.custom, true);
+  assert.equal(booted.at(-1).result.release.custom, true);
+  assert.deepEqual(m.engine.created.at(-1).firmware, {});
+  assert.deepEqual(m.engine.created.at(-1).custom, { main: customSrec('m'), handset: customSrec('h') });
+  assert.deepEqual(names(await m.runtime.storage.list('firmware-custom')), ['handset.srec', 'index.json', 'main.srec']);
+  assert.deepEqual(names(await m.runtime.storage.list('firmware')), ['handset.srec', 'index.json', 'main.srec'], 'the original pair is still the original pair');
+  assert.match(new TextDecoder().decode(await m.runtime.storage.read('firmware', 'index.json')), /TRITON-5\.8-65\.3/);
+  await m.runtime.request('close-session');
+
+  // A later visit: the custom banner offers the custom pair, the original banner the original one.
+  const info = await m.runtime.request('info');
+  assert.equal(info.rememberedCustom.handset.name, 'h.srec');
+  await m.view.removeCustom('main');
+  await m.view.removeCustom('handset');
+  m.view.setCustomMode(false);
+  m.view.show(info);
+  assert.equal(m.el('custom-remembered-banner').hidden, false);
+  m.view.setCustomMode(true); // the remembered custom pair is taken (verified again) on the way in
+  await until(() => m.view.customRememberedInUse());
+  assert.equal(m.view.custom.slots.main.remembered, true);
+  assert.equal(m.el('custom-use-remembered').hidden, true);
+  assert.match(m.el('custom-remembered-text').textContent, /^Using the custom builds remembered from an earlier visit/);
+  assert.equal(m.el('remember').checked, true);
+  await m.view.removeCustom('main');
+  assert.equal(m.el('custom-use-remembered').hidden, false, 'a removed build can be taken again');
+  await m.view.useRememberedCustom();
+  assert.equal(m.view.customRememberedInUse(), true);
+  // Forget removes the custom pair and unticks the shared box; the original pair stays.
+  await m.view.forgetCustom();
+  assert.equal((await m.runtime.storage.list('firmware-custom')).length, 0);
+  assert.equal((await m.runtime.storage.list('firmware')).length, 3);
+  assert.equal(m.view.custom.slots.main, null);
+  assert.equal(m.el('remember').checked, false);
+  assert.equal(m.el('custom-remembered-banner').hidden, true);
+});
+
+test('entry (custom mode): the engine\'s refusals and a module without custom support are shown, not hidden', async () => {
+  // A cold boot the engine refuses: its message is on the entry screen, the files stay.
+  const engine = new SrecFakeEngine();
+  const m = await mountEntry({ engine });
+  m.view.setCustomMode(true);
+  await m.view.addCustomFiles('handset', [customFile('h.srec', 'h')]);
+  await m.view.addCustomFiles('main', [customFile('m.srec', 'm')]);
+  engine.createSession = () => { throw new EngineError('Cold boot is not available for custom builds: the standby request cannot be detected'); };
+  m.el('start-boot-mode').value = 'cold';
+  await m.view.boot('stored');
+  assert.equal(m.el('profile-problem').hidden, false);
+  assert.match(m.el('profile-problem').textContent, /Cold boot is not available for custom builds/);
+  assert.equal(m.view.booting, false);
+  assert.ok(m.view.custom.slots.main && m.view.custom.slots.handset, 'the builds stay in their cards');
+
+  // An engine module without the custom exports: the choice is disabled and says why.
+  const old = new SrecFakeEngine();
+  old.supportsCustom = false;
+  const o = await mountEntry({ engine: old });
+  o.view.show({ engine: 'old', storage: { kind: 'memory', problems: [] }, remembered: null, rememberedCustom: null, customSupported: false, profiles: {} });
+  assert.equal(o.el('custom-mode').disabled, true);
+  assert.equal(o.el('custom-unsupported').hidden, false);
+  o.view.setCustomMode(true);
+  assert.equal(o.view.customMode, false, 'custom mode cannot be switched on');
+  assert.equal(o.el('custom-mode').checked, false);
+});
+
+test('entry (dev aid): ?dev-firmware=custom puts the TRITON file names into the custom slots, through the structural checks only', async () => {
+  const m = await mountEntry({ search: '?dev-firmware=custom', respond: (url) => proxyBody(customSrec(url.includes('handset') ? 'h' : 'm')) });
+  await until(() => m.view.custom.slots.main && m.view.custom.slots.handset);
+  assert.deepEqual(m.calls.map((call) => call.url), ['/dev-firmware/ngc_handset_65.3_TRITON.srec', '/dev-firmware/ngc_main_5.8_TRITON.srec']);
+  assert.equal(m.view.customMode, true);
+  assert.equal(m.el('custom-mode').checked, true);
+  assert.equal(m.view.custom.slots.main.name, 'ngc_main_5.8_TRITON.srec');
+  assert.equal(m.runtime.runtime.custom.handset.name, 'ngc_handset_65.3_TRITON.srec');
+  assert.equal(m.view.slots.main, null, 'the original slots stay empty');
+  assert.equal(m.el('boot').disabled, false);
+  // Without the route (no --dev-firmware) the card says so.
+  const none = await mountEntry({ search: '?dev-firmware=custom', respond: () => new Response('Not found', { status: 404 }) });
+  await until(() => none.view.custom.rejected.main && none.view.custom.rejected.handset);
+  assert.match(none.view.custom.rejected.main.message, /Development firmware route: route not enabled/);
+});
+
+test('faults: the report of the state, in the engine\'s shape and the tolerated ones', () => {
+  const healthy = { cfsr: 0, hfsr: 0, lockup: null };
+  const reports = faults.faultReports({ faults: { handset: { cfsr: 0x20000, hfsr: 0x40000000, lockup: 'fault in a fault handler' }, main: healthy } });
+  assert.deepEqual(reports.map((report) => report.board), ['main', 'handset'], 'main first');
+  assert.equal(reports[0].active, false);
+  assert.equal(faults.faultDetail(reports[0]), 'CFSR 0x00000000 · HFSR 0x00000000 · no lockup');
+  assert.equal(reports[1].active, true);
+  assert.equal(faults.faultDetail(reports[1]), 'CFSR 0x00020000 · HFSR 0x40000000 · locked up: fault in a fault handler');
+  assert.deepEqual(faults.faultWarnings({ faults: { main: healthy, handset: healthy } }), [], 'a healthy state has nothing to say');
+  assert.deepEqual(faults.faultWarnings({ faults: { main: { cfsr: 0x100, hfsr: 0, lockup: null } } }).map((warning) => warning.text), [
+    'Main CPU reported a fault: CFSR 0x00000100, HFSR 0x00000000. Details: Advanced → Execution and model details.',
+  ]);
+  assert.match(faults.faultWarnings({ faults: { handset: { cfsr: 0, hfsr: 0, lockup: 'x' } } })[0].text, /^Handset CPU locked up \(x\): CFSR 0x00000000/);
+  // Tolerated: a list, board names with the ngc- prefix, text numbers, a boolean lockup; anything else is ignored.
+  const listed = faults.faultReports({ faults: [{ board: 'ngc-handset', cfsr: '0x10', hfsr: '2', lockup: true }, { board: 'other', cfsr: 1 }] });
+  assert.equal(listed.length, 1);
+  assert.equal(faults.faultDetail(listed[0]), 'CFSR 0x00000010 · HFSR 0x00000002 · locked up');
+  assert.equal(faults.faultDetail(faults.faultReports({ faults: { main: { cfsr: 0, hfsr: 0 } } })[0]), 'CFSR 0x00000000 · HFSR 0x00000000 · lockup not reported');
+  for (const state of [null, {}, { faults: null }, { faults: 'none' }, { faults: {} }]) assert.deepEqual(faults.faultReports(state), []);
+});
+
+test('page: CPU faults show briefly in the basic view only when nonzero or locked up, and both boards under Advanced', async () => {
+  const m = await mount();
+  const doc = m.document;
+  const show = (faultsValue) => m.view.onState({ state: { ...baseState, inputs: { ...initialInputs }, ...(faultsValue === undefined ? {} : { faults: faultsValue }) }, host: { ...hostBase } });
+  const healthy = { cfsr: 0, hfsr: 0, lockup: null };
+  show({ main: healthy, handset: healthy });
+  assert.equal(doc.getElementById('fault-health').hidden, true, 'nothing in the basic view for a healthy run');
+  assert.equal(doc.getElementById('faults-main').textContent, 'CFSR 0x00000000 · HFSR 0x00000000 · no lockup');
+  assert.equal(doc.getElementById('faults-handset').textContent, 'CFSR 0x00000000 · HFSR 0x00000000 · no lockup');
+  assert.ok(doc.getElementById('model-details').querySelector('#faults-handset'), 'the details are in Execution and model details');
+  show({ main: healthy, handset: { cfsr: 0x20000, hfsr: 0x40000000, lockup: 'fault while handling a fault' } });
+  assert.equal(doc.getElementById('fault-health').hidden, false);
+  assert.equal(doc.getElementById('fault-warning-handset').hidden, false);
+  assert.match(doc.getElementById('fault-warning-handset').textContent, /^Handset CPU locked up \(fault while handling a fault\): CFSR 0x00020000, HFSR 0x40000000\./);
+  assert.equal(doc.getElementById('fault-warning-main').hidden, true, 'only the board with something to report');
+  assert.equal(doc.getElementById('faults-handset').textContent, 'CFSR 0x00020000 · HFSR 0x40000000 · locked up: fault while handling a fault');
+  show({ main: { cfsr: 0x100, hfsr: 0, lockup: null }, handset: healthy });
+  assert.equal(doc.getElementById('fault-warning-main').hidden, false);
+  assert.match(doc.getElementById('fault-warning-main').textContent, /^Main CPU reported a fault: CFSR 0x00000100, HFSR 0x00000000\./);
+  assert.equal(doc.getElementById('fault-warning-handset').hidden, true);
+  // A handset-only run has no main board; an engine without the report gives no rows and no strip.
+  show({ handset: healthy });
+  assert.equal(doc.getElementById('fault-health').hidden, true);
+  assert.equal(doc.getElementById('faults-main').textContent, '—');
+  show(undefined);
+  assert.equal(doc.getElementById('faults-handset').textContent, '—');
+  assert.equal(doc.getElementById('fault-health').hidden, true);
+});
+
+test('page (custom build): titles say Custom build, original-firmware facts are unknown with the engine\'s reason, and the original firmware\'s hints are hidden', async () => {
+  const m = await mount();
+  const doc = m.document;
+  const reason = 'custom build: original firmware addresses do not apply';
+  const report = { srecSha256: 'srec-sha', binSha256: 'bin-sha', checks: [], span: { start: 0x08004000, end: 0x08005000 }, initialSp: 0x20018000, resetPc: 0x08004411 };
+  const custom = describeRelease('CUSTOM');
+  m.view.show({
+    options: { mode: 'dual', adcSample: 400, bootMode: 'handset-wake' }, profile: 'stored', release: custom,
+    slots: { main: { ...fakeSlot('native_main.srec'), report }, handset: { ...fakeSlot('native_handset.srec'), report } },
+  });
+  m.view.onState({
+    state: {
+      ...baseState, inputs: { ...initialInputs }, mainBatteryReady: null, unavailable: { mainBatteryReady: reason, terminalHandlerDetection: reason },
+      decoHealth: { tissues: 'unknown', oxygen: 'unknown', details: { tissues: reason, oxygen: reason } },
+      eepromFactoryInit: { applied: false, reason: 'custom build: the original record table is absent' },
+      firmware: { release: { id: 'CUSTOM', label: 'Custom build' } },
+      rtcPersistence: { policy: 'virtual', precision: 'second', mainBkp1WakeOverride: false, sources: {} },
+    },
+    host: { ...hostBase, release: custom },
+  });
+  assert.equal(doc.title, 'NGC system emulator · Custom build · WebAssembly');
+  assert.match(doc.getElementById('subtitle').textContent, /^Custom build · main \+ handset · live LCD output/);
+  assert.doesNotMatch(doc.getElementById('subtitle').textContent, /TRITON|NEPTUN|5\.8|65\.3/);
+  assert.equal(doc.getElementById('battery-ready').textContent, 'Unknown');
+  assert.match(doc.getElementById('unavailable-info').textContent, /Main batteries ready: unknown \(custom build: original firmware addresses do not apply\)\./);
+  assert.match(doc.getElementById('unavailable-info').textContent, /Terminal-handler detection: unknown \(/);
+  assert.doesNotMatch(doc.getElementById('unavailable-info').textContent, /not reported for this release/);
+  assert.equal(doc.getElementById('deco-health').hidden, true, 'an unknown decompression state never warns');
+  assert.equal(doc.getElementById('battery-note').hidden, true, 'the original firmware\'s battery wizard note does not apply');
+  assert.equal(doc.getElementById('cold-hint').hidden, true, 'nor does the oxygen calibration a cold boot clears');
+  assert.match(doc.getElementById('cold-boot').title, /^Cold boot of a custom build/);
+  assert.doesNotMatch(doc.getElementById('firmware-info').textContent, /5\.8|65\.3|null|undefined/);
+  assert.match(doc.getElementById('firmware-info').textContent, /Main build native_main\.srec · .*SREC SHA-256 srec-sha · binary SHA-256 bin-sha · Span 0x08004000–0x08005000 .*Initial SP 0x20018000 · Reset PC 0x08004411/);
+  assert.match(doc.getElementById('firmware-info').textContent, /Handset build native_handset\.srec/);
+  doc.getElementById('firmware-details').open = true;
+  m.view.render();
+  const info = doc.getElementById('session-info').textContent;
+  assert.match(info, /Firmware: Custom build \(CUSTOM\)\. Release verification was skipped/);
+  assert.match(info, /Decompression state \(read-only report\): tissues unknown, oxygen unknown\. custom build: original firmware addresses do not apply/);
+  assert.match(info, /Fixture: EEPROM factory image \(not applied\)\. custom build: the original record table is absent/);
+  assert.match(info, /Handset wake fixture: PWR\.SR1 = 0x104 and RCC\.CSR = 0 only; the original application's RTC\.BKP1R value is not written\./);
+  assert.doesNotMatch(info, /BKP1R wake override applied/);
+  assert.match(doc.getElementById('profile-status').textContent, /^Custom build profile \(shared by every custom build/);
+  // A TRITON session afterwards: its hints and values are back, and nothing of "custom" remains.
+  m.view.show({ options: { mode: 'dual', adcSample: 400 }, profile: 'stored', release: describeRelease(DEFAULT_RELEASE_ID), slots: { main: fakeSlot('main.srec'), handset: fakeSlot('handset.srec') } });
+  m.view.onState({ state: { ...baseState, inputs: { ...initialInputs }, mainBatteryReady: true, unavailable: {}, firmware: { release: { id: 'TRITON-5.8-65.3', label: 'TRITON main 5.8 / handset 65.3' } } }, host: { ...hostBase, release: describeRelease(DEFAULT_RELEASE_ID) } });
+  assert.equal(doc.title, 'NGC system emulator · TRITON · WebAssembly');
+  assert.equal(doc.getElementById('battery-ready').textContent, 'Yes');
+  assert.equal(doc.getElementById('battery-note').hidden, false);
+  assert.equal(doc.getElementById('cold-hint').hidden, false);
+  assert.match(doc.getElementById('cold-boot').title, /oxygen calibration/);
+  assert.doesNotMatch(doc.getElementById('profile-status').textContent, /custom/i);
+  // Ending a session restores the page header.
+  m.view.hide();
+  assert.equal(doc.getElementById('subtitle').textContent, 'TRITON or NEPTUN main 5.8 + handset 65.3 · WebAssembly functional model');
+  assert.equal(doc.title, 'NGC system emulator · WebAssembly');
+});
+
+test('page: a new session starts without the earlier session\'s UART channels, console text and output rows', async () => {
+  const h = await uartHarness();
+  h.update(uartChannels(), { hardwareOutputs: [vibratorOrLed(pulses(1))], faults: { handset: { cfsr: 1, hfsr: 0, lockup: null } } });
+  h.choose('handset.usart3');
+  assert.equal(h.pre.textContent, 'text of handset.usart3\n');
+  assert.equal(h.view.outputRows.size, 1);
+  assert.equal(h.document.getElementById('fault-health').hidden, false);
+  // Another session (here custom builds) is shown before its first state arrives.
+  h.view.show({ options: { mode: 'dual', adcSample: 400 }, profile: 'stored', release: describeRelease('CUSTOM'), slots: { main: fakeSlot('m.srec'), handset: fakeSlot('h.srec') } });
+  assert.deepEqual(h.optionIds(), [''], 'the channel list is empty again');
+  assert.equal(h.select.disabled, true);
+  assert.equal(h.pre.textContent, 'No transmitted bytes captured yet.');
+  assert.equal(h.status(), 'Waiting for UART status.');
+  assert.equal(h.view.uartChannels.size, 0);
+  assert.equal(h.view.outputRows.size, 0);
+  assert.equal(h.document.getElementById('output-list').children.length, 0);
+  assert.equal(h.document.getElementById('fault-health').hidden, true);
+  // The new session's own channels then start from their first state (the earlier selection is not carried over).
+  h.update(uartChannels());
+  assert.equal(h.select.value, 'main.uart4');
+  assert.equal(h.pre.textContent, 'text of main.uart4\n');
+});
+
+test('structure: faults.js is a published page module, and custom mode is off by default in the markup', () => {
+  const build = fs.readFileSync(path.join(here, '..', 'deploy', 'build_site.py'), 'utf8');
+  assert.match(build, /"faults\.js"/, 'faults.js is on the site allowlist on purpose');
+  assert.doesNotMatch(html, /id="custom-mode"[^>]*checked/);
+  for (const id of ['original-mode', 'custom-mode-panel', 'custom-slot-main', 'custom-slot-handset', 'fault-health', 'faults-main', 'faults-handset', 'cold-boot']) assert.match(html, new RegExp(`id="${id}"`), id);
+  assert.match(html, /<div id="custom-mode-panel" hidden>/);
+  // The URL form is part of the original mode only: custom builds are not loaded from addresses.
+  const original = html.slice(html.indexOf('<div id="original-mode">'), html.indexOf('<div id="custom-mode-panel"'));
+  assert.ok(original.includes('id="url-form"'));
+  assert.ok(!html.slice(html.indexOf('<div id="custom-mode-panel"'), html.indexOf('<details id="start-options"')).includes('url-'));
 });

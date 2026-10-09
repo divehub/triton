@@ -367,7 +367,31 @@ impl Model {
             io.log_once(LogLevel::Warning, 0x7C00 + i as u64, format_args!("cctimer{i}: Trc mode is not supported"));
             return;
         }
+        let was_output = self.st.ch[i].mode == ccs::OUTPUT;
         self.st.ch[i].mode = value as u8;
+        if was_output && value as u8 != ccs::OUTPUT {
+            self.adopt_external_level(i, value as u8);
+        }
+    }
+
+    /// A channel that leaves the output mode sees the pin as it is: the level an external source drove on the pin while the channel
+    /// was an output (`St::ext`, which Renode's `OnGPIO` forgets) becomes the channel's input level without a capture. Real
+    /// inputs with an external pull-up are high before the capture is configured and produce no edge when it is; nothing happens for a
+    /// pin that was never driven. (Not in the C# model, which loses the level; the devices that drive a timer input before its capture
+    /// is configured are the handset buttons, DESIGN.md 20.3.)
+    fn adopt_external_level(&mut self, i: usize, mode: u8) {
+        let source = if mode == ccs::INPUT_TI_CROSS { i ^ 1 } else { i };
+        if (mode == ccs::INPUT_TI_SAME || mode == ccs::INPUT_TI_CROSS) && self.st.ext[source].is_some() {
+            self.st.ch[i].signal = self.input_levels()[source];
+        }
+    }
+
+    /// The level of each timer input line (TI1..TI4) as the capture logic sees it: the pins, the Renode model's own record, which a
+    /// write of `CCER.CCxE = 0` also clears; for an instance that remembers external levels ([`Cfg::remember_external_pins`]) the
+    /// level the external source drove, falling back to the pin for a line nobody drove.
+    fn input_levels(&self) -> [bool; 4] {
+        let level = |t: usize| if self.cfg.remember_external_pins { self.st.ext[t].unwrap_or(self.st.pins[t]) } else { self.st.pins[t] };
+        [if self.st.ti1s { level(0) ^ level(1) ^ level(2) } else { level(0) }, level(1), level(2), level(3)]
     }
 
     /// `WriteOutputCompareMode(i, value)`.
@@ -444,6 +468,9 @@ impl Model {
             return;
         }
         let n = number as usize;
+        if self.cfg.remember_external_pins {
+            self.st.ext[n] = Some(value);
+        }
         if self.is_output_mode(n) {
             io.log(LogLevel::Noisy, format_args!("Channel #{n} received external input when configured as output"));
             return;
@@ -451,8 +478,7 @@ impl Model {
         let old_pin = self.st.pins[n];
         // The channel's pin doubles as its input: the Connection GPIO is set to the received level.
         self.set_pin(io, n, value);
-        let pins = self.st.pins;
-        let timer_input = [if self.st.ti1s { pins[0] ^ pins[1] ^ pins[2] } else { pins[0] }, pins[1], pins[2], pins[3]];
+        let timer_input = self.input_levels();
         for i in 0..4 {
             let mode = self.st.ch[i].mode;
             if mode == ccs::INPUT_TI_SAME || mode == ccs::OUTPUT {

@@ -70,6 +70,25 @@ pub fn load_images_in(main: Option<&str>, handset: Option<&str>, mode: Mode, rel
     Ok((main, handset))
 }
 
+/// Reads one SREC and admits it as a custom (native) build for `role` (structural validation only, no release hashes).
+pub fn load_custom_firmware(path: &Path, role: Role) -> Result<Firmware, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    firmware::load_custom(&bytes, role).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The custom images of a mode (`--custom` with `--main` / `--handset`; there are no defaults: the files are yours).
+pub fn load_images_custom(main: Option<&str>, handset: Option<&str>, mode: Mode) -> Result<(Option<Firmware>, Firmware), String> {
+    let handset = handset.ok_or("--custom needs --handset <srec>")?;
+    let handset = load_custom_firmware(Path::new(handset), Role::Handset)?;
+    let main = if mode == Mode::Dual {
+        let path = main.ok_or("--custom needs --main <srec> (or --mode handset)")?;
+        Some(load_custom_firmware(Path::new(path), Role::Main)?)
+    } else {
+        None
+    };
+    Ok((main, handset))
+}
+
 pub fn parse_mode(text: Option<&str>) -> Result<Mode, String> {
     match text.unwrap_or("dual") {
         "dual" => Ok(Mode::Dual),

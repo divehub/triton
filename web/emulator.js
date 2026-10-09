@@ -6,9 +6,10 @@
 //   conditions.js  action queue, basic/raw input logic     sensors.js  simulated-conditions arithmetic
 //   replay.js      output histories and replay             keys.js     handset keyboard shortcuts
 
-import { byId, confirmDialog, formatBytes, formatClock, h, hex32, prefs, setText } from './dom.js';
+import { byId, confirmDialog, formatBytes, formatClock, h, hex32, prefs, reportFacts, setText } from './dom.js';
 import { ActionQueue, BASIC_IDS, ConditionsController } from './conditions.js';
 import { decoWarnings, fixtureLines, healthLine, parseSurfacePressure } from './deco.js';
+import { faultDetail, faultReports, faultWarnings } from './faults.js';
 import { handsetKeyAction } from './keys.js';
 import { LcdView } from './lcd.js';
 import { ReplayController, STATUS_STRIP, activityText, describeEntry, driveText, historyText } from './replay.js';
@@ -19,6 +20,8 @@ import { readZip } from './zip.js';
 const PROFILE_FILES = ['eeprom.bin', 'nor.ngc', 'rtc-state.json', 'inputs.json', 'led-colors.json'];
 // Actions that recreate the boards: output histories start over.
 const RESET_ACTIONS = new Set(['reset', 'cold', 'wake', 'serial']);
+const COLD_BOOT_TITLE = 'The firmware clears the oxygen calibration on a cold boot; calibrate again afterwards';
+const CUSTOM_COLD_BOOT_TITLE = 'Cold boot of a custom build: the engine refuses it, and says why, when it cannot detect the build\'s standby request';
 // The most the UART console shows of a channel: the engine keeps a 16 KiB tail per channel and the text view needs at
 // most four characters per byte (a byte shown as \xNN), so this never clips what the engine sends; it only bounds the page.
 export const UART_CONSOLE_MAX_CHARS = 4 * 16384;
@@ -98,6 +101,7 @@ export class EmulatorView {
     this.client = client;
     this.hooks = hooks;
     this.root = byId('screen-emulator');
+    this.defaultSubtitle = byId('subtitle').textContent; // restored when a session ends
     this.lcd = new LcdView({ container: byId('lcd'), canvas: byId('frame'), placeholder: byId('placeholder'), sizeLabel: byId('frame-size') });
     this.state = null;
     this.host = null;
@@ -311,6 +315,9 @@ export class EmulatorView {
     this.connectionError = '';
     this.advancing = false;
     this.replay.clear();
+    // Nothing of an earlier session (another release, or custom builds) stays on screen: its output rows and its UART channels,
+    // text and selection go; the first state of this session fills them again.
+    this.resetSessionViews();
     if (!this.haveFrame) {
       this.lcd.setVisible(false, 'Waiting for LCD output');
       this.noteShowsFrame = false;
@@ -329,6 +336,34 @@ export class EmulatorView {
     this.lcd.setVisible(false, 'Waiting for LCD output');
     this.replay.clear();
     document.title = 'NGC system emulator · WebAssembly';
+    byId('title').textContent = 'NGC system emulator';
+    byId('subtitle').textContent = this.defaultSubtitle;
+  }
+
+  /** Empties the output rows and the UART console (channels, selection, text), as for a session that has not reported yet. */
+  resetSessionViews() {
+    // The UART view goes back to the markup's placeholders, writing only what differs (a closed console is never touched needlessly).
+    this.uartChannels = new Map();
+    const select = byId('uart-channel');
+    if (select.options.length !== 1 || select.options[0].value !== '') select.replaceChildren(h('option', { value: '' }, 'Waiting for channels'));
+    if (select.value !== '') select.value = '';
+    if (!select.disabled) select.disabled = true;
+    setText(byId('uart-status'), 'Waiting for UART status.');
+    setText(byId('uart-output'), 'No transmitted bytes captured yet.');
+    this.renderOutputs([]);
+    byId('outputs-status').textContent = 'Waiting for output status.';
+    byId('outputs-status').hidden = false;
+    byId('fault-health').hidden = true;
+    for (const board of ['main', 'handset']) {
+      byId(`fault-warning-${board}`).hidden = true;
+      byId(`faults-${board}`).textContent = '—';
+    }
+  }
+
+  /** Whether the session runs custom builds (DESIGN 20): nothing may then claim facts of the original TRITON / NEPTUN firmware. */
+  isCustom(state = this.state) {
+    const release = this.currentRelease(state);
+    return !!(release && release.custom);
   }
 
   /** The release this session runs: the engine's own report when it gives one, otherwise what the page verified. */
@@ -343,16 +378,23 @@ export class EmulatorView {
     const target = byId('firmware-info');
     target.replaceChildren();
     if (!info) return;
-    const line = (label, slot) => (slot
-      ? h('div', {}, h('strong', {}, label), ` ${slot.name} · ${formatBytes(slot.size)} · `, h('code', {}, `SHA-256 ${slot.report.srecSha256}`))
-      : null);
     const options = info.options || {};
     const release = info.release;
+    const custom = !!(release && release.custom);
+    // A custom build has no release and no version: it shows both SHA-256 values and the facts of the structural report.
+    const line = (label, slot) => {
+      if (!slot) return null;
+      if (!custom) return h('div', {}, h('strong', {}, label), ` ${slot.name} · ${formatBytes(slot.size)} · `, h('code', {}, `SHA-256 ${slot.report.srecSha256}`));
+      const report = slot.report || {};
+      return h('div', {}, h('strong', {}, label), ` ${slot.name} · ${formatBytes(slot.size)} · `, h('code', {}, `SREC SHA-256 ${report.srecSha256}`),
+        report.binSha256 ? [' · ', h('code', {}, `binary SHA-256 ${report.binSha256}`)] : null,
+        reportFacts(report).length ? ` · ${reportFacts(report).join(' · ')}` : null);
+    };
     target.append(
       ...[ // append() would print a null as text
-        release ? h('div', {}, h('strong', {}, 'Release'), ` ${release.label}`) : null,
-        line('Main 5.8', options.mode === 'handset' ? null : info.slots.main),
-        line('Handset 65.3', info.slots.handset),
+        release ? h('div', {}, h('strong', {}, 'Release'), ` ${release.label}${custom ? ' (release verification skipped; structural checks only)' : ''}`) : null,
+        line(custom ? 'Main build' : 'Main 5.8', options.mode === 'handset' ? null : info.slots.main),
+        line(custom ? 'Handset build' : 'Handset 65.3', info.slots.handset),
       ].filter(Boolean),
       h('div', { class: 'small muted mt10' },
         `Start options: ${options.mode === 'handset' ? 'handset only' : 'dual (main + handset over CAN)'}, ${options.bootMode === 'cold' ? 'cold boot' : 'handset wake'}, ` +
@@ -646,26 +688,62 @@ export class EmulatorView {
     byId('rt-factor').textContent = state.running && !host.suspended ? [rtText.replace(' · unpaced', ''), capacity, lag, dropped].filter(Boolean).join(' · ') : (host.suspended ? 'suspended while this tab is in the background' : '—');
   }
 
-  /** The reasons the engine gives for fields it cannot report for this firmware release. */
-  renderUnavailable(unavailable) {
-    const labels = { mainBatteryReady: 'Main batteries ready' };
+  /**
+   * The reasons the engine gives for fields it cannot report for this firmware: for another release "not reported for this
+   * release", for a custom build "unknown" (the original firmware's RAM does not describe a native build).
+   */
+  renderUnavailable(unavailable, custom = false) {
+    const labels = { mainBatteryReady: 'Main batteries ready', decoHealth: 'Decompression state', terminalHandlerDetection: 'Terminal-handler detection' };
     const entries = Object.entries(unavailable).filter(([, reason]) => typeof reason === 'string' && reason);
     const box = byId('unavailable-info');
     box.hidden = entries.length === 0;
-    box.textContent = entries.map(([field, reason]) => `${labels[field] || field}: not reported for this release (${reason}).`).join(' ');
+    box.textContent = entries.map(([field, reason]) => `${labels[field] || field}: ${custom ? 'unknown' : 'not reported for this release'} (${reason}).`).join(' ');
   }
 
-  /** Header and window title: the release the session runs. */
+  /** Header and window title: the release the session runs ("Custom build" for custom builds, which have no 5.8 / 65.3 versions). */
   renderTitles(next) {
     const release = this.currentRelease(next);
     const dual = !!next.inputs;
     const product = dual ? 'NGC system emulator' : 'NGC handset emulator';
     byId('title').textContent = product;
     const name = release ? release.name : 'TRITON';
-    byId('subtitle').textContent = dual
-      ? `${name} main 5.8 + handset 65.3 · live LCD output · WebAssembly functional model`
-      : `${name} handset 65.3 · live LCD output · WebAssembly functional model`;
+    const custom = !!(release && release.custom);
+    byId('subtitle').textContent = custom
+      ? `${name} · ${dual ? 'main + handset' : 'handset'} · live LCD output · WebAssembly functional model`
+      : dual
+        ? `${name} main 5.8 + handset 65.3 · live LCD output · WebAssembly functional model`
+        : `${name} handset 65.3 · live LCD output · WebAssembly functional model`;
     document.title = `${product} · ${name} · WebAssembly`;
+  }
+
+  /**
+   * The CPU fault report: a brief line in the basic view for a board with a nonzero CFSR / HFSR or a lockup (nothing for a healthy
+   * state), and both boards' registers under Advanced → Execution and model details.
+   */
+  renderFaults(state) {
+    const warnings = faultWarnings(state);
+    const reports = faultReports(state);
+    byId('fault-health').hidden = warnings.length === 0;
+    for (const board of ['main', 'handset']) {
+      const warning = warnings.find((entry) => entry.board === board);
+      const line = byId(`fault-warning-${board}`);
+      line.hidden = !warning;
+      if (warning) setText(line, warning.text);
+      const report = reports.find((entry) => entry.board === board);
+      setText(byId(`faults-${board}`), report ? faultDetail(report) : '—');
+    }
+  }
+
+  /**
+   * Hints that describe the original firmware (the battery wizard, the oxygen calibration a cold boot clears) do not apply to a
+   * custom build and are hidden for it.
+   */
+  renderCustomHints(custom) {
+    for (const id of ['battery-note', 'cold-hint']) {
+      if (byId(id).hidden !== custom) byId(id).hidden = custom;
+    }
+    const title = custom ? CUSTOM_COLD_BOOT_TITLE : COLD_BOOT_TITLE;
+    if (byId('cold-boot').title !== title) byId('cold-boot').title = title;
   }
 
   render() {
@@ -679,8 +757,14 @@ export class EmulatorView {
     // Fields that depend on a firmware-specific address are reported as null with a reason for releases where no
     // equivalent is proven (never a value taken over from another release).
     const unavailable = next.unavailable && typeof next.unavailable === 'object' ? next.unavailable : {};
-    byId('battery-ready').textContent = typeof next.mainBatteryReady === 'boolean' ? (next.mainBatteryReady ? 'Yes' : 'Waiting') : (unavailable.mainBatteryReady ? 'Unavailable for this release' : '—');
-    this.renderUnavailable(unavailable);
+    // A custom build is not the original firmware: what the engine reads from the original's RAM is "unknown" for it, with the
+    // engine's reason (never a value, and never "Waiting" for a battery wizard the build does not have).
+    const custom = this.isCustom(next);
+    byId('battery-ready').textContent = typeof next.mainBatteryReady === 'boolean' ? (next.mainBatteryReady ? 'Yes' : 'Waiting')
+      : custom ? 'Unknown' : (unavailable.mainBatteryReady ? 'Unavailable for this release' : '—');
+    this.renderUnavailable(unavailable, custom);
+    this.renderCustomHints(custom);
+    this.renderFaults(next);
     byId('sensor-panel').hidden = byId('basic-sensor-panel').hidden = !next.inputs;
     // The input fields take the engine's values when a session starts and whenever the profile is replaced (boot,
     // import, reset); otherwise they keep what the user typed (the viewer loaded them once). Bases and offsets of
@@ -738,8 +822,14 @@ export class EmulatorView {
     const lines = [];
     const board = (name) => String(name).replace(/^ngc-/, '');
     const release = this.currentRelease(state);
-    if (release) lines.push(`Firmware release: ${release.label} (${release.id}).`);
     const options = (this.info && this.info.options) || {};
+    if (release && release.custom) {
+      lines.push(`Firmware: ${release.label} (${release.id}). Release verification was skipped: the images passed structural checks only, and diagnostics that read the original firmware's RAM are unknown.`);
+      // The wake fixture of a custom build writes only the power and reset status registers; the original application's RTC backup word is not written.
+      if (options.bootMode !== 'cold') lines.push('Handset wake fixture: PWR.SR1 = 0x104 and RCC.CSR = 0 only; the original application\'s RTC.BKP1R value is not written.');
+    } else if (release) {
+      lines.push(`Firmware release: ${release.label} (${release.id}).`);
+    }
     if (state.inputs) {
       // The engine names the fixture in the state (`i2cIdleHigh`); an older build does not, and ignores the option.
       const unsupported = ((this.host && this.host.unsupportedOptions) || []).includes('i2cIdleHigh');
@@ -790,7 +880,7 @@ export class EmulatorView {
     const storage = (this.host && this.host.storage) || {};
     const release = this.currentRelease();
     const parts = [];
-    if (release) parts.push(`${release.name} profile`);
+    if (release) parts.push(`${release.name} profile${release.custom ? ' (shared by every custom build; reset it before loading a build that stores its data differently)' : ''}`);
     if (storage.kind === 'opfs') parts.push('stored in this browser (origin-private file system)');
     else if (storage.kind === 'indexeddb') parts.push('stored in this browser (IndexedDB)');
     else parts.push('this browser offers no persistent storage here: the profile is kept in memory only');

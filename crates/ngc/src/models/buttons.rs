@@ -1,4 +1,4 @@
-// Ported from emulation/models/NGCHandsetButtons.cs.
+// Ported from emulation/models/NGCHandsetButtons.cs; the default pull-up mode differs from the port (see below).
 
 //! `NGCHandsetButtons`: the physical-pin stimulus for the handset's TIM3 capture inputs.
 //!
@@ -6,9 +6,15 @@
 //! interrupt (IRQ 29) and the firmware callbacks; nothing in application RAM or in the firmware is touched. The
 //! stimulus runs on a 10 kHz managed thread (period 100 000 ns), so every edge lies on a 100 us grid.
 //!
-//! * The thread waits until TIM3 is configured for capture (`CR1.CEN`, `CCMR1`/`CCMR2` selecting the input
-//!   mapping `0x201` for both channel pairs); only then it sets both pins high (idle-high) and the model is
-//!   *ready*. Before that the timer ignores GPIO inputs in output mode.
+//! * **Pull-up mode** ([`Buttons::new`], the default; DESIGN.md 20.3): the pins rest high from reset, as with the external pull-up of
+//!   the hardware, whatever the firmware has configured. The model drives both lines high when it is attached and again at every
+//!   reset. A press is accepted whenever no other gesture is running; before the firmware configures its inputs it simply has no effect.
+//!   The timer on the other end must remember the level a pin had before its capture was configured (`Stm32Timer::with_external_pull_ups`),
+//!   otherwise the first press edge is lost. One electrical path for every firmware: nothing here looks at the timer's configuration.
+//! * **Gated mode** ([`Buttons::gated`], the Renode model, used by the recorded scenarios): the pins are low and the model waits until
+//!   TIM3 is configured for capture (`CR1.CEN`, `CCMR1`/`CCMR2` selecting the input mapping `0x201` for both channel pairs); only then it sets
+//!   both pins high (idle-high) and the model is *ready*, which produces two zero-width capture edges after the original firmware's
+//!   initialization that the hardware does not have. Before that a press is refused (`NotReady`).
 //! * [`Buttons::press`] queues a `204 800 us` low pulse (exactly 250 counts of the ideal 80 MHz / 65536 clock;
 //!   Renode's integer prescaler division makes it 249 or 250 counts of the model's 1220 Hz), [`Buttons::pulse`] an
 //!   arbitrary one, [`Buttons::confirm`] the staggered two-key gesture: `PE3` low, `PE5` low 50 ms later
@@ -35,7 +41,7 @@ pub const DEFAULT_PULSE_US: u32 = 204_800;
 pub const CONFIRM_STAGGER_US: u32 = 50_000;
 
 const TICK: u64 = 1;
-// TIM3 registers read by the readiness check.
+// TIM3 registers read by the readiness check of the gated mode.
 const TIM_CR1: u32 = 0x00;
 const TIM_CCMR1: u32 = 0x18;
 const TIM_CCMR2: u32 = 0x1C;
@@ -43,7 +49,7 @@ const TIM_CCMR2: u32 = 0x1C;
 /// The errors Renode raises as exceptions (`InvalidOperationException`, `ArgumentOutOfRangeException`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ButtonsError {
-    /// "TIM3 capture inputs are not ready".
+    /// "TIM3 capture inputs are not ready" (gated mode only).
     NotReady,
     /// "A button pulse is already in progress".
     Busy,
@@ -70,9 +76,10 @@ impl std::error::Error for ButtonsError {}
 
 pub struct Buttons {
     name: String,
-    /// Base address of the TIM3 register window (`timer: timer3`).
-    timer_base: u32,
+    /// Gated mode: the base address of the TIM3 register window (`timer: timer3`). `None`: pull-up mode.
+    gate: Option<u32>,
     tick: ManagedThread,
+    /// The idle-high state is established (always, from the attach on, in pull-up mode).
     initialized: bool,
     gesture_started: bool,
     staggered_confirm: bool,
@@ -89,12 +96,22 @@ pub struct Buttons {
 }
 
 impl Buttons {
-    /// `buttons: GPIOPort.NGCHandsetButtons @ sysbus 0x61000200 { timer: timer3 }`; `timer_base` is where
-    /// the TIM3 model is mapped (`0x40000400` on the handset).
-    pub fn new(name: impl Into<String>, timer_base: u32) -> Self {
+    /// `buttons: GPIOPort.NGCHandsetButtons @ sysbus 0x61000200` in pull-up mode: the pins rest high from the moment the model is
+    /// attached and are never gated by the timer's configuration.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self::with_gate(name, None)
+    }
+
+    /// The Renode model: the pins stay low until TIM3 (mapped at `timer_base`) is configured for capture, a press before is refused.
+    /// `buttons: GPIOPort.NGCHandsetButtons { timer: timer3 }`.
+    pub fn gated(name: impl Into<String>, timer_base: u32) -> Self {
+        Self::with_gate(name, Some(timer_base))
+    }
+
+    fn with_gate(name: impl Into<String>, gate: Option<u32>) -> Self {
         Self {
             name: name.into(),
-            timer_base,
+            gate,
             tick: ManagedThread::new(TICK_HZ, TICK),
             initialized: false,
             gesture_started: false,
@@ -112,7 +129,8 @@ impl Buttons {
         }
     }
 
-    /// TIM3 capture inputs are configured and the pins have been set idle-high.
+    /// The idle-high state is established: true from the attach on in pull-up mode, after the TIM3 capture configuration in
+    /// gated mode.
     pub fn ready(&self) -> bool {
         self.initialized
     }
@@ -164,7 +182,7 @@ impl Buttons {
     }
 
     fn queue_gesture(&mut self, mask: u32, duration_microseconds: u32, stagger_microseconds: u32) -> Result<(), ButtonsError> {
-        if !self.initialized {
+        if self.gate.is_some() && !self.initialized {
             return Err(ButtonsError::NotReady);
         }
         if self.active_mask != 0 || self.pending_mask != 0 {
@@ -201,15 +219,29 @@ impl Buttons {
         ctx.set_output(line, level);
     }
 
+    /// The external pull-up: both pins high. A pin that already is high is driven low and high again, so that the connected
+    /// GPIO port and timer see the idle level after their own reset (a reset port forgets its input levels, and a timer ignores an
+    /// unchanged one). With the capture inputs not configured (the timer's reset state) neither edge captures anything.
+    fn pull_up(&mut self, ctx: &mut Ctx<'_>) {
+        for line in [PE3_LINE, PE5_LINE] {
+            if ctx.output(line) {
+                self.set_pin(ctx, line, false);
+            }
+            self.set_pin(ctx, line, true);
+        }
+        self.initialized = true;
+    }
+
     /// The thread body (`Tick`).
     fn run_tick(&mut self, ctx: &mut Ctx<'_>) {
         if !self.initialized {
-            let word = |ctx: &Ctx<'_>, offset: u32| ctx.mem_peek(self.timer_base + offset, Width::Word).unwrap_or(0);
+            // Gated mode: wait for the capture configuration, then establish idle-high.
+            let Some(timer_base) = self.gate else { return };
+            let word = |ctx: &Ctx<'_>, offset: u32| ctx.mem_peek(timer_base + offset, Width::Word).unwrap_or(0);
             let (cr1, ccmr1, ccmr2) = (word(ctx, TIM_CR1), word(ctx, TIM_CCMR1), word(ctx, TIM_CCMR2));
             if cr1 & 1 == 0 || ccmr1 & 0x303 != 0x201 || ccmr2 & 0x303 != 0x201 {
                 return;
             }
-            // Establish idle-high after the capture configuration.
             self.set_pin(ctx, PE3_LINE, true);
             self.set_pin(ctx, PE5_LINE, true);
             self.initialized = true;
@@ -292,6 +324,10 @@ impl Peripheral for Buttons {
         // `machine.ObtainManagedThread(Tick, 10000)` followed by `thread.Start()` in the constructor.
         self.tick.attach(ctx);
         self.tick.start(ctx);
+        if self.gate.is_none() {
+            // The pull-up holds both pins high before any connection exists; a connection made later receives the level.
+            self.pull_up(ctx);
+        }
     }
 
     fn reset(&mut self, ctx: &mut Ctx<'_>) {
@@ -306,8 +342,12 @@ impl Peripheral for Buttons {
         self.remaining_pe5_ticks = 0;
         self.pulse_count = 0;
         self.release_count = 0;
-        self.set_pin(ctx, PE3_LINE, false);
-        self.set_pin(ctx, PE5_LINE, false);
+        if self.gate.is_none() {
+            self.pull_up(ctx);
+        } else {
+            self.set_pin(ctx, PE3_LINE, false);
+            self.set_pin(ctx, PE5_LINE, false);
+        }
     }
 
     fn access_policy(&self) -> AccessPolicy {

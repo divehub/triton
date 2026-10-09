@@ -304,9 +304,12 @@ pub(crate) fn recorded_inputs(mut profile: Profile) -> Profile {
 /// the firmware's first-boot defaults are compared byte for byte, a reopened profile uses its inputs as saved). Both the scenarios
 /// and the benchmark build their sessions through this function, so their workload is the recorded one. The fixtures have their own
 /// tests (`crates/ngc/tests/deco_fixtures.rs`, `crates/ngc/tests/eeprom_init.rs`). The factory image has no user option; this is the one
-/// place that switches it off, through the internal `eeprom_factory_init` field.
+/// place that switches it off, through the internal `eeprom_factory_init` field. It also pins the handset buttons to the Renode model of
+/// the recordings (`button_pull_up: false`): pins low until TIM3 is configured for capture, then high; the default pull-up (pins high
+/// from reset, DESIGN.md 20.3) leaves out two zero-width capture interrupts after the original firmware's initialization, which moves
+/// the handset's instruction phase and with it informational comparisons with the Renode recordings (for example the PC at 0.5 s).
 pub(crate) fn recorded_config(config: SessionConfig) -> SessionConfig {
-    SessionConfig { eeprom_factory_init: false, start_at_surface: false, ..config }
+    SessionConfig { eeprom_factory_init: false, start_at_surface: false, button_pull_up: false, ..config }
 }
 
 /// A [`Session`] plus the helpers every scenario uses: actions as JSON, side-effect-free RAM readbacks, evidence.
@@ -472,9 +475,9 @@ mod tests {
         // The scenarios and the dive benchmark build their sessions through `recorded_config`: a fresh EEPROM must stay erased
         // (compared byte for byte with the Renode recordings), a reopened profile keeps its inputs.
         let defaults = SessionConfig::default();
-        assert!(defaults.eeprom_factory_init && defaults.start_at_surface, "both are on by default");
+        assert!(defaults.eeprom_factory_init && defaults.start_at_surface && defaults.button_pull_up, "all three are on by default");
         let pinned = recorded_config(SessionConfig { idle_fast_forward: false, adc_sample: 1234, ..defaults });
-        assert!(!pinned.eeprom_factory_init && !pinned.start_at_surface);
+        assert!(!pinned.eeprom_factory_init && !pinned.start_at_surface && !pinned.button_pull_up);
         assert!(!pinned.idle_fast_forward && pinned.adc_sample == 1234, "everything else is the caller's");
     }
 }

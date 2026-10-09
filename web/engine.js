@@ -127,6 +127,35 @@ export class Engine {
     this.x.ngc_firmware_clear(role === 'main' ? 0 : 1);
   }
 
+  // ---- custom (native) builds, DESIGN 20.1 ------------------------------------------------------
+
+  /** Whether this engine build has the custom-firmware exports (an older module does not). */
+  get supportsCustom() {
+    return typeof this.x.ngc_firmware_inspect_custom === 'function' && typeof this.x.ngc_set_custom_firmware === 'function';
+  }
+
+  requireCustom() {
+    if (!this.supportsCustom) throw new EngineError('This engine build has no support for custom firmware builds. Build it again with web/build.py.');
+  }
+
+  /**
+   * Structural report of an SREC for a custom build: no release identification and no role (the slot decides the role).
+   * `ok` is true when the S-record syntax, the address range and the vector table pass; `checks`, `srecSha256`, `binSha256`,
+   * `span`, `initialSp`, `resetPc` and `entry` describe the file. Never throws for bad files (`ok` is false and `error` /
+   * `message` / `checks` say why).
+   */
+  inspectCustomFirmware(bytes) {
+    this.requireCustom();
+    return this.withBytes(bytes, (ptr, length) => JSON.parse(this.text(this.x.ngc_firmware_inspect_custom(ptr, length))));
+  }
+
+  /** Verifies structurally and keeps a custom image for `role` ('main' | 'handset'); throws the engine's message on failure. */
+  setCustomFirmware(role, bytes) {
+    this.requireCustom();
+    const code = this.withBytes(bytes, (ptr, length) => this.x.ngc_set_custom_firmware(role === 'main' ? 0 : 1, ptr, length));
+    if (code !== 0) throw this.fail();
+  }
+
   // ---- session ---------------------------------------------------------------------------------
 
   /**

@@ -295,6 +295,10 @@ pub struct Cpu {
     /// Renode NVIC `InSleep` / `InDeepSleep` outputs (set by the WFI state-change hook).
     pub(crate) in_sleep: bool,
     pub(crate) in_deep_sleep: bool,
+    /// How many times the core went to sleep with `SCR.SLEEPDEEP` set (the same hook as `in_deep_sleep`). A pure observation counter:
+    /// it never feeds back into execution and survives `reset` (it only grows), so a host can ask at its own boundaries whether
+    /// a deep sleep happened since it looked last (DESIGN.md 20.2: standby of a custom build).
+    pub(crate) deep_sleep_entries: u64,
     /// tlib `sleep_on_exception_exit` (SCR.SLEEPONEXIT).
     pub(crate) sleep_on_exit: bool,
     pub(crate) halted: bool,
@@ -385,6 +389,7 @@ impl Cpu {
             was_not_working: false,
             in_sleep: false,
             in_deep_sleep: false,
+            deep_sleep_entries: 0,
             sleep_on_exit: false,
             halted: false,
             exit_pending: false,
@@ -831,6 +836,13 @@ impl Cpu {
         self.wfi || self.wfe
     }
 
+    /// How many times the core went to sleep with `SCR.SLEEPDEEP` set since it was created (an observation counter that only grows,
+    /// also across `reset`; the NVIC's `InDeepSleep` transition). A host that looks at it at its own boundaries learns whether a
+    /// deep sleep started since the last look even if an interrupt has woken the core again.
+    pub fn deep_sleep_entries(&self) -> u64 {
+        self.deep_sleep_entries
+    }
+
     // ---- time -----------------------------------------------------------------------------------
 
     /// Exact virtual time at the retire count `ic` within the current run slice.
@@ -1193,6 +1205,7 @@ impl Cpu {
         }
         if self.scb.scr & 4 != 0 {
             self.in_deep_sleep = true;
+            self.deep_sleep_entries += 1;
             if self.halt_systick_on_deep_sleep {
                 self.systick.set_enable(false);
             }

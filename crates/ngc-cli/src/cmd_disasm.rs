@@ -5,9 +5,10 @@ use crate::common;
 use ngc::firmware::Role;
 use std::io::Write;
 
-pub const USAGE: &str = "ngc-cli disasm [--board handset|main] [--main <srec>] [--handset <srec>] <address> [count]\n  \
+pub const USAGE: &str = "ngc-cli disasm [--board handset|main] [--main <srec>] [--handset <srec>] [--custom] <address> [count]\n  \
     Disassembles `count` (default 16) instructions of the firmware image starting at `address` (hex, 0x prefix\n  \
-    optional) with the engine's decoder; the image is placed at 0x08004000 like on the boards.";
+    optional) with the engine's decoder; the image is placed at 0x08004000 like on the boards. --custom reads the\n  \
+    file of the chosen board as a custom (native) build (structural validation only; the file is required).";
 
 pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     match run_inner(argv, out) {
@@ -25,7 +26,7 @@ pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
 
 fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<(), (bool, String)> {
     let usage = |message: String| (true, message);
-    let parsed = args::parse(argv, &["board", "main", "handset"], &[]).map_err(usage)?;
+    let parsed = args::parse(argv, &["board", "main", "handset"], &["custom"]).map_err(usage)?;
     let board = parsed.value("board").unwrap_or("handset");
     let role = match board {
         "handset" => Role::Handset,
@@ -39,8 +40,14 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<(), (bool, String)>
         None => 16,
     };
     let explicit = if role == Role::Handset { parsed.value("handset") } else { parsed.value("main") };
-    let path = common::firmware_path(explicit, role).map_err(|e| (false, e))?;
-    let firmware = common::load_firmware(&path, role).map_err(|e| (false, e))?;
+    let firmware = if parsed.flag("custom") {
+        // A custom build has no default path: the file is the one named.
+        let path = explicit.ok_or_else(|| usage(format!("--custom needs --{role} <srec>")))?;
+        common::load_custom_firmware(std::path::Path::new(path), role).map_err(|e| (false, e))?
+    } else {
+        let path = common::firmware_path(explicit, role).map_err(|e| (false, e))?;
+        common::load_firmware(&path, role).map_err(|e| (false, e))?
+    };
     let image = firmware.flash_image();
     let base = 0x0800_0000u32;
     let mut pc = address & !1;

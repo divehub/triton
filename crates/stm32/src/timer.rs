@@ -108,7 +108,7 @@ impl Stm32Timer {
         assert!(initial_limit > 0, "initialLimit has to be greater than zero");
         assert!(frequency > 0, "Frequency must be greater than 0");
         let bits = 32 - initial_limit.leading_zeros();
-        let cfg = Cfg { frequency, initial_limit, bits };
+        let cfg = Cfg { frequency, initial_limit, bits, remember_external_pins: false };
         Self { name: name.into(), model: Model::new(cfg, 0, 0), alarm: ClockId::NONE, armed: None }
     }
 
@@ -152,6 +152,17 @@ impl Stm32Timer {
     /// accesses. Call it before the timer is added to a machine.
     pub fn with_scheduling(mut self, scheduling: Scheduling) -> Self {
         self.model.sched = scheduling;
+        self
+    }
+
+    /// Marks the channel inputs as pins with an external pull-up (the handset's button pins `PE3` / `PE5` on TIM3): the level a source
+    /// drives on an input while the channel is still an output is remembered, and a channel that is later switched to capture sees
+    /// the pin at that level **without a capture edge**, as the hardware does. Renode's `OnGPIO` drops an input received in output
+    /// mode and forgets its level, so a source that rests high from reset (DESIGN.md 20.3) would otherwise leave the timer believing
+    /// the pin low until the first press; the instances that reproduce Renode's transcripts (`new`) keep that behavior. Call it before
+    /// the timer is added to a machine.
+    pub fn with_external_pull_ups(mut self) -> Self {
+        self.model.cfg.remember_external_pins = true;
         self
     }
 

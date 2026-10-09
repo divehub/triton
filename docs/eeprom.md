@@ -118,6 +118,11 @@ start at the surface on the sensor inputs.
   image, the same finite value as TRITON. NEPTUN's decompression RAM addresses stay unavailable, so its checks run through the EEPROM
   and CAN frames. NEPTUN is optional and its tests were dropped from the repository's suite (the code path and the release table stay);
   the observations above were made when they existed.
+* **CUSTOM (native builds, DESIGN.md section 20)**: no factory image. The image fills the records of the *original* firmware's first-boot
+  gaps, found through the original record table, and a custom build has no such table (`eepromRecordTable` is unavailable: "custom build:
+  original firmware addresses do not apply"). A new EEPROM stays entirely erased (2048 bytes of `0xFF`, saved with the profile), and the
+  native firmware initializes it itself; `eepromFactoryInit` is `{applied: false, reason: "Skipped for CUSTOM: ..."}`. An existing EEPROM is
+  never touched, as for every release. (The Main 5.8 layout is the native build's own contract; nothing here edits it.)
 * A release without a proven table is skipped, and the state says why.
 
 ## Reproduction

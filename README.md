@@ -59,6 +59,8 @@ Supply the files yourself; they are read only from where you put them and are ne
 
 `firmware/` is ignored by Git. Without the files, every test that needs them skips with a message and passes.
 
+**Custom firmware builds.** "Use custom firmware builds" on the entry screen (or `ngc-cli run --custom --main <srec> --handset <srec>`) loads any pair of S-record images, such as a native rewrite, for an explicit board each, without release verification. Structural checks still apply: valid records, data inside `0x08004000..0x08100000`, a vector table at `0x08004000`, an 8-byte-aligned initial SP up to `0x20018000`, a Thumb reset vector inside the image and a matching S7 entry. A custom session is labeled "Custom build"; features that rely on original firmware addresses are off and report "unknown", a new EEPROM starts blank, and custom builds share one profile, separate from TRITON and NEPTUN. See [DESIGN.md](DESIGN.md) section 20.
+
 ## Build
 
 The workspace has no external crates; it only needs the toolchain pinned in `rust-toolchain.toml` (Rust 1.98.1 with the `wasm32-unknown-unknown` target).

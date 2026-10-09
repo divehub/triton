@@ -4,7 +4,8 @@ The engine runs the original **main 5.8 / handset 65.3** images of two releases,
 files (or of their reconstructed binary span when the text differs, for example in line endings). The table lives in
 `crates/ngc/src/firmware.rs` (`RELEASES`, `TRITON`, `NEPTUN`); both images of a session must come from the same release
 (`firmware::common_release`), otherwise creation fails with `Mixed firmware releases: the main image is ... but the handset
-image is ... Supply both images of the same release.` Nothing of the images is stored in the repository.
+image is ... Supply both images of the same release.` Nothing of the images is stored in the repository. A third kind of image, the **custom
+(native) build**, is admitted without release identification and has no addresses at all: see [Custom builds](#custom-native-builds).
 
 | | TRITON-5.8-65.3 | NEPTUN-5.8-65.3 |
 | --- | --- | --- |
@@ -29,7 +30,7 @@ table); `decoHealth` carries its own reason when one is unavailable.
 
 | entry | TRITON | NEPTUN | used for |
 | --- | --- | --- | --- |
-| `handsetOrientation` (RAM byte) | `0x20000740` | `0x20000740` (proven) | Up/Down pin mask swap of `up` / `down` |
+| `handsetOrientation` (RAM byte) | `0x20000740` | `0x20000740` (proven) | documentation only: the engine no longer reads it (it swapped the Up/Down pin masks); Up is `PE5` and Down is `PE3` for every firmware, the mapping of the default value 1 (DESIGN.md 20.3) |
 | `handsetErrorLoopPC` (code) | `0x0800598e` | `0x0800598e` (proven) | error stop when the handset PC is in the interrupts-disabled error loop |
 | `mainBatteryReady` (RAM byte) | `0x200042a1` | unavailable | state `mainBatteryReady` |
 | `mainWakeCause`, `mainScreenMode`, `mainMode`, `mainHalTick`, `mainPressure`, `mainTemperature` | `0x20004388`, `0x2000438d`, `0x200024b2`, `0x20004a6c`, `0x20004378`, `0x20004360` | unavailable | `mainApplication` of the status JSON, benchmark, scenarios |
@@ -77,12 +78,61 @@ offsets, `bl` targets, branch displacements) and searches the NEPTUN disassembly
   instruction-identical counterpart, so those fields are reported unavailable. `crates/ngc/tests/session_parity.rs`
   (`the_neptun_address_table_is_proven_against_the_images`) re-checks the proven entries against the local images.
 
+## Custom (native) builds
+
+`firmware::load_custom(srec, role)` (ABI `ngc_set_custom_firmware`, report `ngc_firmware_inspect_custom`, CLI `ngc-cli run|info --custom`)
+admits an SREC for an explicit role without looking at its hashes: the slot decides, because both native builds share a reset vector.
+Only the structure is validated, each violation with its address or value (`FirmwareError::Custom`, the same `checks` list in the report):
+
+| check | requirement |
+| --- | --- |
+| `srec-syntax` | record syntax, checksums, record counts and no overlapping data; a file of at most 16 MiB of text |
+| `address-bounds` | at least one data record, every byte inside `0x08004000..0x08100000` (checked before the binary is reconstructed, so the span and its allocation are bounded) |
+| `span` | informational: lowest to highest data address; bytes inside it that no record covers are `0x00` (the original images keep their `0xFF` reconstruction) |
+| `vector-table` | loaded data at `0x08004000`, at least the initial SP and the reset vector (8 bytes); the report decodes up to 99 words |
+| `initial-sp` | 8-byte aligned, `0x20000000 < SP <= 0x20018000` |
+| `reset-vector` | Thumb bit set, and the entry lies inside a loaded data segment (a gap is not loaded code) |
+| `entry-point` | an S7/S8/S9 start address, when present, equals the reset vector (the Thumb bit is ignored in the comparison) |
+
+The image belongs to the pseudo-release **`CUSTOM`** (label "Custom build"; not in `RELEASES`, not reachable through `Release::by_id`).
+Every address of the table above is `{address: null, reason: "custom build: original firmware addresses do not apply"}`, so by the same
+rules that keep NEPTUN honest the engine reads **nothing** of the original application: no terminal-handler stop (`handsetErrorLoopPC`),
+no `mainBatteryReady`/mode/screen variables (the state reports `null` and lists them in `unavailable`), `decoHealth` is `unknown`, and the
+EEPROM factory image is skipped (`eepromFactoryInit.applied` is false; a new EEPROM stays blank and the firmware initializes it). The exact
+routine acceleration keys on code bytes, not on the release, so it applies to a custom image only when its routines are byte-identical to
+a recognized one. A session takes two custom images or two images of one original release: `Mixed firmware: the main image is a custom
+build but the handset image is TRITON-5.8-65.3 (...)` otherwise, from `ngc_session_create` / `Session::new` / `common_release`.
+
+Runtime behavior that does not depend on the release (all of it also holds for TRITON and NEPTUN unless noted):
+
+* **Faults.** The state carries `faults: {main: {cfsr, hfsr, lockup}, handset: {...}}` (numbers, and the lockup reason or `null`), the health signal
+  of a custom build next to the UART console.
+* **Buttons.** Up is `PE5` (mask 2), Down is `PE3` (mask 1); the orientation byte is not read. `PE3`/`PE5` rest high from reset through a
+  pull-up (a press is accepted whenever no other gesture runs, with no readiness gate on the TIM3 configuration), and TIM3 remembers the
+  level of an input it saw before its capture was configured, so the configuration produces no edge (`Stm32Timer::with_external_pull_ups`;
+  Renode's timer drops such an input, which is why the Renode button model waited for the configuration and produced two zero-width capture
+  edges). The recorded scenarios and the dive benchmark keep the Renode model through `scenario::recorded_config`
+  (`SessionConfig::button_pull_up = false`, also selected by the ABI benchmark hook `blankEeprom`), so their results are unchanged.
+* **Standby** is detected for a custom build from the hardware state, polled on the 50 virtual ms grid: the main core went to sleep in
+  `WFI`/`WFE` with `SCB.SCR.SLEEPDEEP` set (`Cpu::deep_sleep_entries`, an observation counter, so a wake-up by a still-running emulated
+  peripheral does not hide it) and `PWR_CR1.LPMS` selects Standby (3) or Shutdown (4). Stop modes (0 to 2) are plain sleeps. The original
+  images keep the register-only heuristic of the Renode runner (`LPMS == 3` and `SLEEPDEEP`), whether the core sleeps or not.
+* **Wake fixture.** `PWR.SR1 = 0x104` and `RCC.CSR = 0` as before, but not `RTC.BKP1R = 0x32F0`: that marker is the original application's
+  own, and a native build keeps the backup words it saved (`rtcPersistence.mainBkp1WakeOverride` is false).
+* **Persistence.** The images are part of the system: Restart, Cold, Wake, a machine reset (IWDG, `SYSRESETREQ`) and a reopened profile keep them.
+
 ## Cold boot
 
 The cold-boot fixture (zero `PWR.SR1` / `RCC.CSR` wake flags, observed standby request) is characterized for TRITON only: the
 TRITON main requests standby after about 1.5 virtual seconds. The NEPTUN main kept running for 40 virtual seconds without a
 standby request (it boots normally), so there is no observed-standby route. `cold` (action and `bootMode: "cold"`) is
 refused for NEPTUN with `Release::cold_boot_refusal`; Restart and Wake work.
+
+A custom build may boot cold (`CUSTOM` has no refusal): the zero flags are supplied and the standby is observed from the hardware state (see
+[Custom builds](#custom-native-builds)), so a native firmware that selects Standby or Shutdown and executes `wfi` stops the run exactly like the
+TRITON route. Whether a given native build does is its own behavior; a run without that sleep simply goes on. The TRITON images loaded
+through the custom path are the example: the main sets `PWR_CR1 = 0x303` and `SCB.SCR = 4` after its cold start and then idles without
+ever sleeping, so only the original path (the register heuristic) reports a standby for them.
 
 ## Speed
 

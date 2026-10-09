@@ -19,7 +19,20 @@
 //! ngc_set_firmware(role, ptr, len)     role 0 main 5.8, 1 handset 65.3: verify and keep (error text on failure); the
 //!                                      image of either supported release (TRITON-5.8-65.3, NEPTUN-5.8-65.3) is accepted
 //!                                      per role, a mixed pair is refused by ngc_session_create
-//! ngc_firmware_clear(role)
+//! ngc_firmware_inspect_custom(ptr, len)  structural report of an SREC file as a custom (native) build (DESIGN.md 20.1): the
+//!                                      same JSON as ngc_firmware_inspect plus `custom: true`, with `release` always
+//!                                      `{"id": "CUSTOM", "label": "Custom build"}`, `role` null (the slot decides, both native
+//!                                      builds share a reset vector) and the structural `checks` (srec-syntax, address-bounds,
+//!                                      span, vector-table, initial-sp, reset-vector, entry-point), SHA-256 of the SREC
+//!                                      (`srecSha256`) and of the reconstructed binary (`binSha256`, gaps filled with 0x00),
+//!                                      `span`, `initialSp`, `resetPc`, `entry`; `message` is null for an accepted image,
+//!                                      otherwise `name: detail; ...` of the failed checks. No release hashes are involved
+//! ngc_set_custom_firmware(role, ptr, len)  role 0 main, 1 handset (anything else is refused): structural validation as above,
+//!                                      keeps the image as a custom build (error text through ngc_error on failure). A session
+//!                                      takes two custom images or two original ones: ngc_session_create refuses a mix with
+//!                                      "Mixed firmware: ...". The state then reports `firmware.release` = CUSTOM, per role
+//!                                      `custom: true`, every original address unavailable and no original-RAM diagnostics
+//! ngc_firmware_clear(role)             forgets the kept image of that role, original or custom
 //! ngc_profile_clear(); ngc_profile_set(kind, ptr, len)    stage profile files for the next session
 //!                                      kind 0 eeprom.bin, 1 nor.ngc, 2 rtc-state.json, 3 inputs.json, 4 led-colors.json
 //! ngc_session_create(cfg_ptr, cfg_len) JSON {mode, bootMode, simultaneousStart, idleFastForward, routineAccel,
@@ -42,9 +55,12 @@
 //!                                      EEPROM from it once (releases with a proven record table: TRITON, NEPTUN), an existing
 //!                                      EEPROM is never touched, and the state says which happened (`eepromFactoryInit`).
 //!                                      `blankEeprom` (default false) is a benchmark and test hook that the page never sends:
-//!                                      a new EEPROM stays erased, as the Renode-recorded workload of the dive benchmark needs.
+//!                                      a new EEPROM stays erased, as the Renode-recorded workload of the dive benchmark needs (it
+//!                                      also keeps the Renode model of the handset buttons, pins low until TIM3 is configured; the
+//!                                      default for every firmware is pins high from reset).
 //!                                      Fails with a clear message when the main and handset images are of different
-//!                                      releases, and for `bootMode` "cold" on a release without a cold-boot route (NEPTUN)
+//!                                      releases or one is a custom build and the other an original image, and for `bootMode`
+//!                                      "cold" on a release without a cold-boot route (NEPTUN)
 //! ngc_session_run_for(seconds)         0 still running, 1 paused/standby/error, 2 no session
 //! ngc_session_action(ptr, len)         runner action JSON; the state JSON (or the error text) in the output buffer
 //! ngc_session_state()                  state JSON into the output buffer, returns its length
@@ -270,7 +286,49 @@ pub unsafe extern "C" fn ngc_set_firmware(role: u32, ptr: *const u8, len: usize)
     })
 }
 
-/// Forgets a kept firmware image (`role` as for `ngc_set_firmware`).
+/// Structural report of an SREC file as a custom (native) build, without release identification: writes the report as JSON
+/// (see `Report::to_json`, plus `custom: true` and `message`) into the output buffer and returns its length.
+///
+/// # Safety
+/// `ptr..ptr+len` must be readable linear memory.
+#[no_mangle]
+pub unsafe extern "C" fn ngc_firmware_inspect_custom(ptr: *const u8, len: usize) -> u32 {
+    let bytes = input_bytes(ptr, len);
+    let report = firmware::inspect_custom(bytes);
+    let mut json = report.to_json();
+    json.insert("message", report.refusal());
+    let text = json.to_string_with(&emu_core::json::WriteOptions::compact());
+    with_state(|state| text_result(state, text))
+}
+
+/// Validates structurally and keeps an SREC as a custom (native) build for `role` (0 = main, 1 = handset; any other value is
+/// refused). The text of a refusal is available through `ngc_error`.
+///
+/// # Safety
+/// `ptr..ptr+len` must be readable linear memory.
+#[no_mangle]
+pub unsafe extern "C" fn ngc_set_custom_firmware(role: u32, ptr: *const u8, len: usize) -> i32 {
+    let bytes = input_bytes(ptr, len);
+    let slot = match role {
+        0 => Role::Main,
+        1 => Role::Handset,
+        _ => return with_state(|state| fail(state, "role must be 0 (main) or 1 (handset)")),
+    };
+    let loaded = firmware::load_custom(bytes, slot);
+    with_state(|state| match loaded {
+        Ok(image) => {
+            if role == 0 {
+                state.main = Some(image);
+            } else {
+                state.handset = Some(image);
+            }
+            0
+        }
+        Err(error) => fail(state, error.to_string()),
+    })
+}
+
+/// Forgets a kept firmware image, original or custom (`role` as for `ngc_set_firmware`).
 #[no_mangle]
 pub extern "C" fn ngc_firmware_clear(role: u32) {
     with_state(|state| {
@@ -817,6 +875,86 @@ mod tests {
         assert_eq!(ngc_session_run_for(0.1), 2, "no session yet");
         assert_eq!(ngc_session_state(), 0);
         assert_eq!(ngc_part_count(), 0);
+    }
+
+    /// A tiny custom image: SP, a Thumb reset vector and a branch-to-self; one S3 record, an S7 start record.
+    fn tiny_srec() -> Vec<u8> {
+        fn record(kind: u8, address_bytes: usize, address: u32, data: &[u8]) -> String {
+            let mut body = vec![(address_bytes + data.len() + 1) as u8];
+            for i in (0..address_bytes).rev() {
+                body.push((address >> (8 * i)) as u8);
+            }
+            body.extend_from_slice(data);
+            let sum = body.iter().fold(0u8, |a, &b| a.wrapping_add(b));
+            body.push(!sum);
+            format!("S{kind}{}", body.iter().map(|b| format!("{b:02X}")).collect::<String>())
+        }
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x2001_8000u32.to_le_bytes());
+        data.extend_from_slice(&0x0800_4009u32.to_le_bytes());
+        data.extend_from_slice(&[0xFE, 0xE7, 0xFE, 0xE7]);
+        [record(0, 2, 0, b"tiny.srec"), record(3, 4, 0x0800_4000, &data), record(7, 4, 0x0800_4009, &[])].join("\n").into_bytes()
+    }
+
+    fn output_json() -> emu_core::Json {
+        with_state(|state| emu_core::Json::parse(std::str::from_utf8(&state.output).unwrap()).unwrap())
+    }
+
+    #[test]
+    fn custom_admission_through_the_abi() {
+        let image = tiny_srec();
+        // The structural report: custom, no role, the CUSTOM release, no message.
+        let length = unsafe { ngc_firmware_inspect_custom(image.as_ptr(), image.len()) };
+        assert!(length > 0);
+        let report = output_json();
+        assert_eq!(report.get("ok").and_then(emu_core::Json::as_bool), Some(true));
+        assert_eq!(report.get("custom").and_then(emu_core::Json::as_bool), Some(true));
+        assert!(report.get("role").unwrap().is_null() && report.get("message").unwrap().is_null());
+        assert_eq!(report.get("release").and_then(|r| r.get("id")).and_then(emu_core::Json::as_str), Some("CUSTOM"));
+        assert_eq!(report.get("resetPc").and_then(emu_core::Json::as_u64), Some(0x0800_4008));
+        assert_eq!(report.get("binSha256").and_then(emu_core::Json::as_str).map(str::len), Some(64));
+        // A refused file reports why, without failing.
+        let garbage = b"not an s-record file";
+        unsafe { ngc_firmware_inspect_custom(garbage.as_ptr(), garbage.len()) };
+        let report = output_json();
+        assert_eq!(report.get("ok").and_then(emu_core::Json::as_bool), Some(false));
+        assert!(report.get("message").and_then(emu_core::Json::as_str).is_some_and(|m| m.starts_with("srec-syntax: line 1: not an S-record")));
+        // Roles: 0 main, 1 handset, nothing else; a refusal comes with its text.
+        assert_eq!(unsafe { ngc_set_custom_firmware(2, image.as_ptr(), image.len()) }, 1);
+        ngc_error();
+        assert_eq!(with_state(|state| String::from_utf8(state.output.clone()).unwrap()), "role must be 0 (main) or 1 (handset)");
+        assert_eq!(unsafe { ngc_set_custom_firmware(0, garbage.as_ptr(), garbage.len()) }, 1);
+        ngc_error();
+        assert!(with_state(|state| String::from_utf8(state.output.clone()).unwrap()).starts_with("custom main build rejected: srec-syntax: line 1"));
+        assert_eq!(unsafe { ngc_set_custom_firmware(0, image.as_ptr(), image.len()) }, 0);
+        assert_eq!(unsafe { ngc_set_custom_firmware(1, image.as_ptr(), image.len()) }, 0);
+        // The session: CUSTOM release, per-role custom marker, every original address unavailable, no mixed pair.
+        let config = br#"{"mode":"dual","startPaused":true}"#;
+        assert_eq!(unsafe { ngc_session_create(config.as_ptr(), config.len()) }, 0);
+        let length = ngc_session_state();
+        assert!(length > 0);
+        let state = output_json();
+        let firmware = state.get("firmware").unwrap();
+        assert_eq!(firmware.get("release").and_then(|r| r.get("label")).and_then(emu_core::Json::as_str), Some("Custom build"));
+        assert_eq!(firmware.get("main").and_then(|m| m.get("custom")).and_then(emu_core::Json::as_bool), Some(true));
+        assert_eq!(firmware.get("handset").and_then(|m| m.get("custom")).and_then(emu_core::Json::as_bool), Some(true));
+        assert_eq!(firmware.get("addresses").and_then(|a| a.get("mainBatteryReady")).and_then(|a| a.get("address")), Some(&emu_core::Json::Null));
+        assert!(state.get("faults").and_then(|f| f.get("main")).is_some() && state.get("faults").and_then(|f| f.get("handset")).is_some());
+        ngc_session_destroy();
+        // Clearing a role forgets a custom image too; the session then needs it again.
+        ngc_firmware_clear(0);
+        assert_eq!(unsafe { ngc_session_create(config.as_ptr(), config.len()) }, 1);
+        ngc_firmware_clear(1);
+        // With the original handset image next to the custom main image the session is refused.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../firmware/TRITON-5.8-65.3/ngc_handset_65.3_TRITON.srec");
+        if let Ok(original) = std::fs::read(path) {
+            assert_eq!(unsafe { ngc_set_custom_firmware(0, image.as_ptr(), image.len()) }, 0);
+            assert_eq!(unsafe { ngc_set_firmware(1, original.as_ptr(), original.len()) }, 0);
+            assert_eq!(unsafe { ngc_session_create(config.as_ptr(), config.len()) }, 1);
+            ngc_error();
+            assert!(with_state(|state| String::from_utf8(state.output.clone()).unwrap()).starts_with("Mixed firmware: the main image is a custom build but the handset image is TRITON-5.8-65.3"));
+            assert_eq!(ngc_session_active(), 0, "nothing was created");
+        }
     }
 
     #[test]

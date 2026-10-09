@@ -1,6 +1,12 @@
-//! `NGCHandsetButtons` driving the handset's TIM3 capture inputs (`timer3@0`, `timer3@2`): readiness, the 100 us
-//! stimulus grid, press/pulse/confirm timing, busy and not-ready errors, the summary text, and the capture values
-//! the guest reads back (an accepted 250-count pulse and a rejected 100-count pulse at PSC 65535).
+//! `NGCHandsetButtons` driving the handset's TIM3 capture inputs (`timer3@0`, `timer3@2`): the 100 us stimulus grid,
+//! press/pulse/confirm timing, busy errors, the summary text, and the capture values the guest reads back (an accepted
+//! 250-count pulse and a rejected 100-count pulse at PSC 65535), in the two modes of the model.
+//!
+//! * the **gated** Renode model (`Buttons::gated`, a plain `Stm32Timer`): readiness, the not-ready refusal, the idle-high edges after the
+//!   capture configuration (most tests below, through `Rig::new()`);
+//! * the default **pull-up** model (`Buttons::new` with `Stm32Timer::with_external_pull_ups`, DESIGN.md 20.3): the pins are high from
+//!   reset, a press is accepted before the firmware configures anything and nothing is captured at the configuration
+//!   (`Rig::pull_up()`, the tests named `pull_up_*`).
 
 use emu_core::testing::{Harness, Probe};
 use emu_core::{PeriphId, Time, TICKS_PER_MICROSECOND, TICKS_PER_MILLISECOND};
@@ -22,11 +28,21 @@ struct Rig {
 }
 
 impl Rig {
+    /// The gated Renode model with a plain timer.
     fn new() -> Rig {
+        Rig::build(Stm32Timer::new("timer3", 80_000_000, 0xFFFF), Buttons::gated("buttons", TIM3))
+    }
+
+    /// The default: the pins rest high from reset, the timer remembers the level of a pin it sees before its capture is configured.
+    fn pull_up() -> Rig {
+        Rig::build(Stm32Timer::new("timer3", 80_000_000, 0xFFFF).with_external_pull_ups(), Buttons::new("buttons"))
+    }
+
+    fn build(timer: Stm32Timer, buttons: Buttons) -> Rig {
         let mut h = Harness::new();
-        let timer = h.add_mapped(TIM3, 0x400, Stm32Timer::new("timer3", 80_000_000, 0xFFFF));
+        let timer = h.add_mapped(TIM3, 0x400, timer);
         h.connect_irq(timer, IRQ_LINE, TIM3_IRQ);
-        let buttons = h.add_mapped(BUTTONS, 0x100, Buttons::new("buttons", TIM3));
+        let buttons = h.add_mapped(BUTTONS, 0x100, buttons);
         let pe3 = h.probe(buttons, PE3_LINE);
         let pe5 = h.probe(buttons, PE5_LINE);
         h.connect_input(buttons, PE3_LINE, timer, 0);
@@ -305,4 +321,103 @@ fn registers_report_state() {
     assert_eq!(rig.h.read32(BUTTONS + 0x20), 0);
     rig.h.write32(BUTTONS, 0xFFFF_FFFF);
     assert_eq!(rig.h.read32(BUTTONS), 1 | 1 << 8);
+}
+
+// ---- the default pull-up model (DESIGN.md 20.3) ------------------------------------------------------------------------
+
+#[test]
+fn pull_up_pins_rest_high_from_the_attach_and_a_press_needs_no_configuration() {
+    let mut rig = Rig::pull_up();
+    assert!(rig.h.output(rig.buttons, PE3_LINE) && rig.h.output(rig.buttons, PE5_LINE), "an external pull-up holds both pins high");
+    assert!(rig.buttons().ready());
+    assert_eq!(rig.h.read32(BUTTONS), 1);
+    assert!(rig.buttons().summary_text().starts_with("ready=True; activeMask=0; pendingMask=0; pulses=0; releases=0; PE3=True; PE5=True; gesture=idle;"));
+    // The firmware has configured nothing: the press is accepted anyway (no not-ready refusal), the timer ignores it, no interrupt.
+    rig.h.advance_to(3 * MS);
+    rig.press(1).unwrap();
+    assert_eq!(rig.press(2), Err(ButtonsError::Busy));
+    rig.h.advance_to(300 * MS);
+    let fall = 3 * MS + 100 * US;
+    assert_eq!(rig.h.probe_changes(rig.pe3), vec![(fall, false), (fall + 204_800 * US, true)]);
+    assert!(rig.h.probe_changes(rig.pe5).is_empty());
+    assert_eq!((rig.buttons().pulse_count(), rig.buttons().release_count()), (1, 1));
+    assert!(rig.h.irq_changes().is_empty());
+}
+
+#[test]
+fn pull_up_configuring_the_capture_with_the_pins_high_produces_no_edge_and_a_press_is_measured() {
+    let mut rig = Rig::pull_up();
+    rig.configure_capture();
+    rig.h.advance_to(10 * MS);
+    assert!(rig.h.irq_changes().is_empty(), "no zero-width capture edge after the configuration");
+    assert_eq!(rig.tim_read(reg::SR) & 0x1E, 0);
+    rig.press(1).unwrap();
+    let fall = 10 * MS + 100 * US;
+    rig.h.advance_to(fall + 204_800 * US);
+    let falling = rig.tim_read(reg::CCR2);
+    let first_rising = rig.tim_read(reg::CCR1);
+    assert_eq!(falling, cnt_at(fall));
+    assert_eq!(first_rising, cnt_at(fall + 204_800 * US));
+    assert!((249..=250).contains(&(first_rising - falling)), "{}", first_rising - falling);
+    assert_eq!(rig.tim_read(reg::CCR3), 0, "the other pair never captured");
+    // PE5 uses the second pair.
+    rig.h.advance_to(300 * MS);
+    rig.press(2).unwrap();
+    let fall = 300 * MS + 100 * US;
+    rig.h.advance_to(fall + 204_800 * US);
+    let (falling, rising) = (rig.tim_read(reg::CCR4), rig.tim_read(reg::CCR3));
+    assert_eq!((falling, rising), (cnt_at(fall), cnt_at(fall + 204_800 * US)));
+    assert_eq!(rig.tim_read(reg::CCR1), first_rising, "PE5 did not touch the first pair");
+}
+
+#[test]
+fn pull_up_a_press_before_the_configuration_is_invisible_to_the_timer_and_the_next_one_is_captured() {
+    let mut rig = Rig::pull_up();
+    rig.h.advance_to(MS);
+    rig.press(1).unwrap();
+    rig.h.advance_to(250 * MS);
+    rig.configure_capture();
+    rig.h.advance_to(260 * MS);
+    assert_eq!(rig.tim_read(reg::SR) & 0x1E, 0, "the earlier press left no trace");
+    rig.press(2).unwrap();
+    let fall = 260 * MS + 100 * US;
+    rig.h.advance_to(fall + 204_800 * US);
+    assert!((249..=250).contains(&(rig.tim_read(reg::CCR3) - rig.tim_read(reg::CCR4))));
+}
+
+#[test]
+fn pull_up_a_reset_pulls_the_pins_up_again_whatever_state_the_gesture_was_in() {
+    let mut rig = Rig::pull_up();
+    rig.configure_capture();
+    rig.h.advance_to(10 * MS);
+    rig.confirm().unwrap();
+    rig.h.advance_to(10 * MS + 100 * US + 60 * MS);
+    assert!(!rig.h.output(rig.buttons, PE3_LINE) && !rig.h.output(rig.buttons, PE5_LINE), "both keys are down");
+    rig.h.core_mut().reset_all();
+    assert!(rig.h.output(rig.buttons, PE3_LINE) && rig.h.output(rig.buttons, PE5_LINE));
+    assert!(!rig.buttons().busy());
+    assert_eq!(rig.h.read32(BUTTONS), 1);
+    // The timer was reset too (output mode, no flags); the firmware configures it again and the next press is captured.
+    rig.h.advance_to(100 * MS);
+    rig.configure_capture();
+    rig.h.advance_to(110 * MS);
+    assert_eq!(rig.tim_read(reg::SR) & 0x1E, 0);
+    rig.press(1).unwrap();
+    let fall = 110 * MS + 100 * US;
+    rig.h.advance_to(fall + 204_800 * US);
+    let width = rig.tim_read(reg::CCR1) - rig.tim_read(reg::CCR2);
+    assert!((249..=250).contains(&width), "{width}");
+}
+
+#[test]
+fn pull_up_confirm_staggers_pe5_by_50_ms_exactly_like_the_gated_model() {
+    let mut rig = Rig::pull_up();
+    rig.configure_capture();
+    rig.h.advance_to(MS);
+    rig.confirm().unwrap();
+    let start = MS + 100 * US;
+    rig.h.advance_to(start + 50 * MS + 204_800 * US + 10 * MS);
+    assert_eq!(rig.h.probe_changes(rig.pe3), vec![(start, false), (start + 204_800 * US, true)]);
+    assert_eq!(rig.h.probe_changes(rig.pe5), vec![(start + 50 * MS, false), (start + 50 * MS + 204_800 * US, true)]);
+    assert_eq!((rig.buttons().pulse_count(), rig.buttons().release_count()), (1, 1));
 }

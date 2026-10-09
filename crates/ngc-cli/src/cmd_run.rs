@@ -27,7 +27,7 @@ impl Machine {
 
 pub const USAGE: &str = "ngc-cli run [--main <srec>] [--handset <srec>] [--mode dual|handset] [--seconds S]\n  \
     [--boot-mode handset-wake|cold] [--simultaneous-start] [--no-idle-ff] [--no-routine-accel|--shadow-routine-accel] [--no-i2c-idle-high] [--release ID]\n  \
-    [--no-start-at-surface]\n  \
+    [--no-start-at-surface] [--custom] [--uart-text]\n  \
     [--ppm out.ppm] [--can-trace out.tsv]\n  \
     [--pc-trace N out.u32le [--pc-trace-after S] [--board handset|main]] [--json out.json] [--no-warnings] [--log N] [--inputs SCRIPT]\n  \
     [--dump-sram PREFIX] [--peek ADDR[,ADDR...] [--board handset|main]] [--access-trace N [--board handset|main]]\n  \
@@ -46,6 +46,11 @@ pub const USAGE: &str = "ngc-cli run [--main <srec>] [--handset <srec>] [--mode 
     Without --main/--handset the files under firmware/TRITON-5.8-65.3 (or firmware/<ID> with --release ID,\n  \
     TRITON-5.8-65.3 or NEPTUN-5.8-65.3) are used, in the repository or in the directory named by NGC_FIRMWARE_DIR\n  \
     (you supply them; they are not part of the repository); main and handset must be of the same release.\n  \
+    --uart-text prints the captured text of every UART channel that transmitted (the tail the capture keeps) after the report.\n  \
+    --custom admits --main / --handset (both required in the dual mode, no default paths) as custom (native) builds: structural\n  \
+    validation only (S-record syntax, bounds 0x08004000..0x08100000, vector table, initial SP, Thumb reset vector, entry record),\n  \
+    no release hashes; the original-firmware diagnostics (battery, mode, decompression health, terminal-handler stop) are\n  \
+    unavailable and the EEPROM factory image is not applied. Progress is read from the UART output and the fault registers.\n  \
     --no-i2c-idle-high leaves the main board's I2C idle inputs PB6/PB7/PB10/PB11 low (by default they are driven high\n  \
     before the first instruction, a functional idle-line fixture; the older Renode recordings predate it).\n  \
     --no-routine-accel turns off the exact acceleration of the runtime-library routines (memoized soft-float calls, DESIGN.md 16.2;\n  \
@@ -93,7 +98,7 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<(), RunError> {
     let parsed = args::parse(
         argv,
         &["main", "handset", "mode", "seconds", "boot-mode", "ppm", "can-trace", "pc-trace", "board", "json", "pc-trace-out", "log", "inputs", "dump-sram", "peek", "access-trace", "data-dir", "release", "pc-trace-after"],
-        &["simultaneous-start", "no-idle-ff", "no-warnings", "no-i2c-idle-high", "no-routine-accel", "shadow-routine-accel", "no-start-at-surface"],
+        &["simultaneous-start", "no-idle-ff", "no-warnings", "no-i2c-idle-high", "no-routine-accel", "shadow-routine-accel", "no-start-at-surface", "custom", "uart-text"],
     )
     .map_err(RunError::Usage)?;
     let routine_accel = common::routine_accel_mode(&parsed).map_err(RunError::Usage)?;
@@ -116,7 +121,20 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<(), RunError> {
         return Err(RunError::Usage("--board main needs --mode dual".to_string()));
     }
 
-    let (main, handset) = common::load_images_in(parsed.value("main"), parsed.value("handset"), mode, release)?;
+    let (main, handset) = if parsed.flag("custom") {
+        if parsed.value("release").is_some() {
+            return Err(RunError::Usage("--custom and --release exclude each other".to_string()));
+        }
+        if parsed.value("handset").is_none() {
+            return Err(RunError::Usage("--custom needs --handset <srec>".to_string()));
+        }
+        if mode == Mode::Dual && parsed.value("main").is_none() {
+            return Err(RunError::Usage("--custom needs --main <srec> (or --mode handset)".to_string()));
+        }
+        common::load_images_custom(parsed.value("main"), parsed.value("handset"), mode)?
+    } else {
+        common::load_images_in(parsed.value("main"), parsed.value("handset"), mode, release)?
+    };
     let data_dir = parsed.value("data-dir").map(PathBuf::from);
     let setup_started = Instant::now();
     let mut machine = match &data_dir {
@@ -190,6 +208,14 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<(), RunError> {
         }
     }
     report(system, out, wall, setup_seconds, traced.as_ref().map(|(n, p)| (*n, p.as_str())), parsed.flag("no-warnings"), log_lines);
+    if parsed.flag("uart-text") {
+        for stream in system.uart.snapshot().into_iter().filter(|s| s.tx_bytes > 0) {
+            let _ = writeln!(out, "uart text {} ({} bytes{}):", stream.name, stream.tx_bytes, if stream.truncated { ", tail only" } else { "" });
+            for line in stream.text.lines() {
+                let _ = writeln!(out, "    | {line}");
+            }
+        }
+    }
     if access_count.is_some() {
         let tag = if trace_board == Which::Main { 0 } else { 1 };
         let tpi = emu_core::TICKS_PER_INSTRUCTION;
@@ -371,7 +397,8 @@ fn report(system: &System, out: &mut dyn Write, wall: f64, setup: f64, traced: O
     for which in [Which::Main, Which::Handset] {
         if let Some(faults) = system.fault_registers(which) {
             let text: Vec<String> = faults.iter().map(|(name, value)| format!("{name}=0x{value:08x}")).collect();
-            let _ = writeln!(out, "{} faults: {}", which.name(), text.join(" "));
+            let lockup = system.board_faults(which).and_then(|f| f.lockup).map_or(String::new(), |reason| format!(" LOCKUP ({reason})"));
+            let _ = writeln!(out, "{} faults: {}{lockup}", which.name(), text.join(" "));
         }
     }
     for stream in system.uart.snapshot() {

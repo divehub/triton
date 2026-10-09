@@ -199,6 +199,43 @@ mod tests {
     }
 
     #[test]
+    fn run_custom_admits_the_supplied_images_without_release_identification() {
+        // Usage errors before any file is read.
+        let (status, _, err) = run(&["run", "--custom"]);
+        assert_eq!(status, 2);
+        assert!(err.contains("--custom needs --handset <srec>"), "{err}");
+        let (status, _, err) = run(&["run", "--custom", "--handset", "/nonexistent/handset.srec"]);
+        assert_eq!(status, 2);
+        assert!(err.contains("--custom needs --main <srec> (or --mode handset)"), "{err}");
+        let (status, _, err) = run(&["run", "--custom", "--release", "TRITON-5.8-65.3", "--main", "a", "--handset", "b"]);
+        assert_eq!(status, 2);
+        assert!(err.contains("--custom and --release exclude each other"), "{err}");
+        let (status, _, err) = run(&["run", "--custom", "--main", "/nonexistent/main.srec", "--handset", "/nonexistent/handset.srec"]);
+        assert_eq!(status, 1);
+        assert!(err.contains("cannot read /nonexistent/handset.srec"), "{err}");
+        let Some(dir) = common::default_firmware_dir() else {
+            eprintln!("skipping: firmware not available");
+            return;
+        };
+        let main = dir.join("ngc_main_5.8_TRITON.srec");
+        let handset = dir.join("ngc_handset_65.3_TRITON.srec");
+        // The TRITON pair is structurally valid: it boots as a custom pair and reports the custom release and no original variables.
+        let json_path = std::env::temp_dir().join(format!("ngc-cli-run-custom-{}.json", std::process::id()));
+        let json_arg = json_path.to_str().unwrap().to_string();
+        let (status, out, err) = run(&["run", "--custom", "--main", main.to_str().unwrap(), "--handset", handset.to_str().unwrap(), "--seconds", "0.5", "--no-warnings", "--json", &json_arg]);
+        assert_eq!(status, 0, "{err}\n{out}");
+        assert!(out.contains("main application (CUSTOM): wakeCause n/a screenMode n/a mainMode n/a batteryReady n/a"), "{out}");
+        assert!(out.contains("main faults: ICSR=") && out.contains("handset faults: ICSR=") && !out.contains("LOCKUP"), "{out}");
+        let json = emu_core::Json::parse(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
+        let _ = std::fs::remove_file(&json_path);
+        assert_eq!(json.get("release").and_then(|r| r.get("id")).and_then(emu_core::Json::as_str), Some("CUSTOM"));
+        assert_eq!(json.get("mainBatteryReady"), Some(&emu_core::Json::Null));
+        // A swapped slot is named like any other refusal.
+        let (status, _, err) = run(&["run", "--custom", "--main", handset.to_str().unwrap(), "--handset", main.to_str().unwrap(), "--seconds", "0.01"]);
+        assert_eq!(status, 0, "a custom image has no role of its own: the slot decides ({err})");
+    }
+
+    #[test]
     fn run_boots_the_handset_and_counts_instructions() {
         if common::default_firmware_dir().is_none() {
             eprintln!("skipping: firmware not available");

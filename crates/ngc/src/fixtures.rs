@@ -28,9 +28,10 @@ pub const TERMINAL_HANDLER_PC: u32 = 0x0800_598E;
 /// Handset wake fixture (hardware fixture: existing RTC backup plus standby exit from the handset wake
 /// input; the unchanged firmware classifies wake cause 3): main `RTC.BKP1R`, `PWR.SR1`, `RCC.CSR`.
 pub const WAKE_FIXTURE: [(u32, u32); 3] = [(0x4000_2854, 0x32F0), (0x4000_7010, 0x104), (0x4002_1094, 0)];
+/// The wake fixture of a custom build: the hardware flags (`PWR.SR1 = 0x104`: standby flag and wake-up flag 3, `RCC.CSR = 0`)
+/// without the original application's `RTC.BKP1R = 0x32F0` marker.
+pub const CUSTOM_WAKE_FIXTURE: [(u32, u32); 2] = [(0x4000_7010, 0x104), (0x4002_1094, 0)];
 
-/// Handset RAM byte holding the display orientation; 2 keeps the Up/Down masks, any other value swaps them.
-pub const HANDSET_ORIENTATION_ADDRESS: u32 = 0x2000_0740;
 /// Main RAM byte `mainBatteryReady` (`snapshot()` reads it as the "battery ready" flag).
 pub const MAIN_BATTERY_READY_ADDRESS: u32 = 0x2000_42A1;
 /// Application variables the benchmark and the reference checkpoints read (main).
@@ -44,8 +45,11 @@ pub const MAIN_TEMPERATURE_ADDRESS: u32 = 0x2000_4360;
 pub const MAIN_CURRENT_TCB_ADDRESS: u32 = 0x2000_5708;
 pub const HANDSET_CURRENT_TCB_ADDRESS: u32 = 0x2000_13FC;
 
+/// `CFSR` and `HFSR` (System Control Block).
+pub const CFSR_ADDRESS: u32 = 0xE000_ED28;
+pub const HFSR_ADDRESS: u32 = 0xE000_ED2C;
 /// `ICSR`, `CFSR`, `HFSR`.
-pub const FAULT_REGISTERS: [(&str, u32); 3] = [("ICSR", 0xE000_ED04), ("CFSR", 0xE000_ED28), ("HFSR", 0xE000_ED2C)];
+pub const FAULT_REGISTERS: [(&str, u32); 3] = [("ICSR", 0xE000_ED04), ("CFSR", CFSR_ADDRESS), ("HFSR", HFSR_ADDRESS)];
 
 /// Serial-number fixture: the EEPROM must be initialized (validity marker) before the serial is changed.
 pub const EEPROM_VALIDITY_OFFSET: u32 = 254;
@@ -78,6 +82,24 @@ pub fn standby_requested(main: &Board<Cpu>) -> bool {
     let power = peek32(main, PWR_CR1_ADDRESS).unwrap_or(0);
     let deep = peek32(main, SCB_SCR_ADDRESS).unwrap_or(0);
     power & PWR_CR1_LPMS_MASK == PWR_CR1_LPMS_STANDBY && deep & SCB_SCR_SLEEPDEEP != 0
+}
+
+/// `PWR_CR1.LPMS` value of Shutdown (Standby is [`PWR_CR1_LPMS_STANDBY`]).
+pub const PWR_CR1_LPMS_SHUTDOWN: u32 = 4;
+
+/// Standby observed from the hardware state alone, for custom builds (DESIGN.md 20.2): the main core sleeps in `WFI`/`WFE` with
+/// `SCB.SCR.SLEEPDEEP` set and the PWR low-power mode selects Standby or Shutdown. On the device that sleep is the power-down; nothing
+/// wakes the core again but a reset. The emulated peripherals keep running, though, and an interrupt of theirs can wake the core right
+/// after it went to sleep, so `slept` says that the core started a deep sleep since the last look (`Cpu::deep_sleep_entries`): the
+/// registers must still hold the standby selection at the look. The PWR block is a register store, so `PWR_CR1.LPMS` reads back what the
+/// firmware wrote; the original images keep [`standby_requested`] (their recorded behavior), which does not look at the core.
+pub fn standby_entered(main: &Board<Cpu>, slept: bool) -> bool {
+    if !main.cpu.is_sleeping() && !slept {
+        return false;
+    }
+    let lpms = peek32(main, PWR_CR1_ADDRESS).unwrap_or(0) & PWR_CR1_LPMS_MASK;
+    let deep = peek32(main, SCB_SCR_ADDRESS).unwrap_or(0);
+    (lpms == PWR_CR1_LPMS_STANDBY || lpms == PWR_CR1_LPMS_SHUTDOWN) && deep & SCB_SCR_SLEEPDEEP != 0
 }
 
 // ---- sensor inputs (`INPUT_DEFAULTS` / `INPUT_RANGES`) -------------------------------------------
@@ -243,14 +265,18 @@ impl Inputs {
     }
 }
 
-/// Mask of the physical button to pulse for a navigation action, mirroring the runner:
-/// `up` is mask 1 and `down` mask 2 when the handset orientation byte is 2, swapped otherwise.
-pub fn navigation_mask(up: bool, orientation: u8) -> u32 {
-    let mask = if up { 1 } else { 2 };
-    if orientation != 2 {
-        3 - mask
+/// `buttons` mask of the physical Up button: `PE5`. Fixed for every firmware (DESIGN.md 20.3): the mapping the original
+/// image's default orientation value 1 produces, which a fresh profile uses; the orientation byte is no longer read.
+pub const UP_MASK: u32 = 2;
+/// `buttons` mask of the physical Down button: `PE3`.
+pub const DOWN_MASK: u32 = 1;
+
+/// Mask of the physical button to pulse for a navigation action: Up is `PE5` (mask 2), Down is `PE3` (mask 1).
+pub fn navigation_mask(up: bool) -> u32 {
+    if up {
+        UP_MASK
     } else {
-        mask
+        DOWN_MASK
     }
 }
 
@@ -277,6 +303,13 @@ pub(crate) mod models {
         Box::new(stm32::timer::Stm32Timer::new(name, frequency, initial_limit as u32).with_scheduling(Scheduling::Stock))
     }
 
+    /// The handset's TIM3, a plain `STM32_Timer` ([`Scheduling::Stock`]) whose capture inputs are the button pins `PE3` / `PE5`: they rest
+    /// high from reset through an external pull-up, so the timer remembers the level an input has before its capture is configured
+    /// ([`stm32::timer::Stm32Timer::with_external_pull_ups`]; DESIGN.md 20.3).
+    pub fn button_timer(name: &str, frequency: u64, initial_limit: u64) -> Box<dyn Peripheral> {
+        Box::new(stm32::timer::Stm32Timer::new(name, frequency, initial_limit as u32).with_scheduling(Scheduling::Stock).with_external_pull_ups())
+    }
+
     /// `Timers.NGCLazyPwmTimer` (the handset's TIM2 and TIM15): the runner's default arithmetic mode for unconnected
     /// PWM counters ([`Scheduling::NgcArithmeticPwm`]).
     pub fn lazy_pwm_timer(name: &str, frequency: u64, initial_limit: u64) -> Box<dyn Peripheral> {
@@ -298,9 +331,15 @@ pub(crate) mod models {
         Box::new(crate::models::lcd::NgcParallelLcd::new(name, true))
     }
 
-    /// `buttons: GPIOPort.NGCHandsetButtons { timer: timer3 }`; `timer_base` is where `timer3` is mapped.
-    pub fn handset_buttons(name: &str, timer_base: u32) -> Box<dyn Peripheral> {
-        Box::new(crate::models::buttons::Buttons::new(name, timer_base))
+    /// `buttons: GPIOPort.NGCHandsetButtons`: the physical pins `PE3` and `PE5`. With `pull_up` (the default) they are held high from
+    /// reset by the external pull-up; without it the model is the Renode one, which waits for the TIM3 capture configuration at
+    /// `timer_base` before it sets them high (the recorded scenarios).
+    pub fn handset_buttons(name: &str, pull_up: bool, timer_base: u32) -> Box<dyn Peripheral> {
+        if pull_up {
+            Box::new(crate::models::buttons::Buttons::new(name))
+        } else {
+            Box::new(crate::models::buttons::Buttons::gated(name, timer_base))
+        }
     }
 
     /// `outputTelemetry: Miscellaneous.NGCBoardTelemetry { handset: true|false }`.

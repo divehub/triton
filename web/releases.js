@@ -5,9 +5,19 @@
 // profile. TRITON keeps the storage location of the first version of this app ('profile'); every other release gets
 // a directory of its own, so two releases never share EEPROM, log flash or clock state.
 //
+// Custom builds (DESIGN 20): the engine reports `release: {id: 'CUSTOM', label: 'Custom build'}` for them. They have no entry in
+// the release table (no known file names, no release verification); this module only names them and gives them the one shared
+// custom profile area and their own remembered-firmware area, so they never share storage with TRITON or NEPTUN.
+//
 // Pure ES module (no DOM, no worker globals): the Node tests import it.
 
 export const DEFAULT_RELEASE_ID = 'TRITON-5.8-65.3';
+export const CUSTOM_RELEASE_ID = 'CUSTOM';
+/** Storage areas of the remembered firmware pair: the original releases share one, custom builds have their own. */
+export const FIRMWARE_AREA = 'firmware';
+export const CUSTOM_FIRMWARE_AREA = 'firmware-custom';
+/** The one profile area shared by every custom build. */
+export const CUSTOM_PROFILE_AREA = 'custom';
 
 export const RELEASES = Object.freeze({
   'TRITON-5.8-65.3': Object.freeze({
@@ -32,8 +42,9 @@ function slug(id) {
   return String(id).toLowerCase().replace(/[^a-z0-9.]+/g, '-').replace(/^-+|-+$/g, '').replace(/\./g, '_');
 }
 
-/** `{id, name, label}` for a release id; unknown ids (a newer engine) still get a usable record. */
+/** `{id, name, label}` for a release id; unknown ids (a newer engine) still get a usable record. A custom build adds `custom: true`. */
 export function describeRelease(id, label) {
+  if (id === CUSTOM_RELEASE_ID) return { id, name: 'Custom build', label: label || 'Custom build', custom: true };
   const known = RELEASES[id];
   if (known) return { id, name: known.name, label: label || known.label };
   const name = String(id).split('-')[0] || String(id);
@@ -51,14 +62,20 @@ export function releaseOf(report) {
   return describeRelease(report.release.id, typeof report.release.label === 'string' ? report.release.label : undefined);
 }
 
-/** Storage area of a release's profile ('profile' for TRITON, as in the first version of the app). */
+/** Storage area of a release's profile ('profile' for TRITON, as in the first version of the app; 'custom' for custom builds). */
 export function profileArea(id) {
+  if (id === CUSTOM_RELEASE_ID) return CUSTOM_PROFILE_AREA;
   return id === DEFAULT_RELEASE_ID ? 'profile' : `profile-${slug(id)}`;
 }
 
-/** Every storage area the page can use: the profile areas of the known releases, and the remembered firmware. */
+/** The area of the remembered firmware pair for original releases (`custom` false) or custom builds. */
+export function firmwareArea(custom) {
+  return custom ? CUSTOM_FIRMWARE_AREA : FIRMWARE_AREA;
+}
+
+/** Every storage area the page can use: the remembered firmware and profile areas of the known releases, then the custom ones. */
 export function storageAreas() {
-  return ['firmware', ...RELEASE_IDS.map(profileArea)];
+  return [FIRMWARE_AREA, ...RELEASE_IDS.map(profileArea), CUSTOM_FIRMWARE_AREA, CUSTOM_PROFILE_AREA];
 }
 
 /** `{main, handset}` of the slots that hold a different release each, or null when they agree (or one is empty). */

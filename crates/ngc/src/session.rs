@@ -98,6 +98,12 @@ pub struct SessionConfig {
     /// The surface pressure in mbar (`surfacePressureMbar`, 100 to 30000) the start-at-the-surface fixture uses; the
     /// `reset`, `cold`, `wake` and `serial` actions may carry a new value of it.
     pub surface_pressure_mbar: f64,
+    /// The handset button pins `PE3` / `PE5` rest high from reset through an external pull-up (**on by default and not a user option**,
+    /// DESIGN.md 20.3): the same electrical path for every firmware, a press is accepted whenever no other gesture runs. Off is the Renode
+    /// button model of the recordings (pins low until TIM3 is configured for capture, then high with two zero-width capture edges); only
+    /// [`crate::scenario::recorded_config`] switches it, through this internal field, so that the Renode-recorded scenarios and the dive
+    /// benchmark keep their recorded start-up.
+    pub button_pull_up: bool,
 }
 
 impl Default for SessionConfig {
@@ -116,6 +122,7 @@ impl Default for SessionConfig {
             eeprom_factory_init: true,
             start_at_surface: true,
             surface_pressure_mbar: surface_start::DEFAULT_SURFACE_MBAR,
+            button_pull_up: true,
         }
     }
 }
@@ -897,6 +904,7 @@ fn launch_system(
         routine_accel: routine_accel_mode(config),
         adc_sample: config.adc_sample,
         inputs,
+        button_pull_up: config.button_pull_up,
         ..SystemConfig::default()
     };
     let mut system = System::build_with(system_config, main, handset, options)?;
@@ -932,7 +940,8 @@ fn launch_system(
             .iter()
             .map(|name| (name.to_string(), provenance.iter().find(|(n, _)| n == name).map(|(_, p)| p.clone()).unwrap_or(Provenance::FreshRtc)))
             .collect(),
-        main_bkp1_wake_override: dual && boot_mode == BootMode::HandsetWake,
+        // The BKP1R marker is the original application's: a custom build keeps its own retained backup words (DESIGN.md 20.2).
+        main_bkp1_wake_override: dual && boot_mode == BootMode::HandsetWake && !system.release().is_custom(),
     };
     system.apply_boot_fixtures()?;
     Ok(Launched { system, provenance, info, eeprom_factory, surface_start })

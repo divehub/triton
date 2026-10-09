@@ -211,6 +211,10 @@ pub struct SystemConfig {
     pub adc_sample: u32,
     /// Sensor inputs of the dual run (applied to the main board's models).
     pub inputs: Inputs,
+    /// The handset button pins `PE3` / `PE5` rest high from reset through an external pull-up (**default**, DESIGN.md 20.3). `false`
+    /// is the Renode button model of the recordings, which sets them high only after the TIM3 capture is configured
+    /// ([`crate::models::buttons::Buttons::gated`]); only [`crate::scenario::recorded_config`] selects it.
+    pub button_pull_up: bool,
 }
 
 impl Default for SystemConfig {
@@ -223,6 +227,7 @@ impl Default for SystemConfig {
             routine_accel: RoutineAccelMode::On,
             adc_sample: handset::DEFAULT_ADC_SAMPLE,
             inputs: Inputs::defaults(),
+            button_pull_up: true,
         }
     }
 }
@@ -240,8 +245,8 @@ impl SystemConfig {
 /// A host input applied at a quantum boundary (`System::schedule_input`, `System::apply_input`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Input {
-    /// Physical Up (`true`) / Down (`false`) navigation button: a 204.8 ms low pulse on the PE3 / PE5 input
-    /// selected through the handset orientation byte (runner `up` / `down`).
+    /// Physical Up (`true`) / Down (`false`) navigation button: a 204.8 ms low pulse on PE5 (Up, mask 2) / PE3 (Down,
+    /// mask 1), the same for every firmware (runner `up` / `down`; DESIGN.md 20.3).
     Navigate { up: bool },
     /// Physical confirm: two overlapping pulses staggered by 50 virtual ms (runner `confirm`).
     Confirm,
@@ -283,6 +288,24 @@ impl MainApplication {
             .with("pressure", number(self.pressure))
             .with("temperature", number(self.temperature))
             .with("batteryReadyFlag", self.battery_ready.map(|value| value != 0))
+    }
+}
+
+/// The fault state of one board (`faults` of the state document).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BoardFaults {
+    /// Configurable Fault Status Register (`0xE000ED28`).
+    pub cfsr: u32,
+    /// HardFault Status Register (`0xE000ED2C`).
+    pub hfsr: u32,
+    /// Why the core is locked up (`None`: it is not).
+    pub lockup: Option<String>,
+}
+
+impl BoardFaults {
+    /// `{"cfsr": n, "hfsr": n, "lockup": null | "reason"}`.
+    pub fn to_json(&self) -> Json {
+        Json::object().with("cfsr", u64::from(self.cfsr)).with("hfsr", u64::from(self.hfsr)).with("lockup", self.lockup.as_deref())
     }
 }
 
@@ -397,6 +420,8 @@ pub struct System {
     /// Boundary at which the released handset CPU is un-halted (one quantum after the release poll).
     handset_start_at: Option<Time>,
     standby_time: Option<Time>,
+    /// `Cpu::deep_sleep_entries` of the main core at the last standby poll (custom builds, see `fixtures::standby_entered`).
+    deep_sleep_seen: u64,
     error: Option<String>,
     inputs: Inputs,
     pending_inputs: Vec<(Time, Input)>,
@@ -470,7 +495,7 @@ impl System {
                 return Err(reason.to_string());
             }
         }
-        let handset_board = HandsetBoard::new(handset_firmware, HandsetOptions { adc_sample: config.adc_sample, can_link: dual })?;
+        let handset_board = HandsetBoard::new(handset_firmware, HandsetOptions { adc_sample: config.adc_sample, can_link: dual, button_pull_up: config.button_pull_up })?;
         let main_board = if dual { Some(MainBoard::new(main_firmware.expect("checked above"))?) } else { None };
 
         let mut link = CanLink::new();
@@ -498,6 +523,7 @@ impl System {
             handset_release_time: None,
             handset_start_at: None,
             standby_time: None,
+            deep_sleep_seen: 0,
             error: None,
             pending_inputs: Vec::new(),
             input_errors: Vec::new(),
@@ -562,7 +588,10 @@ impl System {
         }
         if let Some(main) = self.main.as_mut() {
             if self.config.boot_mode == BootMode::HandsetWake {
-                for (address, value) in fixtures::WAKE_FIXTURE {
+                // A custom build gets the wake flags only: `RTC.BKP1R = 0x32F0` is the original application's own marker, and
+                // overwriting the retained backup word would clobber native state restored from the RTC checkpoint.
+                let fixture: &[(u32, u32)] = if self.release.is_custom() { &fixtures::CUSTOM_WAKE_FIXTURE } else { &fixtures::WAKE_FIXTURE };
+                for &(address, value) in fixture {
                     main.board.bus_write(address, Width::Word, value);
                 }
             }
@@ -965,7 +994,14 @@ impl System {
     fn poll_fixtures(&mut self) {
         self.stats.polls += 1;
         if let Some(main) = self.main.as_mut() {
-            if fixtures::standby_requested(&main.board) {
+            let standby = if self.release.is_custom() {
+                let entries = main.board.cpu.deep_sleep_entries();
+                let slept = std::mem::replace(&mut self.deep_sleep_seen, entries) != entries;
+                fixtures::standby_entered(&main.board, slept)
+            } else {
+                fixtures::standby_requested(&main.board)
+            };
+            if standby {
                 main.board.set_halted(true);
                 self.handset.board.set_halted(true);
                 self.handset_released = false;
@@ -1005,9 +1041,6 @@ impl System {
         }
         if addresses.handset_error_loop.address().is_none() {
             fields.push(("terminalHandlerDetection", addresses.handset_error_loop.reason().unwrap_or("")));
-        }
-        if addresses.handset_orientation.address().is_none() {
-            fields.push(("navigationOrientation", addresses.handset_orientation.reason().unwrap_or("")));
         }
         fields
     }
@@ -1102,13 +1135,7 @@ impl System {
         match input {
             Input::Navigate { up } => {
                 self.require_handset_powered()?;
-                let entry = &self.release.addresses.handset_orientation;
-                let Some(address) = entry.address() else {
-                    return Err(format!("Up/Down are unavailable for {}: {}", self.release.id, entry.reason().unwrap_or("the display orientation byte is unknown")));
-                };
-                let orientation = self.handset.board.peek(address, Width::Byte).unwrap_or(0) as u8;
-                let mask = fixtures::navigation_mask(*up, orientation);
-                self.press_buttons(mask)
+                self.press_buttons(fixtures::navigation_mask(*up))
             }
             Input::Confirm => {
                 self.require_handset_powered()?;
@@ -1382,6 +1409,14 @@ impl System {
             entry.1 = board.peek(entry.1, Width::Word).unwrap_or(0);
         }
         Some(out)
+    }
+
+    /// The fault state of a board for the state document (`faults.<board>`, every release): `CFSR` and `HFSR` as the guest
+    /// would read them (side-effect-free peeks of the System Control Block) and the core's lockup reason, if it is locked up.
+    pub fn board_faults(&self, which: Which) -> Option<BoardFaults> {
+        let board = self.board(which)?;
+        let word = |address: u32| board.peek(address, Width::Word).unwrap_or(0);
+        Some(BoardFaults { cfsr: word(fixtures::CFSR_ADDRESS), hfsr: word(fixtures::HFSR_ADDRESS), lockup: board.cpu.lockup_reason().map(str::to_string) })
     }
 
     /// Records the next `capacity` executed instruction addresses of a board (4 bytes each). While a

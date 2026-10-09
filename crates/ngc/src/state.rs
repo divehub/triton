@@ -17,19 +17,20 @@
 //! | `mode`, `bootMode`, `powerModel`, `performanceMode`, `hostPacing`, `firmware`, `rtcPersistence`, `outputHistoryEpoch`, `standby` | descriptive launch fields |
 //!
 //! Added by this engine: `engine` (`ngc-wasm/<version>`), `virtualNs`, `instructions`, `idleSkip`, `idleFastForward`,
-//! `machineResets`, `realtimeFactor` (measured by the host, `null` until it supplies one), `i2cIdleHigh` / `i2cFixture` (the
-//! main board's I2C idle-high fixture, DESIGN 15.3c) and `unavailable`.
+//! `machineResets`, `faults` (per board `{cfsr, hfsr, lockup}`, DESIGN 20.2), `realtimeFactor` (measured by the host, `null`
+//! until it supplies one), `i2cIdleHigh` / `i2cFixture` (the main board's I2C idle-high fixture, DESIGN 15.3c) and `unavailable`.
 //!
 //! * `hardwareOutputs[]` entries end with `activity` / `pwmActivity` (the bounded output histories of
 //!   [`crate::models::telemetry`]).
 //! * `outputHistoryEpoch` is `"<historyNonce>-<generation>"` ([`crate::session::Session::output_history_epoch`]); it changes
 //!   on session creation and on every board recreation and machine reset, i.e. whenever the histories start over.
 //! * `firmware` is `{release: {id, label}, main: {...}, handset: {...}, addresses: {...}}`; each role object has `path`,
-//!   `label`, `sha256` (= `binSha256`, the binary span), `srecSha256`, `stack` and `resetPC`; `addresses` is the release's
+//!   `label`, `sha256` (= `binSha256`, the binary span), `srecSha256`, `stack` and `resetPC` (and `custom: true` for a custom
+//!   build, whose release is `{id: "CUSTOM", label: "Custom build"}`); `addresses` is the release's
 //!   table of firmware-specific addresses ([`crate::firmware::ReleaseAddresses`]), an address that is not proven for the
-//!   release being `{"address": null, "reason": "..."}`.
+//!   release being `{"address": null, "reason": "..."}` (all of them for a custom build).
 //! * `unavailable` maps the state fields that are `null` because of such an address to the reason (empty for TRITON): for
-//!   NEPTUN `mainBatteryReady`.
+//!   NEPTUN `mainBatteryReady`, for a custom build also `terminalHandlerDetection`.
 //! * `decoHealth` is `{tissues: "valid"|"invalid"|"unknown", oxygen: "calibrated"|"uncalibrated"|"unknown", details}`, a
 //!   read-only report from side-effect-free peeks ([`crate::deco::health`]); `startAtSurface` is `{enabled,
 //!   surfacePressureMbar, applied, oxygenReset, changedInputs, note}` (what that emulator fixture did at the last board creation)
@@ -79,6 +80,8 @@ pub struct FirmwareDescriptor {
     pub srec_sha256: String,
     pub stack: u32,
     pub reset_pc: u32,
+    /// A custom (native) build (DESIGN.md section 20): the role object then also carries `custom: true`.
+    pub custom: bool,
 }
 
 impl FirmwareDescriptor {
@@ -92,20 +95,25 @@ impl FirmwareDescriptor {
             srec_sha256: crate::sha256::to_hex(&firmware.srec_sha256),
             stack: firmware.initial_sp(),
             reset_pc: firmware.reset_pc(),
+            custom: firmware.is_custom(),
         }
     }
 
-    /// `{path, sha256, binSha256, srecSha256, stack, resetPC, label}`; `sha256` is the runner's name of the binary-span
-    /// hash and equals `binSha256`.
+    /// `{path, sha256, binSha256, srecSha256, stack, resetPC, label}` (and `custom: true` for a custom build); `sha256` is
+    /// the runner's name of the binary-span hash and equals `binSha256`.
     pub fn to_json(&self) -> Json {
-        Json::object()
+        let mut json = Json::object()
             .with("path", self.path.as_str())
             .with("sha256", self.sha256.as_str())
             .with("binSha256", self.sha256.as_str())
             .with("stack", u64::from(self.stack))
             .with("resetPC", u64::from(self.reset_pc))
             .with("label", self.label)
-            .with("srecSha256", self.srec_sha256.as_str())
+            .with("srecSha256", self.srec_sha256.as_str());
+        if self.custom {
+            json.insert("custom", true);
+        }
+        json
     }
 }
 
@@ -227,6 +235,7 @@ pub fn build(view: &StateView<'_>) -> Json {
     state.insert("idleFastForward", system.config().idle_fast_forward);
     state.insert("routineAccel", routine_accel(system));
     state.insert("machineResets", machine_resets(system));
+    state.insert("faults", faults(system));
     state.insert("realtimeFactor", view.realtime_factor);
     // Decompression state handling (DESIGN.md 17) and the EEPROM factory image (DESIGN.md 18): the read-only health report and the
     // two labeled emulator fixtures.
@@ -332,6 +341,19 @@ fn routine_accel(system: &System) -> Json {
         }
     }
     out
+}
+
+/// `faults`: per existing board (`main` only in a dual run) `{cfsr, hfsr, lockup}`, the Cortex-M fault status registers as the
+/// guest reads them and the lockup reason of the core (`null` when it is not locked up). Every release; the health signal a
+/// custom build has instead of the original-RAM diagnostics.
+fn faults(system: &System) -> Json {
+    let mut faults = Json::object();
+    for which in [Which::Main, Which::Handset] {
+        if let Some(board) = system.board_faults(which) {
+            faults.insert(which.name(), board.to_json());
+        }
+    }
+    faults
 }
 
 fn machine_resets(system: &System) -> Json {

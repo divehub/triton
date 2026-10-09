@@ -9,10 +9,12 @@ use emu_core::Json;
 use ngc::firmware::{self, Report, Role, VectorInfo};
 use std::io::Write;
 
-pub const USAGE: &str = "ngc-cli info --main <srec> --handset <srec> [--vectors] [--json]\n  \
+pub const USAGE: &str = "ngc-cli info --main <srec> --handset <srec> [--custom] [--vectors] [--json]\n  \
     Print identity, SHA-256 hashes, segments, binary span and vector table of the firmware images\n  \
     and verify them against the recorded facts. At least one of --main / --handset is required.\n  \
-    --vectors  list all 99 vector table entries\n  \
+    --custom   treat the files as custom (native) builds: no identification, only the structural checks of\n  \
+               ngc::firmware::load_custom (syntax, bounds, vector table, initial SP, Thumb reset vector, entry record)\n  \
+    --vectors  list all vector table entries\n  \
     --json     machine-readable output";
 
 const SYSTEM_VECTORS: [&str; 16] = [
@@ -35,7 +37,7 @@ const SYSTEM_VECTORS: [&str; 16] = [
 ];
 
 pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
-    let parsed = match args::parse(args, &["main", "handset"], &["vectors", "json"]) {
+    let parsed = match args::parse(args, &["main", "handset"], &["vectors", "json", "custom"]) {
         Ok(p) => p,
         Err(e) => {
             let _ = writeln!(err, "ngc-cli info: {e}\n{USAGE}");
@@ -66,12 +68,13 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
                 continue;
             }
         };
-        let report = firmware::inspect(&bytes);
-        let slot_ok = report.ok() && report.identified == Some(slot);
+        let custom = parsed.flag("custom");
+        let report = if custom { firmware::inspect_custom(&bytes) } else { firmware::inspect(&bytes) };
+        let slot_ok = report.ok() && (custom || report.identified == Some(slot));
         if !slot_ok {
             status = 1;
         }
-        let routines = if report.ok() { accelerated_routines(&bytes, slot) } else { Vec::new() };
+        let routines = if report.ok() { accelerated_routines(&bytes, slot, custom) } else { Vec::new() };
         if parsed.flag("json") {
             let mut entry = report.to_json();
             entry.insert("path", path);
@@ -103,8 +106,9 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
 
 /// The runtime-library routines of the image that the exact routine acceleration recognizes (by the SHA-256 of their
 /// code bytes, wherever they sit in the image; DESIGN.md 16.2).
-fn accelerated_routines(srec: &[u8], role: Role) -> Vec<armv7m::accel::Match> {
-    match firmware::load(srec, Some(role)) {
+fn accelerated_routines(srec: &[u8], role: Role, custom: bool) -> Vec<armv7m::accel::Match> {
+    let loaded = if custom { firmware::load_custom(srec, role) } else { firmware::load(srec, Some(role)) };
+    match loaded {
         Ok(image) => armv7m::accel::scan(0x0800_0000, &image.flash_image()),
         Err(_) => Vec::new(),
     }
@@ -127,6 +131,9 @@ fn print_report(out: &mut dyn Write, slot: Role, path: &str, report: &Report, al
     let _ = writeln!(out, "  file:        {} bytes", report.srec_bytes);
     let _ = writeln!(out, "  sha256:      {}", report.srec_sha256);
     match (report.identified, report.release) {
+        _ if report.custom => {
+            let _ = writeln!(out, "  identity:    custom build (no identification; structure only), release CUSTOM");
+        }
         (Some(role), Some(release)) => {
             let e = release.expected(role);
             let _ = writeln!(out, "  identity:    {} ({}); release {} ({})", e.label, e.file_name, release.id, release.label);
@@ -154,7 +161,8 @@ fn print_report(out: &mut dyn Write, slot: Role, path: &str, report: &Report, al
             let _ = writeln!(out, "  segment {i}:   0x{start:08x}..0x{end:08x} ({} bytes)", end - start);
         }
         if let Some((start, end)) = report.span {
-            let _ = writeln!(out, "  span:        0x{start:08x}..0x{end:08x} ({} bytes, holes filled with 0xFF)", end - start);
+            let fill = if report.custom { "0x00" } else { "0xFF" };
+            let _ = writeln!(out, "  span:        0x{start:08x}..0x{end:08x} ({} bytes, holes filled with {fill})", end - start);
         }
         if let Some(hash) = &report.bin_sha256 {
             let _ = writeln!(out, "  bin sha256:  {hash}");
@@ -182,10 +190,11 @@ fn print_vectors(out: &mut dyn Write, vectors: &VectorInfo, all: bool) {
         vectors.reset_vector,
         vectors.entries.len()
     );
-    let mut distinct: Vec<u32> = vectors.entries[16..].to_vec();
+    let external = vectors.entries.get(16..).unwrap_or(&[]);
+    let mut distinct: Vec<u32> = external.to_vec();
     distinct.sort_unstable();
     distinct.dedup();
-    let _ = writeln!(out, "               {} external IRQ entries, {} distinct targets", vectors.entries.len() - 16, distinct.len());
+    let _ = writeln!(out, "               {} external IRQ entries, {} distinct targets", external.len(), distinct.len());
     if all {
         for (i, &word) in vectors.entries.iter().enumerate() {
             let label = if i < 16 { SYSTEM_VECTORS[i].to_string() } else { format!("IRQ {}", i - 16) };
@@ -227,6 +236,38 @@ mod tests {
         let (status, _, err) = run_args(&["--main", "/nonexistent/file.srec"]);
         assert_eq!(status, 1);
         assert!(err.contains("cannot read"));
+    }
+
+    #[test]
+    fn custom_describes_the_structure_only() {
+        let Some(dir) = firmware_dir() else {
+            eprintln!("skipping: firmware not available");
+            return;
+        };
+        let main = dir.join("ngc_main_5.8_TRITON.srec");
+        // The original image is a valid custom image too; nothing is identified and the hole behind the table is zero filled.
+        let (status, out, err) = run_args(&["--custom", "--main", main.to_str().unwrap()]);
+        assert_eq!(status, 0, "{err}\n{out}");
+        assert!(out.contains("identity:    custom build (no identification; structure only), release CUSTOM"), "{out}");
+        assert!(out.contains("holes filled with 0x00") && out.contains("result:      verified"), "{out}");
+        for name in ["srec-syntax", "address-bounds", "span", "vector-table", "initial-sp", "reset-vector", "entry-point"] {
+            assert!(out.contains(&format!("ok   {name}")), "{name}: {out}");
+        }
+        assert!(!out.contains("FAIL") && !out.contains("WARNING"), "{out}");
+        let (status, out, _) = run_args(&["--custom", "--main", main.to_str().unwrap(), "--json"]);
+        assert_eq!(status, 0);
+        let json = Json::parse(&out).unwrap();
+        let entry = json.get("main").unwrap();
+        assert_eq!((entry.get("custom").and_then(Json::as_bool), entry.get("slotOk").and_then(Json::as_bool)), (Some(true), Some(true)));
+        assert_eq!(entry.get("release").and_then(|r| r.get("id")).and_then(Json::as_str), Some("CUSTOM"));
+        assert!(entry.get("role").unwrap().is_null());
+        // A file that is no S-record file fails with the line.
+        let bad = std::env::temp_dir().join(format!("ngc-cli-info-custom-{}.srec", std::process::id()));
+        std::fs::write(&bad, "not an srec\n").unwrap();
+        let (status, out, _) = run_args(&["--custom", "--handset", bad.to_str().unwrap()]);
+        let _ = std::fs::remove_file(&bad);
+        assert_eq!(status, 1);
+        assert!(out.contains("FAIL srec-syntax") && out.contains("NOT VERIFIED"), "{out}");
     }
 
     #[test]

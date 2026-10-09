@@ -65,7 +65,8 @@ async function main() {
   function startEmulator(result, info) {
     entry.hide();
     emulator.notices = [];
-    emulator.show({ ...info, slots: { ...entry.slots }, release: result.release || entry.release() });
+    // The files of the mode that booted (custom builds or an original release), and the release the worker reports for them.
+    emulator.show({ ...info, slots: { ...entry.activeSlots() }, release: result.release || entry.release() });
     emulator.onState({ state: result.state, host: result.hostStatus });
     showScreen('emulator');
   }

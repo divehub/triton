@@ -223,6 +223,34 @@ fn physical_button_inputs_reach_the_handset_button_model_and_its_summary() {
 }
 
 #[test]
+fn up_is_pe5_and_down_is_pe3_whatever_the_orientation_byte_holds() {
+    let Some((_, handset)) = images() else {
+        eprintln!("skipping: firmware not available");
+        return;
+    };
+    let mut system = System::new(SystemConfig::handset_only(), None, &handset).unwrap();
+    system.run_until(from_millis(400));
+    // DESIGN.md 20.3: the original image's orientation byte (0x20000740) is no longer read; the mapping is the one of its default value.
+    for value in [1u32, 2, 0, 0xFF] {
+        assert!(system.board_mut(Which::Handset).unwrap().poke(0x2000_0740, Width::Byte, value), "orientation {value}");
+        for (up, mask) in [(true, 2u32), (false, 1)] {
+            system.apply_input(&Input::Navigate { up }).unwrap();
+            system.run_for(from_micros(300));
+            let summary = system.button_summary();
+            assert!(summary.contains(&format!("activeMask={mask};")), "orientation {value}, up {up}: {summary}");
+            assert!(summary.contains(if up { "PE5=False" } else { "PE3=False" }), "{summary}");
+            system.run_until(system.time() + from_millis(300));
+            assert!(system.button_summary().contains("activeMask=0;"), "the gesture ended");
+        }
+    }
+    // The pins rest high from reset and a press needs no readiness: the very first quantum accepts one.
+    let mut fresh = System::new(SystemConfig::handset_only(), None, &handset).unwrap();
+    assert!(fresh.button_summary().starts_with("ready=True; activeMask=0; pendingMask=0; pulses=0; releases=0; PE3=True; PE5=True;"));
+    fresh.apply_input(&Input::Navigate { up: false }).expect("accepted before the firmware configured anything");
+    assert!(fresh.button_summary().contains("pendingMask=1;"));
+}
+
+#[test]
 fn hardware_outputs_list_the_backlight_the_vibrator_and_the_hud_channels() {
     let Some(mut system) = dual(SystemConfig::dual()) else {
         eprintln!("skipping: firmware not available");

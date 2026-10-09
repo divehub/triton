@@ -282,6 +282,45 @@ test('runtime: refuses unknown files, accepts the two images in either order', a
   await assert.rejects(() => h2.request('boot', { options: { mode: 'dual' } }), /main firmware/);
 });
 
+test('runtime: custom builds (the TRITON images, admitted structurally) boot as a "Custom build" with their own profile and unknown original-RAM diagnostics', async () => {
+  const storage = new MemoryStorage();
+  const h = new Harness({ storage });
+  const init = await h.request('init');
+  assert.equal(init.customSupported, true);
+  // The slot decides the role; the report is structural (no role, no release verification) and names both hashes.
+  const handset = await h.request('inspect-custom', { role: 'handset', name: 'native_handset.srec', bytes: handsetSrec.slice() });
+  assert.equal(handset.accepted, true, handset.message);
+  assert.equal(handset.report.role, null);
+  assert.equal(handset.report.release.id, 'CUSTOM');
+  assert.equal(handset.report.srecSha256, HANDSET_SHA);
+  assert.match(handset.report.binSha256, /^[0-9a-f]{64}$/);
+  assert.ok(handset.report.checks.length >= 6 && handset.report.checks.every((check) => check.ok), 'the structural checks pass');
+  assert.ok(handset.report.span.start === 0x08004000 && handset.report.initialSp === 0x20018000 && handset.report.resetPc > 0x08004000);
+  const main = await h.request('inspect-custom', { role: 'main', name: 'native_main.srec', bytes: mainSrec.slice() });
+  assert.equal(main.accepted, true, main.message);
+  const refused = await h.request('inspect-custom', { role: 'main', name: 'notes.srec', bytes: new TextEncoder().encode('hello') });
+  assert.equal(refused.accepted, false);
+  assert.ok(refused.message && refused.report.checks.some((check) => !check.ok), 'the refusal names the failed check');
+  assert.equal(h.runtime.custom.main, null, 'a refused file leaves the slot empty');
+  assert.equal((await h.request('inspect-custom', { role: 'main', name: 'native_main.srec', bytes: mainSrec.slice() })).accepted, true);
+
+  const booted = await h.request('boot', { options: { mode: 'dual', startPaused: true }, custom: true });
+  assert.equal(booted.release.custom, true);
+  assert.deepEqual(booted.state.firmware.release, { id: 'CUSTOM', label: 'Custom build' });
+  assert.equal(booted.state.firmware.main.custom, true);
+  const advanced = await h.action({ action: 'advance', seconds: 3 });
+  assert.equal(advanced.frameReady, true);
+  assert.deepEqual(advanced.faults, { main: { cfsr: 0, hfsr: 0, lockup: null }, handset: { cfsr: 0, hfsr: 0, lockup: null } });
+  assert.equal(advanced.mainBatteryReady, null, 'a diagnostic that reads the original firmware\'s RAM is unknown');
+  assert.ok(advanced.unavailable.mainBatteryReady, 'with the engine\'s reason');
+  assert.equal(advanced.decoHealth.tissues, 'unknown');
+  assert.equal(advanced.rtcPersistence.mainBkp1WakeOverride, false);
+  await h.request('flush');
+  await h.request('close-session');
+  assert.ok((await storage.list('custom')).length > 0, 'the custom profile area');
+  assert.equal((await storage.list('profile')).length, 0, 'TRITON\'s profile area is untouched');
+});
+
 test('runtime: dual boot reaches the B1 prompt frame; buttons, actions and validation', async () => {
   const h = new Harness();
   await h.ready();

@@ -39,6 +39,24 @@ export function hex32(value) {
   return typeof value === 'number' && Number.isFinite(value) ? `0x${(value >>> 0).toString(16).padStart(8, '0')}` : '—';
 }
 
+/**
+ * The facts of a custom build's structural report (`ngc_firmware_inspect_custom`) as short lines: the span, the initial SP, the
+ * reset PC and the entry address, for those the report has. The entry screen's card and the session information share it.
+ */
+export function reportFacts(report) {
+  if (!report || typeof report !== 'object') return [];
+  const has = (value) => value !== undefined && value !== null;
+  const span = report.span && Number.isFinite(report.span.start) && Number.isFinite(report.span.end) ? report.span : null;
+  const sp = has(report.initialSp) ? report.initialSp : report.stack;
+  const pc = has(report.resetPc) ? report.resetPc : report.resetPC;
+  return [
+    span ? `Span ${hex32(span.start)}–${hex32(span.end)} (${formatBytes(span.end - span.start)}; the end is exclusive)` : null,
+    has(sp) ? `Initial SP ${hex32(sp)}` : null,
+    has(pc) ? `Reset PC ${hex32(pc)}` : null,
+    has(report.entry) ? `Entry ${hex32(report.entry)}` : null,
+  ].filter(Boolean);
+}
+
 export function formatClock(milliseconds) {
   return milliseconds ? new Date(milliseconds).toLocaleString() : 'never';
 }
