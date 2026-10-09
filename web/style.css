@@ -69,15 +69,16 @@
   /* indicator lights */
   --light-off-bg: #1a2534;
   --light-off-border: #53647a;
-  --light-on-bg: #a5b5c6;
-  --light-on-border: #53647a;
-  --light-on-glow: 0 0 10px #a5b5c655;
-  --light-red-bg: #ff6d6d;
-  --light-red-border: #ff9191;
-  --light-red-glow: 0 0 10px #ff6d6d77;
-  --light-white-bg: #f4f8ff;
+  /* Lit like a HUD LED: a white-hot core and a strong glow, shown at once (the firmware blinks for about 50 ms). */
+  --light-on-bg: radial-gradient(circle at 35% 35%, #ffffff 0 18%, #8ff5e0 50%, #22c7a6 100%);
+  --light-on-border: #c8fff3;
+  --light-on-glow: 0 0 4px 1px #ffffff99, 0 0 12px 3px #3fe6c4, 0 0 26px 7px #3fe6c477;
+  --light-red-bg: radial-gradient(circle at 35% 35%, #ffffff 0 16%, #ff6a5c 50%, #e01b12 100%);
+  --light-red-border: #ffc2bb;
+  --light-red-glow: 0 0 4px 1px #ffffffaa, 0 0 12px 3px #ff2a1a, 0 0 28px 8px #ff2a1a88;
+  --light-white-bg: radial-gradient(circle at 35% 35%, #ffffff 0 55%, #e2efff 100%);
   --light-white-border: #ffffff;
-  --light-white-glow: 0 0 10px #f4f8ff77;
+  --light-white-glow: 0 0 4px 2px #ffffff, 0 0 14px 5px #e6f1ffcc, 0 0 30px 10px #cfe3ff66;
 }
 @media (prefers-color-scheme: light) {
   :root {
@@ -147,15 +148,15 @@
     --scrim: #0007;
     --light-off-bg: #d5dde7;
     --light-off-border: #8a9bb0;
-    --light-on-bg: #5f7389;
-    --light-on-border: #3f536a;
-    --light-on-glow: 0 0 9px #5f738988;
-    --light-red-bg: #ef4444;
-    --light-red-border: #b91c1c;
-    --light-red-glow: 0 0 10px 1px #ef444488;
+    --light-on-bg: radial-gradient(circle at 35% 35%, #ffffff 0 15%, #3fe6c4 50%, #0f9f83 100%);
+    --light-on-border: #0b7a64;
+    --light-on-glow: 0 0 10px 2px #22c7a6, 0 0 22px 6px #22c7a688;
+    --light-red-bg: radial-gradient(circle at 35% 35%, #ffffff 0 14%, #ff4a3d 50%, #c81e14 100%);
+    --light-red-border: #991b1b;
+    --light-red-glow: 0 0 10px 2px #ff2a1a, 0 0 24px 7px #ff2a1a88;
     --light-white-bg: radial-gradient(circle at 35% 35%, #ffffff 0 45%, #c9d9ee 100%);
     --light-white-border: #2b3c52;
-    --light-white-glow: 0 0 0 2px #ffffff, 0 0 14px 4px #4f78b8aa;
+    --light-white-glow: 0 0 0 2px #ffffff, 0 0 16px 6px #4f78b8cc;
   }
 }
 
@@ -186,6 +187,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .status-card h2 { margin: 0 0 4px; font-size: 13px; }
 .status-card span:last-child { font-size: 12px; color: var(--text-muted); }
 .status-card .output-light { width: 22px; height: 22px; margin: 0; flex-shrink: 0; }
+/* The whole card lights up with its indicator, at once (no transition). */
+.status-card:has(> .output-light.on) { border-color: #3fe6c4; box-shadow: 0 0 22px #3fe6c444; }
+.status-card:has(> .output-light.on.red) { border-color: #ff5a4a; box-shadow: 0 0 24px #ff2a1a55; }
+.status-card:has(> .output-light.on.white) { border-color: #e6f1ff; box-shadow: 0 0 24px #cfe3ff44; }
 .deco-health { display: grid; gap: 8px; margin-bottom: 22px; }
 .deco-health p { margin: 0; padding: 11px 16px; border: 1px solid var(--warn-border); border-radius: 10px; color: var(--warn-text); background: var(--warn-bg); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .fault-health p { border-color: var(--notice-border); color: var(--notice-text); background: var(--notice-bg); }

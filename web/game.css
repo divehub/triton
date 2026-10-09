@@ -121,24 +121,22 @@
 #screen-game .scene-meta { display: flex; justify-content: space-between; gap: 10px; color: #79959f; font-size: 9px; padding: 14px 18px; }
 #screen-game .signal-dock { margin: 0 20px 14px; }
 #screen-game .signal-tray { display: flex; justify-content: center; width: fit-content; max-width: 100%; margin: 0 auto; gap: 12px; padding: 5px; border: 1px solid #2c454d; border-radius: 32px; background: linear-gradient(120deg,#10232b,#0d1d25); box-shadow: inset 0 1px #678c8c13,0 3px 10px #040e1426; }
-#screen-game .signal { display: flex; align-items: center; justify-content: center; width: 48px; min-width: 48px; min-height: 48px; padding: 7px; border: 1px solid transparent; border-radius: 50%; background: transparent; transition: background .2s,border-color .2s; --signal-color: #edf9f9; --signal-glow: #d5f3ee; }
+#screen-game .signal { display: flex; align-items: center; justify-content: center; width: 48px; min-width: 48px; min-height: 48px; padding: 7px; border: 1px solid transparent; border-radius: 50%; background: transparent; --signal-color: #ffffff; --signal-glow: #d9ecff; }
 #screen-game .signal-visual { display: grid; place-items: center; flex: 0 0 32px; height: 32px; border: 1px solid #486069; border-radius: 50%; background: linear-gradient(150deg,#31494f,#0b181f 60%); box-shadow: inset 0 1px #99b5b22b,0 2px 3px #0005; }
-#screen-game .led-lens { width: 17px; height: 17px; border-radius: 50%; border: 1px solid #859b9855; background: radial-gradient(circle at 35% 25%,#9aafab,#526a6b 35%,#263f46 75%); box-shadow: inset 0 -2px 3px #05151caa; transition: background .2s,box-shadow .2s; }
-#screen-game .signal-red { --signal-color: #ff9a91; --signal-glow: #fa675a; }
+#screen-game .led-lens { width: 17px; height: 17px; border-radius: 50%; border: 1px solid #859b9855; background: radial-gradient(circle at 35% 25%,#9aafab,#526a6b 35%,#263f46 75%); box-shadow: inset 0 -2px 3px #05151caa; }
+#screen-game .signal-red { --signal-color: #ff6a5c; --signal-glow: #ff2a1a; }
 #screen-game .signal-red .led-lens { border-color: #a9544c66; background: radial-gradient(circle at 35% 25%,#ab776e,#6c3c3d 35%,#382a31 75%); }
-#screen-game .signal-vibrator { --signal-color: #8ee8d5; --signal-glow: #5ee6ca; }
+#screen-game .signal-vibrator { --signal-color: #8ff5e0; --signal-glow: #3fe6c4; }
 #screen-game .vibration-glyph { width: 24px; height: 24px; fill: none; stroke: #819ba4; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-#screen-game .signal.active { background: #29414966; border-color: #54747766; }
-#screen-game .signal.active .led-lens { border-color: var(--signal-color); background: radial-gradient(circle at 35% 25%,#fff 0%,var(--signal-color) 40%,var(--signal-glow) 100%); box-shadow: 0 0 7px var(--signal-glow),0 0 18px var(--signal-glow),inset 0 -1px 2px #fff8; animation: game-signal-pulse .85s ease-in-out infinite; }
-#screen-game .signal-vibrator.active .signal-visual { border-color: #6ebcae; box-shadow: 0 0 15px #5ee6ca2b,inset 0 1px #99b5b22b; }
-#screen-game .signal-vibrator.active .vibration-glyph { stroke: var(--signal-color); animation: game-vibration .16s ease-in-out infinite alternate; }
+/* Lit like a HUD LED: full brightness at once, no fade or pulse (the firmware blinks for about 50 ms). */
+#screen-game .signal.active { background: #ffffff12; border-color: var(--signal-color); box-shadow: 0 0 16px var(--signal-glow); }
+#screen-game .signal.active .signal-visual { border-color: var(--signal-color); }
+#screen-game .signal.active .led-lens { border-color: #fff; background: radial-gradient(circle at 35% 30%,#fff 0 22%,var(--signal-color) 55%,var(--signal-glow) 100%); box-shadow: 0 0 4px 1px #fff,0 0 12px 3px var(--signal-glow),0 0 26px 8px var(--signal-glow),0 0 44px 14px color-mix(in srgb,var(--signal-glow) 45%,transparent); }
+#screen-game .signal-vibrator.active .signal-visual { box-shadow: 0 0 18px var(--signal-glow),inset 0 1px #99b5b22b; }
+#screen-game .signal-vibrator.active .vibration-glyph { stroke: var(--signal-color); stroke-width: 1.9; filter: drop-shadow(0 0 3px var(--signal-glow)) drop-shadow(0 0 8px var(--signal-glow)); animation: game-vibration .08s linear infinite alternate; }
 @keyframes game-vibration {
   from { transform: translateX(-1px) rotate(-3deg) }
   to { transform: translateX(1px) rotate(3deg) }
-}
-@keyframes game-signal-pulse {
-  0%,100% { opacity: .55; filter: brightness(.8) }
-  45%,65% { opacity: 1; filter: brightness(1.1) }
 }
 #screen-game .instrument-stage { position: relative; min-height: 353px; display: flex; align-items: center; justify-content: center; padding: 15px 20px 32px; background: radial-gradient(ellipse at 50% 10%,#2c414148,transparent 70%); overflow: hidden; }
 #screen-game .device-strap { position: absolute; width: 210px; height: 85px; background: linear-gradient(90deg,#122129,#263337 9%,#17272c 12%,#1d2f34 86%,#2c3f41 89%,#17292e); border-left: 1px solid #40515066; border-right: 1px solid #40515066; left: 50%; transform: translateX(-50%); box-shadow: inset 0 1px #49626855; }

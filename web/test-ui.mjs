@@ -4313,7 +4313,7 @@ test('game (structure): every rule of game.css is scoped to #screen-game, the pa
       assert.ok(/^#screen-game(?=[\s.:#\[>]|$)/.test(selector.trim()), `unscoped game selector: ${selector.trim()}`);
     }
   }
-  assert.ok(keyframes.length >= 4 && keyframes.every((name) => name.startsWith('game-')), `keyframes: ${keyframes}`);
+  assert.ok(keyframes.length >= 3 && keyframes.every((name) => name.startsWith('game-')), `keyframes: ${keyframes}`);
   assert.doesNotMatch(css, /:root|(^|[\s,{}])(html|body)\b/m, 'no rule about the document itself');
   assert.doesNotMatch(css, /@import|url\(\s*['"]?https?:/, 'no external resource');
   // The isolation rule: the page's own element and class rules do not reach into the game (SVG presentation attributes are kept).
