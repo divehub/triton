@@ -418,23 +418,79 @@
         <section class="dive-card panel" aria-labelledby="game-dive-title">
           <div class="panel-heading"><div><span class="section-index">01</span><h2 id="game-dive-title">In the water</h2></div><span id="game-motion-status" class="subtle-status">Holding depth</span></div>
           <div class="ocean" id="game-ocean" tabindex="0" role="group" aria-label="Interactive dive water" aria-describedby="game-motion-help">
-            <svg class="seascape" viewBox="0 0 600 620" preserveAspectRatio="none" aria-hidden="true">
-              <defs><linearGradient id="game-sea" x2="0" y2="1"><stop stop-color="#259da9"></stop><stop offset=".28" stop-color="#157183"></stop><stop offset=".7" stop-color="#114256"></stop><stop offset="1" stop-color="#0c293a"></stop></linearGradient><linearGradient id="game-ray" x2="0" y2="1"><stop stop-color="#b1f5e9" stop-opacity=".14"></stop><stop offset="1" stop-color="#b1f5e9" stop-opacity="0"></stop></linearGradient><linearGradient id="game-sand" x2="0" y2="1"><stop stop-color="#31534e"></stop><stop offset="1" stop-color="#152d34"></stop></linearGradient></defs>
-              <rect width="600" height="620" fill="url(#game-sea)"></rect>
-              <path d="M55 0h55L0 570H-55Zm160 0h85L165 620H80Zm200 0h55L310 620h-80Z" fill="url(#game-ray)"></path>
-              <path d="M0 13Q45 6 90 13t90 0t90 0t90 0t90 0t90 0v-13H0Z" fill="#adf3e6" opacity=".2"></path>
-              <path d="M0 585Q70 562 145 583T300 591T450 574T600 585V620H0Z" fill="url(#game-sand)"></path>
-              <g stroke="#448581" stroke-width="3" fill="none" opacity=".42"><path d="M38 596q-20-25-8-47m8 47q15-35 6-60m-6 60q28-22 18-44M554 603q-22-39-9-59m9 59q22-43 9-75m-9 75q-1-30 20-38"></path></g>
-              <g fill="#b4ebe6" opacity=".24"><circle cx="80" cy="117" r="1.5"></circle><circle cx="271" cy="252" r="1"></circle><circle cx="450" cy="87" r="1.5"></circle><circle cx="369" cy="427" r="1"></circle><circle cx="153" cy="505" r="1.5"></circle><circle cx="534" cy="340" r="1"></circle><circle cx="210" cy="65" r="1"></circle></g>
-              <g fill="#4a8590" opacity=".4"><path d="m80 382 9-4q9-3 16 4-7 7-16 4Zm-15 16 7-3q7-3 13 3-6 6-13 3Z"></path><path d="m362 155 9-4q9-3 16 4-7 7-16 4Z"></path></g>
-            </svg>
-            <div class="depth-grid" id="game-depth-grid" aria-hidden="true"></div>
-            <div class="surface-caption"><span class="surface-dot"></span>SURFACE</div>
+            <!-- The water view (DESIGN 22): decorative layers (aria-hidden). The background gradient, the far layer (rays and distant
+                 shapes, moving slower than the camera) and the world (sky, boat, surface, depth lines, seabed) are moved by game.js
+                 as the camera follows the diver; the canvas holds marine snow, bubbles, the splash and the torch. -->
+            <div class="water-bg" id="game-water-bg" aria-hidden="true"></div>
+            <div class="water-far" id="game-water-far" aria-hidden="true">
+              <svg class="far-rays" id="game-far-rays" viewBox="0 0 600 900" preserveAspectRatio="xMidYMin slice">
+                <defs><linearGradient id="game-ray" x2="0" y2="1"><stop stop-color="#b1f5e9" stop-opacity=".2"></stop><stop offset=".6" stop-color="#b1f5e9" stop-opacity=".07"></stop><stop offset="1" stop-color="#b1f5e9" stop-opacity="0"></stop></linearGradient></defs>
+                <path d="M62 0h58L-12 900h-130Zm118 0h46L156 760H48Zm148 0h74L252 900H112Zm150 0h40L430 720H316Zm118 0h56L560 860H454Z" fill="url(#game-ray)"></path>
+              </svg>
+              <svg class="far-shapes" id="game-far-shapes" viewBox="0 0 600 1500" preserveAspectRatio="xMidYMin slice">
+                <g fill="#b4ebe6" opacity=".3"><circle cx="80" cy="150" r="1.5"></circle><circle cx="271" cy="300" r="1"></circle><circle cx="450" cy="110" r="1.5"></circle><circle cx="369" cy="520" r="1"></circle><circle cx="153" cy="640" r="1.5"></circle><circle cx="534" cy="420" r="1"></circle><circle cx="210" cy="80" r="1"></circle><circle cx="90" cy="900" r="1.5"></circle><circle cx="330" cy="1010" r="1"></circle><circle cx="500" cy="760" r="1.5"></circle><circle cx="250" cy="1180" r="1"></circle></g>
+                <g fill="#4a8590" opacity=".5">
+                  <path d="m80 382 9-4q9-3 16 4-7 7-16 4Zm-15 16 7-3q7-3 13 3-6 6-13 3Zm33 14 8-3q8-3 14 3-6 6-14 3Z"></path>
+                  <path d="m362 215 9-4q9-3 16 4-7 7-16 4Zm22 12 7-3q7-3 12 3-5 6-12 3Z"></path>
+                  <path d="m452 640 11-5q11-4 19 5-8 8-19 5Zm-30 18 9-4q9-3 15 4-6 7-15 4Zm52 20 8-3q8-3 14 3-6 6-14 3Z"></path>
+                  <path d="m150 830 11-5q11-4 19 5-8 8-19 5Zm28 16 8-3q8-3 14 3-6 6-14 3Z"></path>
+                  <path d="m400 1040 12-5q12-4 21 5-9 8-21 5Zm-34 16 9-4q9-3 15 4-6 7-15 4Z"></path>
+                  <path d="m60 1260 10-4q10-3 18 4-8 7-18 4Zm26 14 8-3q8-3 14 3-6 6-14 3Z"></path>
+                </g>
+              </svg>
+            </div>
+            <div class="water-fg" id="game-water-fg" aria-hidden="true">
+              <svg class="world-sky" viewBox="0 0 600 200" preserveAspectRatio="xMidYMax slice">
+                <g fill="#e9f6f0" opacity=".3"><ellipse cx="110" cy="62" rx="48" ry="9"></ellipse><ellipse cx="146" cy="55" rx="30" ry="8"></ellipse><ellipse cx="400" cy="40" rx="56" ry="8"></ellipse><ellipse cx="438" cy="34" rx="26" ry="6"></ellipse></g>
+                <path d="M-20 200Q40 150 110 172Q150 140 224 180T330 200Z" fill="#3f8386" opacity=".5"></path>
+                <path d="M392 200Q450 160 520 182T640 200Z" fill="#4a9190" opacity=".4"></path>
+              </svg>
+              <div class="depth-grid" id="game-depth-grid"></div>
+              <svg class="world-boat" id="game-boat" viewBox="0 0 320 130">
+                <path d="M30 92h258q-14 24-62 24H78q-34 0-48-24Z" fill="#12303a" opacity=".5"></path>
+                <rect x="2" y="62" width="17" height="42" rx="4" fill="#253e46"></rect>
+                <rect x="6" y="56" width="9" height="8" rx="2" fill="#41636a"></rect>
+                <path d="M208 52V6" stroke="#cfd9d2" stroke-width="2.6" stroke-linecap="round"></path>
+                <path d="M209 7h34l-7 8 7 8h-34Z" fill="#eaf0ea"></path><path d="M226 7h17l-7 8 7 8h-17Z" fill="#3f7fb8"></path>
+                <path d="M158 56V36q0-7 7-7h38q7 0 10 7l10 20Z" fill="#719998"></path>
+                <path d="M168 37h30q4 0 6 4l6 11h-42Z" fill="#183740"></path>
+                <rect x="166" y="29" width="36" height="4" rx="2" fill="#b5c8bc"></rect>
+                <rect x="38" y="36" width="12" height="28" rx="5" fill="#e8cc77"></rect><rect x="53" y="39" width="12" height="25" rx="5" fill="#c9b45f"></rect>
+                <rect x="40" y="31" width="8" height="6" rx="2" fill="#9fb2ad"></rect><rect x="55" y="34" width="8" height="6" rx="2" fill="#9fb2ad"></rect>
+                <path d="M16 64 292 54Q312 50 316 42Q312 78 288 92H32Q18 90 16 64Z" fill="#eaf0ea"></path>
+                <path d="M19 80 304 70Q300 84 288 92H32Q22 90 19 80Z" fill="#21424b"></path>
+                <path d="M18 76 306 66l-1 5L19 81Z" fill="#e8cc77"></path>
+                <rect x="14" y="60" width="44" height="5" rx="2" fill="#b6c4bb"></rect>
+                <path d="M16 64 292 54" stroke="#b6c4bb" stroke-width="2" fill="none"></path>
+              </svg>
+              <div class="world-waves">
+                <svg class="wave wave-back" viewBox="0 0 800 24" preserveAspectRatio="none"><path d="M0 12q25-8 50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0V24H0Z" fill="#adf3e6" opacity=".24"></path></svg>
+                <svg class="wave wave-front" viewBox="0 0 800 24" preserveAspectRatio="none"><defs><linearGradient id="game-wave-fill" x2="0" y2="1"><stop stop-color="#34b9bc" stop-opacity=".9"></stop><stop offset="1" stop-color="#34b9bc" stop-opacity="0"></stop></linearGradient></defs><path d="M0 11q25 8 50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0V24H0Z" fill="url(#game-wave-fill)"></path><path d="M0 11q25 8 50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0t50 0" fill="none" stroke="#e8fbf5" stroke-opacity=".7" stroke-width="1.6" vector-effect="non-scaling-stroke"></path></svg>
+              </div>
+              <div class="surface-caption"><span class="surface-dot"></span>SURFACE</div>
+              <svg class="world-seabed" viewBox="0 0 600 140" preserveAspectRatio="none">
+                <defs><linearGradient id="game-sand" x2="0" y2="1"><stop stop-color="#34524d"></stop><stop offset="1" stop-color="#16292e"></stop></linearGradient></defs>
+                <path d="M0 40Q70 16 145 38T300 46T450 28T600 40V140H0Z" fill="url(#game-sand)"></path>
+                <path d="M0 60Q90 46 190 62T400 58T600 62" fill="none" stroke="#5f8a80" stroke-opacity=".18" stroke-width="2" vector-effect="non-scaling-stroke"></path>
+                <g fill="#243f40"><path d="M470 44q10-18 30-16t26 16Z"></path><path d="M92 44q6-12 20-10t16 10Z"></path></g>
+                <g stroke="#448581" stroke-width="3" fill="none" opacity=".5" vector-effect="non-scaling-stroke"><path d="M38 52q-20-25-8-47m8 47q15-35 6-60m-6 60q28-22 18-44M554 56q-22-39-9-59m9 59q22-43 9-75m-9 75q-1-30 20-38"></path></g>
+              </svg>
+            </div>
+            <canvas class="water-canvas" id="game-water-canvas" width="300" height="300" aria-hidden="true"></canvas>
+            <div class="depth-gauge" id="game-depth-gauge" aria-hidden="true">
+              <div class="gauge-track" id="game-gauge-track">
+                <div class="gauge-fill" id="game-gauge-fill"></div>
+                <div class="gauge-ticks" id="game-gauge-ticks"></div>
+                <div class="gauge-window" id="game-gauge-window"></div>
+                <div class="gauge-max" id="game-gauge-max"></div>
+                <div class="gauge-diver" id="game-gauge-diver"></div>
+              </div>
+            </div>
             <div class="depth-readout"><strong id="game-depth-value">0.0</strong><span>m</span><small id="game-ambient-pressure">1.01 bar ambient</small></div>
             <div class="diver-track" id="game-diver-track"><div class="diver" id="game-diver">
-              <svg viewBox="0 0 190 90" role="img" aria-label="CCR diver"><g transform="translate(4 5)"><path d="m26 48-22-13 1 15 20 10m6-6L6 65l3 12 31-18" fill="#e8cc77"></path><path d="m30 49 39-6 28 2" stroke="#162d35" stroke-width="13" stroke-linecap="round"></path><path d="m36 57 38-3 23-9" stroke="#253e46" stroke-width="10" stroke-linecap="round"></path><rect x="75" y="29" width="44" height="18" rx="8" fill="#719998"></rect><rect x="81" y="28" width="28" height="5" rx="2" fill="#b5c8bc"></rect><path d="M73 43q17-7 51 0l17 13-29 8-37-11Z" fill="#142c35"></path><path d="m117 51 12 17 20-2" fill="none" stroke="#264751" stroke-width="9" stroke-linecap="round"></path><path d="m124 45 18-6" fill="none" stroke="#41636a" stroke-width="6"></path><circle cx="143" cy="44" r="12" fill="#183740"></circle><path d="M144 36q15-4 15 7t-12 7" fill="#82dad2"></path><path d="m149 49-4 8-20-9" fill="none" stroke="#d8c77b" stroke-width="3"></path><rect x="128" y="65" width="7" height="4" rx="1" fill="#88dfd1"></rect></g></svg>
+              <svg viewBox="0 0 190 90" role="img" aria-label="CCR diver"><g transform="translate(4 5)"><path d="m26 48-22-13 1 15 20 10m6-6L6 65l3 12 31-18" fill="#e8cc77"></path><path d="m30 49 39-6 28 2" stroke="#162d35" stroke-width="13" stroke-linecap="round"></path><path d="m36 57 38-3 23-9" stroke="#253e46" stroke-width="10" stroke-linecap="round"></path><rect x="75" y="29" width="44" height="18" rx="8" fill="#719998"></rect><rect x="81" y="28" width="28" height="5" rx="2" fill="#b5c8bc"></rect><path d="M73 43q17-7 51 0l17 13-29 8-37-11Z" fill="#142c35"></path><path d="m117 51 12 17 20-2" fill="none" stroke="#264751" stroke-width="9" stroke-linecap="round"></path><path d="m124 45 18-6" fill="none" stroke="#41636a" stroke-width="6"></path><circle cx="143" cy="44" r="12" fill="#183740"></circle><path d="M144 36q15-4 15 7t-12 7" fill="#82dad2"></path><path d="m149 49-4 8-20-9" fill="none" stroke="#d8c77b" stroke-width="3"></path><rect x="128" y="65" width="7" height="4" rx="1" fill="#88dfd1"></rect></g><g class="diver-torch"><path d="M150 54l-5 1" fill="none" stroke="#264751" stroke-width="5" stroke-linecap="round"></path><rect x="153" y="49.5" width="14" height="6.5" rx="2.4" fill="#8fb0ae"></rect><rect x="153" y="50.5" width="14" height="1.6" rx=".8" fill="#c9e2dd"></rect><path d="M166 48.4l5-2.4v12.2l-5-2.4Z" fill="#d7ebe6"></path><ellipse cx="171" cy="52.1" rx="1.5" ry="5" fill="#fff8dc"></ellipse></g></svg>
               <span class="diver-shadow"></span>
-            </div><div class="diver-depth-line"></div></div>
+            </div></div>
 
             <svg class="gesture-overlay" aria-hidden="true"><line id="game-gesture-tether"></line><circle id="game-gesture-anchor" r="9"></circle><circle id="game-gesture-contact" r="6"></circle></svg>
             <div class="speedometer" id="game-speedometer" role="meter" aria-label="Vertical speed" aria-valuemin="-18" aria-valuemax="30" aria-valuenow="0" aria-valuetext="Holding depth"><span class="meter-title">VERTICAL SPEED</span><svg class="meter-dial" viewBox="0 0 120 78" aria-hidden="true"><path d="M15 65A45 45 0 0 1 60 20" fill="none" stroke="#73e5d0" stroke-width="3" opacity=".6"></path><path d="M60 20A45 45 0 0 1 105 65" fill="none" stroke="#e2ca83" stroke-width="3" opacity=".6"></path><g stroke="#b2d3cf" opacity=".5"><path d="M60 20v7M15 65h7M98 65h7M28 33l5 5M87 38l5-5"></path></g><g id="game-speed-needle" transform="rotate(0 60 65)"><path d="M60 65V30" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"></path></g><circle cx="60" cy="65" r="4" fill="currentColor"></circle><g fill="#a1bfbf" font-size="8" font-family="inherit"><text x="7" y="76">18 ↑</text><text x="60" y="12" text-anchor="middle">0</text><text x="113" y="76" text-anchor="end">↓ 30</text></g></svg><div class="speed-reading"><strong id="game-speed-value">0.0</strong><span>m/min</span></div><span class="speed-direction" id="game-speed-direction">HOLD</span></div>

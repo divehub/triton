@@ -287,6 +287,18 @@ export class GameSim {
     this.samplePeriod = 1;
     this.nextSample = 1;
     this.lastActivity = { adv: -Infinity, vent: -Infinity };
+    this.pendingVent = 0; // gas the loop vented since the last takeVented(), surface-equivalent liters (the water view's bubbles)
+  }
+
+  /**
+   * The gas the loop vented since the last call (surface-equivalent liters) and nothing else: the loop model's own `vent` (an
+   * ascent expanding the loop, or MAV gas beyond what the loop volume takes), summed over the integration steps. A closed loop
+   * (holding depth, descending without a MAV beyond its need) returns 0. Reading it changes no physics.
+   */
+  takeVented() {
+    const vented = this.pendingVent;
+    this.pendingVent = 0;
+    return vented;
   }
 
   /** The virtual time jumped (a first state, boards recreated): continue from `virtual` without integrating the gap. */
@@ -338,6 +350,7 @@ export class GameSim {
     this.maxDepth = Math.max(this.maxDepth, newDepth);
     if (this.loop.last.adv > 1e-12) this.lastActivity.adv = this.elapsed;
     if (this.loop.last.vent > 1e-12) this.lastActivity.vent = this.elapsed;
+    this.pendingVent += this.loop.last.vent;
     if ((this.direction < 0 && newDepth === 0) || (this.direction > 0 && newDepth === MAX_DEPTH_METERS)) {
       this.stopMotion();
       this.onBoundary();
@@ -385,6 +398,289 @@ export function estimateVirtual({ lastVirtual, lastWallMs, nowMs, pace, capSecon
   if (typeof pace !== 'number' || !(pace > 0)) return lastVirtual;
   const ahead = Math.max(0, (nowMs - lastWallMs) / 1000) * pace;
   return lastVirtual + Math.min(capSeconds, ahead);
+}
+
+// ---- the water view (DESIGN 22): a following camera, light by depth, the torch, the entry from the boat -------------------
+//
+// Pure functions and small classes; game-water.js draws with them and game.js puts them on the page. Nothing here reads the
+// clock or the DOM, and nothing feeds back into the dive simulation or the emulator: the view is a picture of the depth.
+
+/** The water panel shows a fixed window of this many meters; it no longer zooms out with the maximum depth. */
+export const VIEW_WINDOW_M = 30;
+/** The air above the surface that stays in view when the camera is at the top (sky and boat), and the sand below the seabed at the bottom. */
+export const SKY_M = 6;
+export const SAND_M = 4;
+/** Everything the water layers draw, from the top of the sky to the bottom of the sand, in meters. */
+export const WORLD_M = SKY_M + MAX_DEPTH_METERS + SAND_M;
+/** The camera moves only when the diver leaves the middle third of the panel. */
+export const DEAD_ZONE = Object.freeze({ top: 1 / 3, bottom: 2 / 3 });
+/** The camera takes a few tenths of a second to follow (critically damped). */
+export const CAMERA_SMOOTH_S = 0.35;
+/** The drawn diver follows the 5 Hz depth updates over this time, so the motion between two states is smooth. */
+export const DEPTH_SMOOTH_S = 0.12;
+
+const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
+
+/** The top of the window, in meters of depth (negative is the air above the surface), at its two ends. */
+export function cameraLimits() {
+  return { min: -SKY_M, max: MAX_DEPTH_METERS + SAND_M - VIEW_WINDOW_M };
+}
+
+/**
+ * Where the top of the window wants to be for a diver at `depth`, given where it wanted to be before (`previous`): unchanged while
+ * the diver is inside the middle third of the window, otherwise just far enough that the diver is on the edge of that third.
+ * Clamped at the top (surface and sky in view) and at the bottom (the seabed and some sand in view).
+ */
+export function cameraTarget(depth, previous = -SKY_M) {
+  const { min, max } = cameraLimits();
+  if (!Number.isFinite(depth)) return clamp(Number.isFinite(previous) ? previous : min, min, max);
+  const start = Number.isFinite(previous) ? previous : min;
+  const lowest = depth - DEAD_ZONE.bottom * VIEW_WINDOW_M; // the window top that puts the diver on the lower edge of the zone
+  const highest = depth - DEAD_ZONE.top * VIEW_WINDOW_M; // ... on the upper edge
+  return clamp(Math.min(Math.max(start, lowest), highest), min, max);
+}
+
+/**
+ * One critically damped step toward `target`, exact for any `dt` (the closed form of the spring, not an Euler step), so the
+ * result does not depend on the frame rate: one step of 0.3 s equals thirty of 0.01 s. `smoothTime` is roughly the time the
+ * follow takes. Returns the new `{position, velocity}`.
+ */
+export function smoothDamp(position, velocity, target, smoothTime, dt) {
+  if (!(dt > 0)) return { position, velocity };
+  if (!(smoothTime > 1e-4)) return { position: target, velocity: 0 };
+  const omega = 2 / smoothTime;
+  const offset = position - target;
+  const b = velocity + omega * offset;
+  const decay = Math.exp(-omega * dt);
+  return { position: target + (offset + b * dt) * decay, velocity: (velocity - omega * b * dt) * decay };
+}
+
+/** The margin (a fraction of the window) the diver always keeps from the top and the bottom of the panel. */
+const KEEP_IN_VIEW = 0.08;
+
+/**
+ * The camera: `target` is where the window wants to be (dead zone and clamps), `top` where it is (the target, followed smoothly).
+ * `update(depth, dt, {ease: false})` moves without easing (the reduced-motion preference); `dt` 0 (a pause) holds everything.
+ */
+export class Camera {
+  constructor({ smoothTime = CAMERA_SMOOTH_S } = {}) {
+    this.smoothTime = smoothTime;
+    this.snap(0);
+  }
+
+  /** Put the window where it belongs for `depth` at once, the diver in the middle of it (a new session, Reset dive). */
+  snap(depth = 0) {
+    this.target = cameraTarget(depth, depth - VIEW_WINDOW_M / 2);
+    this.top = this.target;
+    this.velocity = 0;
+  }
+
+  update(depth, dt, { ease = true } = {}) {
+    if (!(dt > 0)) return this.top; // paused: the camera holds
+    this.target = cameraTarget(depth, this.target);
+    if (!ease) {
+      this.top = this.target;
+      this.velocity = 0;
+    } else {
+      const next = smoothDamp(this.top, this.velocity, this.target, this.smoothTime, dt);
+      // The diver never leaves the window, however fast the clock runs (Uncapped): the follow catches up at the edges.
+      const { min, max } = cameraLimits();
+      const kept = clamp(next.position, depth - VIEW_WINDOW_M * (1 - KEEP_IN_VIEW), depth - VIEW_WINDOW_M * KEEP_IN_VIEW);
+      this.top = clamp(kept, min, max);
+      this.velocity = this.top === next.position ? next.velocity : 0;
+    }
+    return this.top;
+  }
+}
+
+/** How much of the surface light is left at the top of the window: 1 at the top, 0 once the window is `falloffM` deep. */
+export function lightFade(cameraTop, falloffM) {
+  return clamp(1 - Math.max(0, cameraTop + SKY_M) / falloffM, 0, 1);
+}
+
+// ---- light by depth ----
+
+/** The water color by depth: bright turquoise at the surface, deep blue around 30 to 40 m, near black by 100 m. [meters, [r, g, b]]. */
+export const WATER_STOPS = Object.freeze([
+  [0, [43, 176, 181]], [6, [31, 150, 165]], [15, [22, 116, 135]], [25, [15, 84, 112]], [35, [11, 61, 95]], [50, [8, 42, 69]],
+  [70, [5, 26, 43]], [90, [3, 13, 23]], [100, [2, 7, 13]], [MAX_DEPTH_METERS, [1, 4, 8]],
+].map(([meters, color]) => Object.freeze([meters, Object.freeze(color)])));
+/** The air above the water, from the top of the sky to the horizon. */
+export const SKY_STOPS = Object.freeze([[-SKY_M, [27, 62, 76]], [-3, [58, 128, 136]], [-0.8, [140, 206, 196]], [0, [176, 226, 212]]]
+  .map(([meters, color]) => Object.freeze([meters, Object.freeze(color)])));
+
+function mixStops(stops, meters) {
+  if (meters <= stops[0][0]) return [...stops[0][1]];
+  for (let index = 1; index < stops.length; index++) {
+    const [end, to] = stops[index];
+    if (meters <= end) {
+      const [start, from] = stops[index - 1];
+      const fraction = (meters - start) / (end - start);
+      return from.map((value, channel) => value + (to[channel] - value) * fraction);
+    }
+  }
+  return [...stops.at(-1)[1]];
+}
+
+/** The color of the water at a depth in meters, [r, g, b] (0 to 255). */
+export function waterColor(depthM) {
+  return mixStops(WATER_STOPS, Number.isFinite(depthM) ? depthM : 0);
+}
+
+export function rgbText(color, alpha = 1) {
+  const [red, green, blue] = color.map((value) => Math.round(clamp(value, 0, 255)));
+  return alpha >= 1 ? `rgb(${red}, ${green}, ${blue})` : `rgba(${red}, ${green}, ${blue}, ${round(alpha, 3)})`;
+}
+
+/** The CSS gradient of the whole world, top of the sky to the bottom of the sand; the water gradient has the depth color at each meter. */
+export function worldGradient() {
+  const at = (meters) => `${round((meters + SKY_M) / WORLD_M * 100, 3)}%`;
+  const parts = [];
+  for (const [meters, color] of SKY_STOPS) parts.push(`${rgbText(color)} ${at(meters)}`);
+  for (const [meters, color] of WATER_STOPS) parts.push(`${rgbText(color)} ${at(meters)}`);
+  parts.push(`${rgbText(WATER_STOPS.at(-1)[1])} 100%`);
+  return `linear-gradient(to bottom, ${parts.join(', ')})`;
+}
+
+/** The depth gauge's gradient: the same colors over the dive range 0 to 110 m. */
+export function gaugeGradient() {
+  return `linear-gradient(to bottom, ${WATER_STOPS.map(([meters, color]) => `${rgbText(color)} ${round(meters / MAX_DEPTH_METERS * 100, 3)}%`).join(', ')})`;
+}
+
+// ---- the torch: on at 40 m, off again above 39 m ----
+
+export const TORCH_ON_M = 40;
+export const TORCH_OFF_M = 39;
+
+/** The torch (and the speedometer's glow) after a depth: on from 40 m down, off again only above 39 m, so it never flickers at the boundary. */
+export function torchNext(depthM, on) {
+  if (!Number.isFinite(depthM)) return !!on;
+  return on ? depthM >= TORCH_OFF_M : depthM >= TORCH_ON_M;
+}
+
+export const TORCH_CONE = Object.freeze({ length: 320, halfAngle: 0.3 });
+
+/**
+ * How much of the torch's light a point gets: 0 outside the cone, up to 1 at the lens. (`dx`, `dy`) is the point relative to the
+ * lens in screen pixels, `angle` the way the torch points (radians, 0 along +x, positive down).
+ */
+export function coneLight(dx, dy, angle, { length = TORCH_CONE.length, halfAngle = TORCH_CONE.halfAngle } = {}) {
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const along = dx * cos + dy * sin;
+  if (!(along > 0) || along >= length) return 0;
+  const across = Math.abs(dy * cos - dx * sin);
+  const half = along * Math.tan(halfAngle) + 5;
+  if (across >= half) return 0;
+  const reach = 1 - along / length;
+  return reach * reach * (1 - across / half);
+}
+
+// ---- the entry from the boat ----
+
+/** The first descent plays a back roll off the boat of about this long (wall seconds): purely visual, the depth follows the simulation. */
+export const ENTRY_SECONDS = 1.1;
+/** The fraction of the entry at which the diver reaches the water (the splash). */
+export const ENTRY_SPLASH_AT = 0.5;
+/** The diver has left the boat once the depth exceeds this, or a descent is commanded. */
+export const ENTRY_TRIGGER_M = 0.02;
+/** Where the diver sits on the boat, relative to the pose in the water (pixels; the sprite turned, and a little smaller). */
+export const ENTRY_SEAT = Object.freeze({ dx: 84, dy: -58, spin: -52, scale: 0.8 });
+const ENTRY_LEAN_END = 0.1; // the fraction of the entry spent sitting and leaning back
+const ENTRY_ROLL_END = 0.85; // ... at which the roll has come all the way round
+const ENTRY_DIP_PX = 15; // how far under its resting depth the diver plunges before it comes back up
+
+const smoothstep = (value) => {
+  const x = clamp(value, 0, 1);
+  return x * x * (3 - 2 * x);
+};
+
+/**
+ * The state of the diver's entry: 'boat' (sitting on the boat; a new session and Reset dive start here), 'entering' (the roll and
+ * the splash) and 'water' (swimming, from then on, also back at the surface). `update` reports the phase, the progress (0 to 1)
+ * and `splash` (true on the one update that reaches the water). With the reduced-motion preference the diver goes from the boat
+ * straight into the water. A `dt` of 0 (a pause) holds the animation.
+ */
+export class EntryState {
+  constructor() {
+    this.reset();
+  }
+
+  reset() {
+    this.phase = 'boat';
+    this.elapsed = 0;
+    this.splashed = false;
+  }
+
+  get progress() {
+    return this.phase === 'boat' ? 0 : this.phase === 'water' ? 1 : clamp(this.elapsed / ENTRY_SECONDS, 0, 1);
+  }
+
+  update({ dt = 0, depth = 0, direction = 0, reducedMotion = false } = {}) {
+    let splash = false;
+    if (this.phase === 'boat' && (depth > ENTRY_TRIGGER_M || direction > 0)) {
+      this.phase = reducedMotion ? 'water' : 'entering';
+    }
+    if (this.phase === 'entering' && reducedMotion) this.phase = 'water';
+    if (this.phase === 'entering') {
+      this.elapsed += Math.max(0, dt);
+      if (!this.splashed && this.elapsed / ENTRY_SECONDS >= ENTRY_SPLASH_AT) {
+        this.splashed = true;
+        splash = true;
+      }
+      if (this.elapsed >= ENTRY_SECONDS) this.phase = 'water';
+    }
+    return { phase: this.phase, progress: this.progress, splash };
+  }
+}
+
+/**
+ * The diver's pose during the entry, relative to the pose in the water: pixels right (`dx`) and down (`dy`), the turn (`spin`,
+ * degrees, negative is backward) and the size. Progress 0 sits on the boat, then the diver leans back and rolls off, falls,
+ * reaches the water at ENTRY_SPLASH_AT, plunges a little and comes back up to the pose 0, 0, 0, 1 at progress 1.
+ */
+export function entryPose(progress) {
+  const p = clamp(progress, 0, 1);
+  const fall = clamp((p - ENTRY_LEAN_END) / (ENTRY_SPLASH_AT - ENTRY_LEAN_END), 0, 1);
+  const lean = smoothstep(p / ENTRY_LEAN_END);
+  const roll = smoothstep((p - ENTRY_LEAN_END) / (ENTRY_ROLL_END - ENTRY_LEAN_END));
+  let dx = ENTRY_SEAT.dx * (1 - smoothstep(fall));
+  let dy = ENTRY_SEAT.dy * (1 - fall * fall);
+  if (p > ENTRY_SPLASH_AT) {
+    const rise = smoothstep((p - ENTRY_SPLASH_AT) / (1 - ENTRY_SPLASH_AT));
+    dx = 0;
+    dy = ENTRY_DIP_PX * Math.sin(Math.PI * rise);
+  }
+  const start = ENTRY_SEAT.spin - 10 * lean;
+  const spin = p <= ENTRY_LEAN_END ? start : start + (-360 - start) * roll;
+  return { dx, dy, spin, scale: ENTRY_SEAT.scale + (1 - ENTRY_SEAT.scale) * smoothstep(fall) };
+}
+
+// ---- vent bubbles: a closed loop makes none ----
+
+/** One visible bubble stands for this much vented gas (surface-equivalent liters). */
+export const SL_PER_BUBBLE = 0.025;
+
+/**
+ * Turns the gas the loop vented into whole bubbles: none for no venting, and the count follows the vented volume (the remainder
+ * is carried over, so the count over time is the volume divided by SL_PER_BUBBLE however it is split into frames).
+ */
+export class BubbleEmitter {
+  constructor() {
+    this.carry = 0;
+  }
+
+  reset() {
+    this.carry = 0;
+  }
+
+  emit(ventedLiters) {
+    if (!(ventedLiters > 0)) return 0;
+    this.carry += ventedLiters / SL_PER_BUBBLE;
+    const count = Math.floor(this.carry);
+    this.carry -= count;
+    return count;
+  }
 }
 
 // ---- run state, stops and alerts ---------------------------------------------------------------------------------------

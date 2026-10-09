@@ -15,9 +15,11 @@ import { DEFAULT_SURFACE_MBAR, parseSurfacePressure } from './deco.js';
 import { byId, prefs, setText } from './dom.js';
 import { DEFAULT_MAV_FLOW_SL_MIN, MAX_DEPTH_METERS } from './game-gas.js';
 import {
-  GAME_INDICATORS, GameSim, InputsSender, PlayClock, cellMillivolts, cellSensitivities, clockText, durationText,
-  estimateVirtual, gameInputs, indicatorView, loadCellFixture, runState, speedLabel, stopAlerts,
+  ENTRY_SEAT, GAME_INDICATORS, GameSim, InputsSender, PlayClock, SKY_M, VIEW_WINDOW_M, cellMillivolts, cellSensitivities, clockText,
+  durationText, estimateVirtual, gameInputs, gaugeGradient, indicatorView, loadCellFixture, runState, speedLabel, stopAlerts,
+  worldGradient,
 } from './game-logic.js';
+import { DIVER_X, MAX_FRAME_STEP_S, WaterScene } from './game-water.js';
 import { handsetKeyAction, isHandsetArrow } from './keys.js';
 import { LcdView } from './lcd.js';
 import { DEFAULT_RELEASE_ID, describeRelease, profileArea } from './releases.js';
@@ -27,6 +29,19 @@ const $ = (id) => byId(`game-${id}`);
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const DEFAULT_TITLE = 'NGC system emulator · WebAssembly';
 const PRESS_FEEDBACK_MS = 160;
+// The far layer (rays and distant shapes) moves at this fraction of the camera's speed: parallax. The reduced-motion preference has none.
+const FAR_PARALLAX = 0.45;
+// Where the diver sits on the boat (the stern platform) in the boat's drawing, as a fraction of its width, and the boat's size limits (px).
+const BOAT_SEAT_FRACTION = 0.1125;
+const BOAT_MAX_WIDTH = 330;
+const BOAT_MIN_WIDTH = 200;
+const GAUGE_LABELS = [0, 30, 60, 90, 110];
+
+/** The browser's animation frames, or null where there are none (the Node tests inject their own). */
+function browserFrames() {
+  if (typeof requestAnimationFrame !== 'function') return null;
+  return { request: (callback) => requestAnimationFrame(callback), cancel: (handle) => cancelAnimationFrame(handle) };
+}
 const INDICATOR_NAMES = { vibrator: 'Handset vibrator', red: 'Red HUD LED (HUD 3)', white: 'White HUD LED (HUD 2)' };
 // W / S swimming: the speed tiers in m/min (hold, double tap and hold, triple tap and hold), up to the gesture maxima of
 // 18 m/min ascending and 30 m/min descending; taps count when the next press follows the last release within the gap.
@@ -56,10 +71,12 @@ export class GameView {
   /**
    * @param {import('./worker-client.js').WorkerClient} client
    * @param {{quit: () => (void|Promise<void>)}} hooks `quit` closes the session (profile saved) and leaves the game
-   * @param {{timers?: {setTimer: Function, clearTimer: Function}, now?: () => number, random?: () => number, store?: object}} [options]
-   *   the tests inject timers, a clock, a random source and the settings store
+   * @param {{timers?: {setTimer: Function, clearTimer: Function}, now?: () => number, random?: () => number, store?: object,
+   *   frames?: ({request: Function, cancel: Function}|null), motion?: ({matches: boolean}|null)}} [options]
+   *   the tests inject timers, a clock, a random source, the settings store, the animation frames (`null` is none) and the
+   *   reduced-motion media query (`null` is none)
    */
-  constructor(client, hooks, { timers, now, random, store } = {}) {
+  constructor(client, hooks, { timers, now, random, store, frames, motion } = {}) {
     this.client = client;
     this.hooks = hooks;
     this.root = byId('screen-game');
@@ -68,6 +85,17 @@ export class GameView {
     this.now = now || (() => performance.now());
     this.setTimer = (timers && timers.setTimer) || ((fn, ms) => setTimeout(fn, ms));
     this.clearTimer = (timers && timers.clearTimer) || ((handle) => clearTimeout(handle));
+    // The water view (DESIGN 22): a scene drawn on animation frames while the game is on screen.
+    this.frames = frames === undefined ? browserFrames() : frames;
+    this.frameHandle = null;
+    this.lastFrameAt = null;
+    this.scene = new WaterScene({ random: this.random });
+    this.layout = { width: 0, height: 0, ppm: 0 };
+    this.layoutStale = true;
+    this.gaugeHeight = 0;
+    this.painted = new Map(); // what was last written to the page: unchanged values are not written again
+    this.waterContext = null;
+    this.resizeObserver = null;
     this.lcd = new LcdView({ container: $('lcd'), canvas: $('frame'), placeholder: $('placeholder'), sizeLabel: $('frame-size') });
     this.lcd.setIntegerScaling(false);
     this.replay = new ReplayController({
@@ -95,6 +123,8 @@ export class GameView {
     this.haveFrame = false;
     this.frameCount = 0;
     this.beginSession();
+    this.buildWater();
+    this.watchMotion(motion);
     this.wire();
   }
 
@@ -106,6 +136,7 @@ export class GameView {
     this.surfaceMbar = DEFAULT_SURFACE_MBAR;
     this.cells = null;
     this.sim = new GameSim({ flow: DEFAULT_MAV_FLOW_SL_MIN, onBoundary: () => this.clearGesture() });
+    this.scene.reset(); // the diver is on the boat
     this.clock = new PlayClock({ onChange: (change) => this.clockChanged(change) });
     if (startPaused) this.clock.speed = 0;
     this.queue = new ActionQueue({
@@ -183,9 +214,11 @@ export class GameView {
     // The worker keeps the console text back unless the console is on screen; the game never shows it.
     this.client.send('ui', { uartOpen: false });
     this.render();
+    this.startWater();
   }
 
   hide() {
+    this.stopWater();
     this.stopMotion({ settle: false });
     this.clock.releaseValves({ silent: true });
     this.sender.cancel();
@@ -480,11 +513,13 @@ export class GameView {
     this.stopMotion();
     this.clock.releaseValves({ silent: true });
     this.sim.reset(this.sim.virtual);
+    this.scene.reset(); // back to the boat: the next descent plays the entry again
     $('diluent-select').value = 'air';
     this.closeMenu();
     this.clock.reset();
     this.offerInputs({ immediate: true });
     this.render();
+    this.paintWater();
   }
 
   // ---- wiring ----------------------------------------------------------------------------------------------------
@@ -688,6 +723,7 @@ export class GameView {
       this.replay.clear();
       this.stopMotion();
       this.releaseValves();
+      this.lastFrameAt = null; // the first frame back does not jump
       this.client.send('visibility', { hidden: document.hidden });
       this.render();
     });
@@ -695,6 +731,7 @@ export class GameView {
       if (this.active) this.client.send('flush');
     });
     window.addEventListener('resize', () => {
+      this.layoutStale = true;
       if (this.active) this.render();
     });
   }
@@ -798,33 +835,18 @@ export class GameView {
     list.append(element('div', { class: 'fixture-note' }, `Kept in this browser for the ${this.release.custom ? 'custom-build' : this.release.name} profile${this.cells.drawn ? ' (newly drawn)' : ''}.`));
   }
 
+  /** The readouts of the water panel (the picture itself is the frame loop's: see `paintWater`). */
   renderOcean(readings) {
     const sim = this.sim;
     setText($('depth-value'), sim.depth.toFixed(1));
     setText($('ambient-pressure'), `${readings.ambientBar.toFixed(2)} bar ambient`);
     setText($('max-depth-meta'), `Max ${sim.maxDepth.toFixed(1)} m`);
-    // Zoom out as the dive gets deeper, preserving room under the diver.
-    const range = Math.min(MAX_DEPTH_METERS, Math.max(40, Math.ceil((sim.maxDepth + 8) / 20) * 20));
-    const grid = $('depth-grid');
-    if (grid.dataset.range !== String(range)) {
-      grid.replaceChildren();
-      grid.dataset.range = String(range);
-      const increment = range <= 60 ? 10 : 20;
-      for (let depth = increment; depth < range; depth += increment) {
-        const line = element('div', { class: 'depth-grid-line' }, element('span', {}, `${depth} m`));
-        line.style.top = `${depth / range * 100}%`;
-        grid.append(line);
-      }
-    }
-    const oceanHeight = $('ocean').clientHeight;
-    $('diver-track').style.top = `${24 + sim.depth / range * (oceanHeight - 44)}px`;
   }
 
   renderMotion() {
     const sim = this.sim;
     const paused = this.clock.speed === 0;
     const stopped = !!this.state && !this.state.running && !paused && !(this.host && this.host.suspended);
-    $('diver').style.rotate = sim.direction === 1 ? '8deg' : sim.direction === -1 ? '-8deg' : '0deg';
     $('ocean').classList.toggle('paused', paused);
     const motionText = sim.direction === 0 ? 'Holding depth' : `${sim.direction > 0 ? 'Descending' : 'Ascending'} · ${sim.rate.toFixed(1)} m/min`;
     setText($('motion-status'), paused ? 'Paused' : stopped ? 'Emulator stopped' : motionText);
@@ -840,6 +862,205 @@ export class GameView {
     $('speedometer').classList.toggle('descending', sim.direction > 0);
     $('speedometer').setAttribute('aria-valuenow', signedRate.toFixed(1));
     $('speedometer').setAttribute('aria-valuetext', sim.direction === 0 ? 'Holding depth' : `${sim.direction > 0 ? 'Descending' : 'Ascending'} at ${sim.rate.toFixed(1)} meters per minute`);
+  }
+
+  // ---- the water view (DESIGN 22) --------------------------------------------------------------------------------
+  //
+  // One depth story: a camera follows the diver through a fixed 30 m window; the layers behind (water color by depth, rays and
+  // distant shapes with parallax, the world with the boat, the surface, the depth lines and the seabed) are moved by it; the
+  // canvas holds what drifts through the water (marine snow, vent bubbles, the splash, the torch). The decisions are in
+  // game-logic.js and game-water.js; this is the page side. It runs on animation frames only while the game is on screen, and
+  // it only reads the simulation: nothing here changes the depth, the gas or what the emulator receives.
+
+  /** The static parts of the water panel: colors by depth, the depth lines (every 5 m, labeled every 10 m) and the gauge's ticks. */
+  buildWater() {
+    $('water-bg').style.background = worldGradient();
+    $('gauge-fill').style.background = gaugeGradient();
+    const grid = $('depth-grid');
+    grid.replaceChildren();
+    for (let depth = 5; depth <= MAX_DEPTH_METERS; depth += 5) {
+      const major = depth % 10 === 0;
+      const line = element('div', { class: major ? 'depth-grid-line major' : 'depth-grid-line' });
+      if (major) line.append(element('span', {}, `${depth} m`));
+      line.style.setProperty('--g-d', String(depth));
+      grid.append(line);
+    }
+    const ticks = $('gauge-ticks');
+    ticks.replaceChildren();
+    for (const depth of GAUGE_LABELS) {
+      const tick = element('div', { class: 'gauge-tick' }, element('span', {}, String(depth)));
+      tick.style.setProperty('--g-d', String(depth));
+      ticks.append(tick);
+    }
+  }
+
+  /** The reduced-motion preference: no drift, parallax, bobbing or entry animation, and the camera moves without easing. */
+  watchMotion(motion) {
+    const query = motion !== undefined ? motion
+      : (typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-reduced-motion: reduce)') : null);
+    this.motionQuery = query;
+    if (!query) return;
+    this.scene.setReducedMotion(!!query.matches);
+    const changed = (event) => {
+      this.scene.setReducedMotion(!!(event && typeof event.matches === 'boolean' ? event.matches : query.matches));
+      if (this.active) this.paintWater();
+    };
+    if (typeof query.addEventListener === 'function') query.addEventListener('change', changed);
+    else if (typeof query.addListener === 'function') query.addListener(changed);
+  }
+
+  startWater() {
+    this.layoutStale = true;
+    this.painted.clear();
+    this.lastFrameAt = null;
+    if (typeof ResizeObserver === 'function' && !this.resizeObserver) {
+      this.resizeObserver = new ResizeObserver(() => { this.layoutStale = true; });
+      this.resizeObserver.observe($('ocean'));
+    }
+    this.advanceWater(0); // the first picture at once
+    this.requestFrame();
+  }
+
+  stopWater() {
+    if (this.frameHandle !== null && this.frames) this.frames.cancel(this.frameHandle);
+    this.frameHandle = null;
+    this.lastFrameAt = null;
+    if (this.resizeObserver) {
+      this.resizeObserver.disconnect();
+      this.resizeObserver = null;
+    }
+  }
+
+  requestFrame() {
+    if (!this.frames || this.frameHandle !== null || !this.active) return;
+    this.frameHandle = this.frames.request((now) => this.frame(now));
+  }
+
+  /** One animation frame: the scene advances by the wall time since the last one (at most MAX_FRAME_STEP_S: no jump after a pause). */
+  frame(now) {
+    this.frameHandle = null;
+    if (!this.active) return;
+    const elapsed = this.lastFrameAt === null ? 0 : (now - this.lastFrameAt) / 1000;
+    this.lastFrameAt = now;
+    this.advanceWater(Math.min(MAX_FRAME_STEP_S, Math.max(0, elapsed)));
+    this.requestFrame();
+  }
+
+  /** The panel's size and the pixels per meter of the 30 m window; the boat, the canvas and the gauge follow it. */
+  measureLayout() {
+    this.layoutStale = false;
+    const ocean = $('ocean');
+    let width = ocean.clientWidth;
+    let height = ocean.clientHeight;
+    if (!(width > 0) || !(height > 0)) {
+      if (this.layout.ppm > 0) return; // not laid out (hidden): keep what was measured
+      width = 560; // never measured: a plausible panel
+      height = 560;
+    }
+    if (width === this.layout.width && height === this.layout.height) return;
+    const ppm = height / VIEW_WINDOW_M;
+    this.layout = { width, height, ppm };
+    ocean.style.setProperty('--g-ppm', `${ppm}px`);
+    // The boat is drawn so that the stern, where the diver sits, is where the entry starts.
+    const seatX = width * DIVER_X + ENTRY_SEAT.dx;
+    const boatWidth = Math.max(BOAT_MIN_WIDTH, Math.min(BOAT_MAX_WIDTH, (width - 10 - seatX) / (1 - BOAT_SEAT_FRACTION)));
+    ocean.style.setProperty('--g-boat-w', `${boatWidth.toFixed(1)}px`);
+    ocean.style.setProperty('--g-boat-x', `${(seatX - BOAT_SEAT_FRACTION * boatWidth).toFixed(1)}px`);
+    // The canvas has the panel's size in device pixels (a new size clears it and resets its transform).
+    const canvas = $('water-canvas');
+    this.canvasScale = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+    canvas.width = Math.max(1, Math.round(width * this.canvasScale));
+    canvas.height = Math.max(1, Math.round(height * this.canvasScale));
+    this.gaugeHeight = $('gauge-track').clientHeight || Math.max(1, height - 38);
+    this.scene.dirty = true;
+  }
+
+  getWaterContext() {
+    if (this.waterContext === null) {
+      const canvas = $('water-canvas');
+      const context = typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
+      this.waterContext = context && typeof context.clearRect === 'function' ? context : false;
+    }
+    return this.waterContext || null;
+  }
+
+  /**
+   * The depth the picture shows: the simulation's, carried forward over the time since the last state while the clock runs at a
+   * known pace (the states come five times a second; the drawing runs on every frame). Never read back by the simulation.
+   */
+  shownDepth() {
+    const sim = this.sim;
+    if (sim.direction === 0 || sim.virtual === null || this.lastVirtual === null || !this.state || !this.state.running
+        || (this.host && this.host.suspended)) return sim.depth;
+    const pace = typeof this.pacing === 'number' ? this.pacing : 0;
+    const now = estimateVirtual({ lastVirtual: this.lastVirtual, lastWallMs: this.lastWall, nowMs: this.now(), pace });
+    const ahead = now === null ? 0 : Math.max(0, now - sim.virtual);
+    return Math.max(0, Math.min(MAX_DEPTH_METERS, sim.depth + sim.direction * sim.rate * ahead / 60));
+  }
+
+  advanceWater(dt) {
+    if (this.layoutStale) this.measureLayout();
+    const paused = this.clock.speed === 0;
+    const vented = this.sim.takeVented(); // taken on every frame: a pause lets go of it
+    const timeScale = typeof this.pacing === 'number' ? this.pacing : this.pacing === 'uncapped' ? 4 : 1;
+    this.scene.step({
+      dt: paused ? 0 : dt, depth: this.shownDepth(), direction: this.sim.direction, vented: paused ? 0 : vented, layout: this.layout, timeScale,
+    });
+    this.paintWater();
+  }
+
+  /** Writes a style property of a game element once per change. */
+  paint(id, property, value) {
+    const key = `${id}.${property}`;
+    if (this.painted.get(key) === value) return;
+    this.painted.set(key, value);
+    $(id).style[property] = value;
+  }
+
+  /** Toggles a class once per change. */
+  flag(node, name, on) {
+    if (this.painted.get(`.${name}`) === on) return;
+    this.painted.set(`.${name}`, on);
+    node.classList.toggle(name, on);
+  }
+
+  /** Puts the scene on the page: the layers at the camera, the boat, the diver, the gauge, the classes, and the canvas. */
+  paintWater() {
+    const { ppm } = this.layout;
+    if (!this.active || !(ppm > 0)) return;
+    const scene = this.scene;
+    const view = scene.view;
+    const shift = -(view.cameraTop + SKY_M) * ppm;
+    const world = `translate3d(0, ${shift.toFixed(1)}px, 0)`;
+    this.paint('water-bg', 'transform', world);
+    this.paint('water-fg', 'transform', world);
+    this.paint('water-far', 'transform', `translate3d(0, ${(shift * (scene.reducedMotion ? 1 : FAR_PARALLAX)).toFixed(1)}px, 0)`);
+    this.paint('far-rays', 'opacity', view.rayFade.toFixed(3));
+    this.paint('far-shapes', 'opacity', view.shapeFade.toFixed(3));
+    this.paint('boat', 'transform', `translateY(${view.boat.y.toFixed(2)}px) rotate(${view.boat.tilt.toFixed(2)}deg)`);
+    const diver = view.diver;
+    this.paint('diver-track', 'transform', `translate3d(${diver.x.toFixed(1)}px, ${diver.y.toFixed(1)}px, 0) rotate(${diver.spin.toFixed(1)}deg) scale(${diver.scale.toFixed(3)})`);
+    this.paint('diver', 'rotate', `${diver.attitude.toFixed(2)}deg`);
+    this.flag($('ocean'), 'on-boat', view.phase === 'boat');
+    this.flag($('ocean'), 'entering', view.phase === 'entering');
+    this.flag($('ocean'), 'dark', view.torch.on);
+    this.flag($('speedometer'), 'glow', view.torch.on); // the dial glows from the torch's depth
+    // The gauge: the whole range, the window the camera shows, the maximum depth and the diver.
+    const per = this.gaugeHeight / MAX_DEPTH_METERS;
+    const top = Math.max(0, Math.min(MAX_DEPTH_METERS, view.cameraTop));
+    const bottom = Math.max(0, Math.min(MAX_DEPTH_METERS, view.cameraTop + VIEW_WINDOW_M));
+    this.paint('gauge-window', 'transform', `translateY(${(top * per).toFixed(1)}px)`);
+    this.paint('gauge-window', 'height', `${Math.max(2, (bottom - top) * per).toFixed(1)}px`);
+    this.paint('gauge-diver', 'transform', `translateY(${(view.depth * per).toFixed(1)}px)`);
+    this.paint('gauge-max', 'transform', `translateY(${(this.sim.maxDepth * per).toFixed(1)}px)`);
+    if (scene.dirty) {
+      const context = this.getWaterContext();
+      if (context) {
+        context.setTransform(this.canvasScale || 1, 0, 0, this.canvasScale || 1, 0, 0);
+        scene.draw(context);
+      }
+      scene.dirty = false;
+    }
   }
 
   renderProfile() {

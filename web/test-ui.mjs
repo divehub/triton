@@ -27,7 +27,8 @@ import { FIRMWARE_PROXY_URL } from './config.js';
 import * as sensors from './sensors.js';
 import * as deco from './deco.js';
 import * as game from './game-logic.js';
-import { MAX_DEPTH_METERS, getLoopReadings } from './game-gas.js';
+import { LOOP_VOLUME_LITERS, MAX_DEPTH_METERS, SURFACE_PRESSURE_BAR, getLoopReadings, pressureAtDepth } from './game-gas.js';
+import * as water from './game-water.js';
 import { Runtime, nonceFromWords } from './runtime.js';
 import { MemoryStorage } from './storage.js';
 import { Element, installDom } from './fake-dom.mjs';
@@ -3884,7 +3885,7 @@ test('game (state): the run state and the messages that must not hide an engine 
 });
 
 /** The real GameView on the real index.html (fake DOM), a fake worker client and fake timers; the cells are fixed (+0.5 mV each). */
-async function mountGame({ options = {}, release = describeRelease(DEFAULT_RELEASE_ID), store = memoryStore() } = {}) {
+async function mountGame({ options = {}, release = describeRelease(DEFAULT_RELEASE_ID), store = memoryStore(), frames, motion } = {}) {
   installDom(html);
   const { GameView } = await import('./game.js');
   const clock = fakeTimers();
@@ -3896,7 +3897,7 @@ async function mountGame({ options = {}, release = describeRelease(DEFAULT_RELEA
     request: (type, payload) => { requests.push({ type, payload }); return Promise.resolve({}); },
   };
   const quits = [];
-  const view = new GameView(client, { quit: () => { quits.push(true); } }, { timers: clock, now: () => wall, random: () => 0.75, store });
+  const view = new GameView(client, { quit: () => { quits.push(true); } }, { timers: clock, now: () => wall, random: () => 0.75, store, frames, motion });
   view.show({ options: { mode: 'dual', adcSample: 400, ...options }, profile: 'stored', release });
   const document = globalThis.document;
   const host = { generation: 1, profileEpoch: 1, speed: 1, keepingUp: true };
@@ -4363,12 +4364,529 @@ test('game (structure): every rule of game.css is scoped to #screen-game, the pa
 
 test('game (structure): the game modules are published on purpose, the page script is the only entry, and no new dependency or external resource appears', () => {
   const build = fs.readFileSync(path.join(here, '..', 'deploy', 'build_site.py'), 'utf8');
-  for (const name of ['game.js', 'game-gas.js', 'game-logic.js', 'game.css']) assert.match(build, new RegExp(`"${name.replace('.', '\\.')}"`), `${name} is on the site allowlist`);
+  for (const name of ['game.js', 'game-gas.js', 'game-logic.js', 'game-water.js', 'game.css']) assert.match(build, new RegExp(`"${name.replace('.', '\\.')}"`), `${name} is on the site allowlist`);
   assert.doesNotMatch(build, /game-gas\.test|test-ui/);
-  for (const file of ['game.js', 'game-logic.js', 'game-gas.js']) {
+  for (const file of ['game.js', 'game-logic.js', 'game-gas.js', 'game-water.js']) {
     const source = fs.readFileSync(path.join(here, file), 'utf8');
     for (const match of source.matchAll(/from\s+'([^']+)'/g)) assert.match(match[1], /^\.\//, `${file} imports only page modules (${match[1]})`);
     assert.doesNotMatch(source, /\bfetch\(|XMLHttpRequest|WebSocket|eval\(|new Function|innerHTML/, `${file} makes no request and builds no markup from text`);
   }
   assert.match(fs.readFileSync(path.join(here, 'app.js'), 'utf8'), /import \{ GameView \} from '\.\/game\.js'/);
+});
+
+// =====================================================================================================
+// the water view (DESIGN 22): the camera, light by depth, the entry from the boat, vent bubbles, reduced motion
+// =====================================================================================================
+
+/** A small deterministic random source (the scene's particles and bubbles are random). */
+function seeded(seed = 7) {
+  let state = seed;
+  return () => {
+    state = (state * 1664525 + 1013904223) % 4294967296;
+    return state / 4294967296;
+  };
+}
+
+const waterLayout = { width: 560, height: 600, ppm: 20 };
+
+/** Steps a scene `frames` times by `dt` seconds with the same inputs; returns the last view. */
+function runScene(scene, input, frames = 1, dt = 1 / 60) {
+  let view = null;
+  for (let index = 0; index < frames; index++) view = scene.step({ dt, layout: waterLayout, ...input });
+  return view;
+}
+
+test('game (water camera): a fixed 30 m window follows the diver with a dead zone in the middle third and clamps at the surface and the seabed', () => {
+  assert.equal(game.VIEW_WINDOW_M, 30, 'the window does not zoom out with the depth');
+  const { min, max } = game.cameraLimits();
+  assert.equal(min, -game.SKY_M, 'at the top the sky and the boat are in view');
+  assert.equal(max, MAX_DEPTH_METERS + game.SAND_M - 30, 'at the bottom some sand is in view');
+  // Inside the middle third nothing moves: with the window top at 10 m the diver may be anywhere from 20 to 30 m.
+  for (const depth of [20, 22.5, 30]) assert.equal(game.cameraTarget(depth, 10), 10, `${depth} m is inside the dead zone`);
+  assert.equal(game.cameraTarget(31, 10), 11, 'below the zone the window moves just far enough to keep the diver on its edge');
+  assert.equal(game.cameraTarget(19, 10), 9, 'above it too');
+  assert.equal(game.cameraTarget(60, 10), 40);
+  // The clamps: the surface with the sky above it, the seabed with the sand below it.
+  assert.equal(game.cameraTarget(0), min);
+  assert.equal(game.cameraTarget(4, min), min, 'a diver near the surface leaves the window at the top');
+  assert.equal(game.cameraTarget(MAX_DEPTH_METERS, 50), max);
+  const seabedAt = (MAX_DEPTH_METERS - max) / 30;
+  assert.ok(seabedAt > 0.8 && seabedAt < 0.9, `the seabed is near the bottom edge of the panel (${seabedAt})`);
+  assert.equal(game.cameraTarget(Number.NaN, 12), 12, 'a missing depth moves nothing');
+  // A new camera for a dive that starts at the surface sits at the top.
+  const camera = new game.Camera();
+  assert.equal(camera.top, min);
+  camera.snap(60);
+  assert.equal((60 - camera.top) / 30, 0.5, 'a snapped camera has the diver in the middle');
+  camera.snap(MAX_DEPTH_METERS);
+  assert.equal(camera.top, max);
+});
+
+test('game (water camera): the follow is critically damped, exact for any frame rate, holds on a pause, and never loses the diver at any speed', () => {
+  // A step of the target: no overshoot, about 60% of the way after the smoothing time, nearly there after a second.
+  let state = { position: 0, velocity: 0 };
+  let previous = 0;
+  for (let index = 0; index < 120; index++) {
+    state = game.smoothDamp(state.position, state.velocity, 10, 0.35, 1 / 60);
+    assert.ok(state.position >= previous - 1e-12 && state.position <= 10 + 1e-12, 'monotonic, no overshoot');
+    previous = state.position;
+    if (index === 20) {
+      const omegaT = (2 / 0.35) * (21 / 60);
+      closeTo(state.position / 10, 1 - (1 + omegaT) * Math.exp(-omegaT), 1e-9, 'the closed form of a critically damped step');
+    }
+  }
+  assert.ok(previous > 9.9, `settled after two seconds (${previous})`);
+  // One long step equals many short ones: the result does not depend on the frame rate.
+  const once = game.smoothDamp(3, 2, 10, 0.35, 0.6);
+  for (const frames of [6, 36, 144]) {
+    let many = { position: 3, velocity: 2 };
+    for (let index = 0; index < frames; index++) many = game.smoothDamp(many.position, many.velocity, 10, 0.35, 0.6 / frames);
+    closeTo(many.position, once.position, 1e-9, `${frames} frames: position`);
+    closeTo(many.velocity, once.velocity, 1e-9, `${frames} frames: velocity`);
+  }
+  assert.deepEqual(game.smoothDamp(3, 2, 10, 0.35, 0), { position: 3, velocity: 2 }, 'no time, no change');
+  assert.deepEqual(game.smoothDamp(3, 2, 10, 0, 0.1), { position: 10, velocity: 0 }, 'no smoothing time, no easing');
+
+  // The camera: it follows a diver who leaves the middle third, holds on a pause, and does not ease when it must not.
+  const camera = new game.Camera();
+  camera.snap(30);
+  const resting = camera.top;
+  camera.update(30, 1 / 60);
+  assert.equal(camera.top, resting, 'a diver in the dead zone moves nothing');
+  camera.update(resting + 25, 1 / 60);
+  const lagging = camera.top;
+  assert.ok(lagging > resting && lagging < camera.target, 'it starts to follow, behind its target');
+  camera.update(resting + 25, 0);
+  assert.equal(camera.top, lagging, 'a pause (no time) holds the camera');
+  const abrupt = new game.Camera();
+  abrupt.snap(30);
+  abrupt.update(55, 1 / 60, { ease: false });
+  assert.equal(abrupt.top, abrupt.target, 'without easing it is at its target at once');
+  assert.equal(abrupt.velocity, 0);
+
+  // A steady descent: the diver passes the lower edge of the middle third and then stays about there. Uncapped (40 m/s) runs
+  // far ahead of the follow: the diver still never leaves the window.
+  for (const [metersPerSecond, limit, until] of [[0.5, 0.69, 50], [5, 0.85, MAX_DEPTH_METERS], [40, 0.93, MAX_DEPTH_METERS]]) {
+    const follower = new game.Camera();
+    let depth = 0;
+    while (depth < until) {
+      depth = Math.min(until, depth + metersPerSecond / 60);
+      follower.update(depth, 1 / 60);
+      const at = (depth - follower.top) / 30;
+      const clamped = follower.target > game.cameraLimits().max - 0.01; // at the seabed the window has nowhere further to go
+      assert.ok(at >= 0.07 && at <= 0.93 && (clamped || at <= limit), `at ${metersPerSecond} m/s the diver is at ${at.toFixed(3)} of the panel (${depth.toFixed(1)} m)`);
+    }
+    if (until === MAX_DEPTH_METERS) {
+      for (let frame = 0; frame < 300; frame++) follower.update(depth, 1 / 60);
+      closeTo(follower.top, game.cameraLimits().max, 1e-9, 'it ends clamped at the seabed');
+    }
+  }
+  assert.equal(game.lightFade(-game.SKY_M, 48), 1, 'full light at the top');
+  assert.ok(game.lightFade(20, 48) < 0.5 && game.lightFade(20, 48) > 0);
+  assert.equal(game.lightFade(80, 48), 0, 'none at depth');
+});
+
+test('game (water light): the water is bright turquoise at the surface, deep blue around 35 m and near black by 100 m', () => {
+  const [r0, g0, b0] = game.waterColor(0);
+  assert.ok(g0 > 150 && b0 > 150 && r0 < g0, `turquoise at the surface (${[r0, g0, b0]})`);
+  const [r35, g35, b35] = game.waterColor(35);
+  assert.ok(b35 > r35 * 3 && b35 > g35 && b35 > 80 && b35 < 130, `deep blue at 35 m (${[r35, g35, b35]})`);
+  assert.ok(game.waterColor(100).every((channel) => channel < 16), 'near black at 100 m');
+  const brightness = (depth) => game.waterColor(depth).reduce((total, channel) => total + channel, 0);
+  for (let depth = 0; depth < 110; depth += 5) assert.ok(brightness(depth + 5) < brightness(depth), `darker at ${depth + 5} m than at ${depth} m`);
+  assert.deepEqual(game.waterColor(-3), game.waterColor(0), 'above the surface is the surface color');
+  const gradient = game.worldGradient();
+  assert.match(gradient, /^linear-gradient\(to bottom, rgb\(/);
+  assert.ok(gradient.includes(' 0%') && gradient.endsWith('100%)'));
+  assert.ok(game.gaugeGradient().includes('100%'));
+  assert.equal(game.WORLD_M, game.SKY_M + MAX_DEPTH_METERS + game.SAND_M, 'the layers cover the sky, the water and the sand');
+});
+
+test('game (water torch): on at 40 m and off again only above 39 m, so it does not flicker at the boundary', () => {
+  assert.equal(game.TORCH_ON_M, 40);
+  assert.equal(game.TORCH_OFF_M, 39);
+  assert.equal(game.torchNext(39.99, false), false);
+  assert.equal(game.torchNext(40, false), true);
+  assert.equal(game.torchNext(39.5, true), true, 'on stays on between 39 and 40 m');
+  assert.equal(game.torchNext(39, true), true);
+  assert.equal(game.torchNext(38.99, true), false, 'off above 39 m');
+  assert.equal(game.torchNext(39.5, false), false, 'and off stays off between 39 and 40 m');
+  assert.equal(game.torchNext(Number.NaN, true), true, 'a missing depth changes nothing');
+  let on = false;
+  const changes = [];
+  for (const depth of [38, 39.5, 39.99, 40, 39.8, 39.2, 39, 40.5, 41, 39.05, 38.9, 39.6, 39.99, 40]) {
+    const next = game.torchNext(depth, on);
+    if (next !== on) changes.push(`${depth}:${next ? 'on' : 'off'}`);
+    on = next;
+  }
+  assert.deepEqual(changes, ['40:on', '38.9:off', '40:on'], 'three changes, none inside 39 to 40 m');
+  // The cone: full light at the lens, none behind it or outside the beam, less with the distance.
+  assert.equal(game.coneLight(-10, 0, 0), 0, 'nothing behind the lens');
+  assert.equal(game.coneLight(100, 90, 0), 0, 'nothing far off the axis');
+  assert.equal(game.coneLight(game.TORCH_CONE.length + 1, 0, 0), 0, 'nothing beyond the reach');
+  assert.ok(game.coneLight(40, 0, 0) > game.coneLight(160, 0, 0) && game.coneLight(160, 0, 0) > 0, 'dimmer with the distance');
+  assert.ok(game.coneLight(100, 0, 0) > game.coneLight(100, 20, 0), 'dimmer toward the edge');
+  assert.ok(game.coneLight(100 * Math.cos(0.4), 100 * Math.sin(0.4), 0.4) > 0.1, 'the cone turns with the diver');
+  closeTo(game.coneLight(100 * Math.cos(0.4), 100 * Math.sin(0.4), 0.4), game.coneLight(100, 0, 0), 1e-12, 'the same light along the axis, turned');
+
+  // The scene follows: the beam comes up over a fraction of a second; with the reduced-motion preference it is there at once.
+  const scene = new water.WaterScene({ random: seeded() });
+  const at = (depth, frames = 1, dt = 0.1) => runScene(scene, { depth, direction: 0 }, frames, dt).torch;
+  assert.equal(at(30).on, false);
+  assert.equal(at(40).on, true);
+  assert.ok(scene.view.torch.level > 0 && scene.view.torch.level < 1, 'it eases up');
+  at(40, 5);
+  assert.equal(scene.view.torch.level, 1);
+  assert.equal(at(39.5).on, true, 'still on at 39.5 m');
+  assert.equal(at(38.9).on, false);
+  assert.ok(scene.view.torch.level < 1 && scene.view.torch.level > 0, 'and it fades out');
+  const abrupt = new water.WaterScene({ random: seeded(), reducedMotion: true });
+  assert.equal(runScene(abrupt, { depth: 41, direction: 0 }, 1, 0.016).torch.level, 1, 'no fade with reduced motion');
+});
+
+test('game (water entry): the diver starts on the boat, the first descent rolls off it with one splash, and a reset puts the diver back', () => {
+  const entry = new game.EntryState();
+  assert.equal(entry.phase, 'boat');
+  assert.deepEqual(entry.update({ dt: 0.5, depth: 0, direction: 0 }), { phase: 'boat', progress: 0, splash: false }, 'nothing happens while the diver stays on the boat');
+  assert.equal(entry.update({ dt: 0.016, depth: 0, direction: 1 }).phase, 'entering', 'a commanded descent starts it');
+  assert.equal(game.ENTRY_SECONDS, 1.1);
+  let splashes = 0;
+  let before = 0;
+  let steps = 0;
+  while (entry.phase === 'entering' && steps++ < 200) {
+    const result = entry.update({ dt: 0.05, depth: 1, direction: 1 });
+    if (result.splash) {
+      splashes += 1;
+      assert.ok(result.progress >= game.ENTRY_SPLASH_AT && before < game.ENTRY_SPLASH_AT, 'the splash is where the diver reaches the water');
+    }
+    assert.ok(result.progress >= before, 'progress only grows');
+    before = result.progress;
+  }
+  assert.equal(splashes, 1, 'one splash');
+  assert.equal(entry.phase, 'water');
+  assert.ok(entry.elapsed >= 1.1 && entry.elapsed < 1.2, `about a second (${entry.elapsed})`);
+  assert.deepEqual(entry.update({ dt: 0.5, depth: 0, direction: -1 }), { phase: 'water', progress: 1, splash: false }, 'surfacing again leaves the diver in the water, beside the boat');
+  // Time that does not pass (a pause) holds the animation; the depth alone (the simulation went on) also starts it.
+  const held = new game.EntryState();
+  held.update({ dt: 0.3, depth: 0.5, direction: 1 });
+  const progress = held.progress;
+  assert.equal(held.update({ dt: 0, depth: 3, direction: 1 }).progress, progress);
+  // Reset dive: back to the boat, so the next descent plays the entry again.
+  entry.reset();
+  assert.equal(entry.phase, 'boat');
+  assert.equal(entry.update({ dt: 0.016, depth: 0.1, direction: 0 }).phase, 'entering', 'the depth alone starts it too');
+  // Reduced motion: the diver simply appears in the water.
+  const reduced = new game.EntryState();
+  assert.deepEqual(reduced.update({ dt: 0.016, depth: 0, direction: 1, reducedMotion: true }), { phase: 'water', progress: 1, splash: false });
+  const midway = new game.EntryState();
+  midway.update({ dt: 0.2, depth: 0.2, direction: 1 });
+  assert.equal(midway.update({ dt: 0.016, depth: 0.2, direction: 1, reducedMotion: true }).phase, 'water', 'switching the preference on ends the animation');
+
+  // The pose: on the boat, then a fall that reaches the water at the splash, a plunge, and the swimming pose.
+  const seat = game.entryPose(0);
+  assert.deepEqual([seat.dx, seat.dy, seat.spin, seat.scale], [game.ENTRY_SEAT.dx, game.ENTRY_SEAT.dy, game.ENTRY_SEAT.spin, game.ENTRY_SEAT.scale]);
+  const splash = game.entryPose(game.ENTRY_SPLASH_AT);
+  assert.ok(Math.abs(splash.dx) < 1e-9 && Math.abs(splash.dy) < 1e-9, 'at the splash the diver is at the water line of the swimming pose');
+  let last = -Infinity;
+  for (let progress = 0.1; progress <= game.ENTRY_SPLASH_AT; progress += 0.02) {
+    const pose = game.entryPose(progress);
+    assert.ok(pose.dy >= last - 1e-9, 'a fall only goes down');
+    last = pose.dy;
+  }
+  assert.ok(game.entryPose(0.75).dy > 5, 'then the diver plunges under the swimming pose');
+  const end = game.entryPose(1);
+  assert.ok(Math.abs(end.dx) < 1e-9 && Math.abs(end.dy) < 1e-9 && end.spin === -360 && end.scale === 1, 'and comes back to rest after a full back roll');
+});
+
+test('game (water bubbles): the loop vents only on an ascent or when a MAV gives more than the loop takes, and bubbles come only from that', () => {
+  const sim = new game.GameSim({ flow: 100 });
+  sim.rebase(0);
+  // A descent, then holding depth: a closed loop makes no bubbles.
+  sim.setMotionRate(30);
+  sim.advanceTo(60);
+  closeTo(sim.depth, 30, 1e-9);
+  assert.equal(sim.takeVented(), 0, 'descending vents nothing');
+  sim.stopMotion();
+  sim.advanceTo(120);
+  assert.equal(sim.takeVented(), 0, 'holding depth vents nothing');
+  // An ascent of 3 m vents the gas the loop's volume gives up: the loop model's own `vent`.
+  sim.setMotionRate(-18);
+  sim.advanceTo(130);
+  closeTo(sim.depth, 27, 1e-9);
+  const expected = (LOOP_VOLUME_LITERS * (pressureAtDepth(30) - pressureAtDepth(27))) / SURFACE_PRESSURE_BAR;
+  closeTo(sim.takeVented(), expected, 1e-9, 'the vented surface liters of a 3 m ascent');
+  assert.equal(sim.takeVented(), 0, 'it is taken once');
+  sim.stopMotion();
+  // A MAV beyond what the loop takes vents too: 6 s of 100 SL/min at a constant depth is 10 SL.
+  sim.advanceTo(136, { oxygen: true });
+  closeTo(sim.takeVented(), 10, 1e-9, 'the whole MAV flow at a constant depth');
+  // Reading it changes no physics: the loop is the same with and without it, and a reset forgets what was not taken.
+  const other = new game.GameSim({ flow: 100 });
+  other.rebase(0);
+  other.setMotionRate(30);
+  other.advanceTo(60);
+  other.stopMotion();
+  other.advanceTo(120);
+  other.setMotionRate(-18);
+  other.advanceTo(130);
+  other.stopMotion();
+  other.advanceTo(136, { oxygen: true });
+  assert.deepEqual(other.loop.gas, sim.loop.gas, 'the gas physics is untouched');
+  assert.equal(other.loop.totals.vent, sim.loop.totals.vent);
+  other.reset();
+  assert.equal(other.takeVented(), 0);
+
+  // One bubble stands for a fixed volume; the remainder is carried over.
+  const emitter = new game.BubbleEmitter();
+  assert.equal(emitter.emit(0), 0);
+  assert.equal(emitter.emit(-1), 0);
+  assert.equal(emitter.emit(game.SL_PER_BUBBLE), 1);
+  assert.deepEqual([0.01, 0.01, 0.01].map((liters) => emitter.emit(liters)), [0, 0, 1], 'the count over time is the volume over the bubble size');
+
+  // The scene: bubbles appear only with vented gas, rise, and are gone at the surface.
+  const scene = new water.WaterScene({ random: seeded() });
+  runScene(scene, { depth: 20, direction: 0 }, 90); // the entry plays out
+  assert.equal(scene.entry.phase, 'water');
+  runScene(scene, { depth: 20, direction: 0, vented: 0 }, 120);
+  assert.equal(scene.bubbles.length, 0, 'holding depth makes no bubbles');
+  runScene(scene, { depth: 20, direction: -1, vented: 0.0235 }, 60);
+  assert.equal(scene.bubbles.length, Math.floor((0.0235 * 60) / game.SL_PER_BUBBLE), 'about one bubble per fixed volume of vented gas');
+  const released = scene.bubbles.length;
+  runScene(scene, { depth: 20, direction: 0, vented: 0 }, 120);
+  assert.ok(scene.bubbles.length <= released, 'no new bubbles once the venting stops');
+  const high = Math.min(...scene.bubbles.map((bubble) => bubble.depth));
+  assert.ok(high < 20, 'they rise');
+  runScene(scene, { depth: 20, direction: 0, vented: 0 }, 400, 0.1);
+  assert.equal(scene.bubbles.length, 0, 'and are gone at the surface');
+  // The volume vented is what counts: twice the gas, twice the bubbles.
+  const count = (liters) => {
+    const probe = new water.WaterScene({ random: seeded() });
+    runScene(probe, { depth: 20, direction: 0 }, 90);
+    runScene(probe, { depth: 20, direction: -1, vented: liters / 10 }, 10);
+    runScene(probe, { depth: 20, direction: 0 }, 10);
+    return probe.bubbles.length;
+  };
+  assert.equal(count(2), 2 * count(1));
+  // Not on the boat, not at the surface, and not while time does not run.
+  const boat = new water.WaterScene({ random: seeded() });
+  runScene(boat, { depth: 0, direction: 0, vented: 1 }, 30);
+  assert.equal(boat.bubbles.length, 0, 'nothing is vented from the boat');
+  const surface = new water.WaterScene({ random: seeded() });
+  runScene(surface, { depth: 0.1, direction: 1 }, 90);
+  runScene(surface, { depth: 0.1, direction: 0, vented: 1 }, 30);
+  assert.equal(surface.bubbles.length, 0, 'bubbles vanish at the surface: none are made there');
+  const frozen = new water.WaterScene({ random: seeded() });
+  runScene(frozen, { depth: 20, direction: 0 }, 90);
+  runScene(frozen, { depth: 20, direction: -1, vented: 0.3 }, 3);
+  const heights = frozen.bubbles.map((bubble) => bubble.depth);
+  runScene(frozen, { depth: 20, direction: -1, vented: 5 }, 60, 0);
+  assert.deepEqual(frozen.bubbles.map((bubble) => bubble.depth), heights, 'a pause (no time) neither makes nor moves bubbles');
+});
+
+test('game (water motion): the reduced-motion preference means no drift, parallax, bobbing or entry animation, and a camera without easing', () => {
+  const calm = new water.WaterScene({ random: seeded(), reducedMotion: true });
+  const lively = new water.WaterScene({ random: seeded() });
+  const before = JSON.stringify(calm.particles);
+  const input = { depth: 25, direction: 1 };
+  const calmView = runScene(calm, input, 120);
+  const livelyView = runScene(lively, input, 120);
+  assert.equal(JSON.stringify(calm.particles), before, 'no drift: the particles do not move by themselves');
+  assert.notEqual(JSON.stringify(lively.particles), before, 'they drift otherwise');
+  assert.equal(calm.entry.phase, 'water', 'the diver simply appears in the water');
+  assert.equal(calm.drops.length + calm.ripples.length, 0, 'no splash');
+  assert.equal(calm.time, 0);
+  assert.deepEqual([calmView.boat.y, calmView.boat.tilt], [0, 0], 'the boat does not bob');
+  assert.notEqual(livelyView.boat.y, 0);
+  assert.equal(calm.camera.top, calm.camera.target, 'the camera is at its target: no easing');
+  assert.ok(calm.depth === 25, 'the drawn depth is the simulation\'s');
+  const fresh = new water.WaterScene({ random: seeded() });
+  runScene(fresh, { depth: 30, direction: 1 }, 20);
+  assert.ok(fresh.camera.top > game.cameraLimits().min && fresh.camera.top < fresh.camera.target, 'with motion the camera is still catching up a third of a second after a long dive step');
+  // The preference can change while the game runs.
+  lively.setReducedMotion(true);
+  assert.equal(lively.reducedMotion, true);
+  const stillWater = JSON.stringify(lively.particles);
+  runScene(lively, input, 30);
+  assert.equal(JSON.stringify(lively.particles), stillWater);
+  // The far layers' parallax is the page's: with the preference they move with the world (game.js, tested below).
+});
+
+/** A scheduler of animation frames for the view; `run(n)` runs n frames of 16 ms from the start. */
+function fakeFrames() {
+  const frames = { pending: [], cancelled: 0, time: 0 };
+  frames.request = (callback) => { frames.pending.push(callback); return frames.pending.length; };
+  frames.cancel = () => { frames.cancelled += 1; frames.pending.length = 0; };
+  return frames;
+}
+
+test('game (water view): the diver starts on the boat, the first descent plays the entry, surfacing leaves the diver in the water, Reset dive returns to the boat', async () => {
+  const g = await mountGame();
+  const ocean = g.el('ocean');
+  let clock = 1000;
+  const frames = (count, millis = 16) => { for (let index = 0; index < count; index++) g.view.frame(clock += millis); };
+  const flags = () => ['on-boat', 'entering'].filter((name) => ocean.classList.contains(name));
+  assert.equal(g.view.scene.entry.phase, 'boat');
+  assert.deepEqual(flags(), ['on-boat'], 'a session starts with the diver on the boat');
+  g.feed(0, 0);
+  frames(40);
+  assert.equal(g.view.scene.entry.phase, 'boat', 'time passes, the diver stays on the boat');
+  assert.match(g.el('diver-track').style.transform, /rotate\(-52\.0deg\) scale\(0\.800\)$/, 'seated on the boat');
+  const surfaceShift = g.el('water-bg').style.transform;
+  assert.equal(surfaceShift, 'translate3d(0, 0.0px, 0)', 'the camera is at the top: sky, surface and boat are in view');
+
+  // The first descent: the depth follows the simulation from the first moment; the entry plays on the screen for about a second.
+  g.view.changeMotion(30);
+  let wall = 0;
+  let tick = 0;
+  const descend = (count) => {
+    for (let index = 0; index < count; index++) {
+      wall += 16;
+      if (tick++ % 12 === 0) g.feed(wall / 1000, wall); // a state about every 200 ms, a frame every 16 ms
+      frames(1);
+    }
+  };
+  descend(2);
+  assert.deepEqual(flags(), ['entering']);
+  assert.ok(g.view.sim.depth > 0, 'the simulation is already descending');
+  descend(36);
+  assert.deepEqual(flags(), ['entering'], 'over half a second in, still rolling');
+  assert.ok(g.view.scene.drops.length + g.view.scene.ripples.length > 0, 'with a splash at the water');
+  descend(60);
+  assert.deepEqual(flags(), [], 'about a second and a half later the diver is swimming');
+  assert.equal(g.view.scene.entry.phase, 'water');
+  assert.match(g.el('diver-track').style.transform, /rotate\(0\.0deg\) scale\(1\.000\)$/);
+
+  // Surfacing later leaves the diver floating at the surface beside the boat: no second entry.
+  g.view.changeMotion(-18);
+  for (let index = 0; index < 400 && g.view.sim.depth > 0; index++) descend(10);
+  assert.equal(g.view.sim.depth, 0);
+  frames(10);
+  assert.equal(g.view.scene.entry.phase, 'water');
+  assert.deepEqual(flags(), []);
+
+  // Reset dive: the diver is back on the boat (the camera at the top), and the next descent plays the entry again.
+  g.view.changeMotion(30);
+  descend(60);
+  g.el('reset').click();
+  frames(2);
+  assert.equal(g.view.scene.entry.phase, 'boat');
+  assert.deepEqual(flags(), ['on-boat']);
+  assert.equal(g.el('water-bg').style.transform, 'translate3d(0, 0.0px, 0)');
+  assert.equal(g.view.sim.depth, 0);
+  g.view.changeMotion(30);
+  frames(2);
+  assert.deepEqual(flags(), ['entering'], 'the entry plays again');
+  g.view.hide();
+});
+
+test('game (water view): from 40 m the torch and the dial glow, off again only above 39 m; a pause holds the camera and the bubbles; reduced motion has no easing', async () => {
+  const g = await mountGame();
+  let clock = 1000;
+  const frames = (count, millis = 16) => { for (let index = 0; index < count; index++) g.view.frame(clock += millis); };
+  const lit = () => [g.el('ocean').classList.contains('dark'), g.el('speedometer').classList.contains('glow')];
+  g.feed(0, 0);
+  frames(5);
+  g.view.changeMotion(30);
+  g.feed(76, 5000); // 38 m
+  g.view.stopMotion();
+  frames(40);
+  assert.deepEqual(lit(), [false, false], 'dark above 40 m? no: the torch is off at 38 m');
+  g.view.changeMotion(30);
+  g.feed(86, 6000); // 43 m
+  g.view.stopMotion();
+  frames(40);
+  closeTo(g.view.sim.depth, 43, 0.2);
+  assert.deepEqual(lit(), [true, true], 'the torch and the glowing dial from 40 m');
+  assert.equal(g.view.scene.view.torch.level, 1);
+  g.view.changeMotion(-18);
+  g.feed(86 + 12, 7000); // 39.4 m
+  g.view.stopMotion();
+  frames(20);
+  assert.ok(g.view.sim.depth > 39 && g.view.sim.depth < 40, `between 39 and 40 m (${g.view.sim.depth})`);
+  assert.deepEqual(lit(), [true, true], 'still lit at 39.5 m');
+  g.view.changeMotion(-18);
+  g.feed(86 + 12 + 8, 8000); // 37.9 m
+  g.view.stopMotion();
+  frames(20);
+  assert.deepEqual(lit(), [false, false], 'off above 39 m');
+
+  // Venting makes bubbles; the pause holds the camera, the drift and the bubbles.
+  g.view.changeMotion(-18);
+  g.feed(86 + 12 + 8 + 5, 9000);
+  frames(3);
+  const bubbles = g.view.scene.bubbles.length;
+  assert.ok(bubbles > 10, `an ascent vents (${bubbles} bubbles)`);
+  g.view.stopMotion();
+  frames(30);
+  const grown = g.view.scene.bubbles.length;
+  frames(60);
+  assert.ok(g.view.scene.bubbles.length <= grown, 'holding depth makes no bubbles');
+  g.view.chooseSpeed(0);
+  frames(1);
+  const held = JSON.stringify([g.view.scene.camera.top, g.view.scene.time, g.view.scene.bubbles.map((bubble) => bubble.depth), g.view.scene.particles[1].slice(0, 4)]);
+  frames(120);
+  assert.equal(JSON.stringify([g.view.scene.camera.top, g.view.scene.time, g.view.scene.bubbles.map((bubble) => bubble.depth), g.view.scene.particles[1].slice(0, 4)]), held, 'paused: nothing moves');
+  g.view.hide();
+});
+
+test('game (water view): the reduced-motion preference is read and followed, the far layers keep their parallax otherwise, and the frame loop runs only while the game is shown', async () => {
+  const listeners = [];
+  const motion = { matches: true, addEventListener: (type, listener) => listeners.push([type, listener]) };
+  const g = await mountGame({ motion });
+  assert.equal(g.view.scene.reducedMotion, true);
+  assert.equal(listeners[0][0], 'change');
+  g.feed(0, 0);
+  g.view.changeMotion(30);
+  g.view.frame(1000);
+  g.view.frame(1016);
+  assert.equal(g.view.scene.entry.phase, 'water', 'no entry animation');
+  assert.deepEqual(['on-boat', 'entering'].filter((name) => g.el('ocean').classList.contains(name)), []);
+  g.feed(120, 3000); // 60 m: the camera has moved
+  g.view.frame(1032);
+  const world = g.el('water-bg').style.transform;
+  assert.equal(g.el('water-far').style.transform, world, 'no parallax with reduced motion');
+  listeners[0][1]({ matches: false });
+  assert.equal(g.view.scene.reducedMotion, false, 'the preference is followed while the game runs');
+  g.view.frame(1048);
+  const far = Number(/-?\d+\.\d/.exec(g.el('water-far').style.transform)[0]);
+  const near = Number(/-?\d+\.\d/.exec(g.el('water-bg').style.transform)[0]);
+  assert.ok(near < 0 && Math.abs(far / near - 0.45) < 0.01, `the far layer moves at 45% of the camera (${far} against ${near})`);
+  g.view.hide();
+
+  // Animation frames: requested while the game is shown, one at a time, cancelled on hide; none left behind.
+  const scheduler = fakeFrames();
+  const h = await mountGame({ frames: scheduler });
+  assert.equal(scheduler.pending.length, 1, 'one frame requested when the game is shown');
+  scheduler.pending.shift()(2000);
+  assert.equal(scheduler.pending.length, 1, 'and the next one after it');
+  h.view.hide();
+  assert.equal(scheduler.pending.length, 0, 'hiding cancels the pending frame');
+  h.view.frame(3000);
+  assert.equal(scheduler.pending.length, 0, 'a frame that still arrives does nothing and asks for no more');
+});
+
+test('game (water structure): the water layers are decorative, the labels of the water and the diver are kept, and the gradients come from the light model', async () => {
+  const g = await mountGame();
+  for (const id of ['water-bg', 'water-far', 'water-fg', 'water-canvas', 'depth-gauge']) assert.equal(g.el(id).getAttribute('aria-hidden'), 'true', `${id} is decorative`);
+  assert.equal(g.el('ocean').getAttribute('aria-label'), 'Interactive dive water');
+  assert.equal(g.el('ocean').getAttribute('aria-describedby'), 'game-motion-help');
+  assert.match(g.el('diver').querySelector('svg').getAttribute('aria-label'), /CCR diver/);
+  assert.equal(g.el('speedometer').getAttribute('role'), 'meter');
+  assert.equal(g.el('speedometer').getAttribute('aria-label'), 'Vertical speed');
+  assert.equal(g.el('gesture-tether').parent.getAttribute('aria-hidden'), 'true');
+  // The depth lines every 5 m, labeled every 10 m; the gauge ticks.
+  const lines = g.el('depth-grid').querySelectorAll('.depth-grid-line');
+  assert.equal(lines.length, MAX_DEPTH_METERS / 5);
+  assert.equal(lines.filter((line) => line.classList.contains('major')).length, MAX_DEPTH_METERS / 10);
+  assert.equal(g.el('depth-grid').querySelectorAll('span').length, MAX_DEPTH_METERS / 10);
+  assert.ok(g.el('depth-grid').querySelectorAll('span').every((span) => /^\d+ m$/.test(span.textContent)));
+  assert.equal(g.el('water-bg').style.background, game.worldGradient());
+  assert.equal(g.el('gauge-fill').style.background, game.gaugeGradient());
+  // The old zoom-out is gone: the readouts still read the simulation.
+  g.feed(0, 0);
+  g.view.changeMotion(30);
+  g.feed(10, 1000);
+  assert.equal(g.text('depth-value'), '5.0');
+  assert.equal(g.text('max-depth-meta'), 'Max 5.0 m');
+  g.view.hide();
 });

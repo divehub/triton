@@ -55,32 +55,77 @@
 #screen-game .legend-dot.oxygen { background: var(--g-gold); }
 #screen-game .legend-dot.nitrogen { background: #4d96a6; }
 #screen-game .legend-dot.helium { background: #a593c8; }
-#screen-game .ocean { flex: 1; min-height: 501px; position: relative; overflow: hidden; margin: 0 9px; border: 1px solid #32657880; border-radius: 10px; background: #144958; isolation: isolate; touch-action: none; user-select: none; cursor: grab; }
+#screen-game .ocean { flex: 1; min-height: 501px; position: relative; overflow: hidden; margin: 0 9px; border: 1px solid #32657880; border-radius: 10px; background: #144958; isolation: isolate; touch-action: none; user-select: none; cursor: grab; --g-ppm: 18px; }
 #screen-game .ocean.dragging { cursor: grabbing; }
 #screen-game .ocean:focus-visible { outline: 2px solid var(--g-teal); outline-offset: 4px; }
 #screen-game .ocean.paused { cursor: default; }
-#screen-game .seascape { position: absolute; width: 100%; height: 100%; z-index: -3; }
-#screen-game .depth-grid { position: absolute; inset: 24px 0 20px; z-index: -1; }
-#screen-game .depth-grid-line { position: absolute; left: 14px; right: 14px; border-top: 1px solid #b0e3e217; }
-#screen-game .depth-grid-line span { position: absolute; top: -7px; font-size: 9px; color: #bbdedfa6; transform: translateY(-50%); left: 0; background: #216d7c45; padding-right: 6px; line-height: 16px; }
-#screen-game .surface-caption { position: absolute; left: 17px; top: 16px; color: #c2e8df9c; letter-spacing: .13em; font-weight: 600; font-size: 8px; display: flex; gap: 6px; align-items: center; }
+
+/* The water view (DESIGN 22). The panel shows a fixed window of 30 m; --g-ppm is the pixels per meter (the panel height over 30), set by
+   game.js. Three tall layers are moved by the camera: the background gradient (sky and water color by depth; 6 m of sky, 110 m of
+   water, 4 m of sand), the far layer (rays and distant shapes, at a slower speed: parallax) and the world (boat, surface, depth
+   lines, seabed). Positions are meters times --g-ppm; --g-d is a depth in meters. The canvas above them holds the marine snow,
+   the bubbles, the splash and the torch; the diver is above the canvas. */
+#screen-game .water-bg, #screen-game .water-far, #screen-game .water-fg { position: absolute; left: 0; top: 0; width: 100%; pointer-events: none; will-change: transform; }
+#screen-game .water-bg { height: calc(var(--g-ppm) * 120); z-index: -4; background: linear-gradient(#2bb0b5, #010408); }
+#screen-game .water-far { height: calc(var(--g-ppm) * 82); z-index: -3; }
+#screen-game .water-fg { height: calc(var(--g-ppm) * 120); z-index: -2; }
+#screen-game .far-rays, #screen-game .far-shapes, #screen-game .world-sky, #screen-game .world-seabed { position: absolute; left: 0; width: 100%; display: block; }
+#screen-game .far-rays { top: calc(var(--g-ppm) * 6); height: calc(var(--g-ppm) * 45); }
+#screen-game .far-shapes { top: calc(var(--g-ppm) * 6); height: calc(var(--g-ppm) * 75); }
+#screen-game .world-sky { top: 0; height: calc(var(--g-ppm) * 6); }
+#screen-game .world-seabed { top: calc(var(--g-ppm) * 114); height: calc(var(--g-ppm) * 8); }
+#screen-game .water-canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; z-index: -1; pointer-events: none; }
+#screen-game .depth-grid { position: absolute; inset: 0; }
+#screen-game .depth-grid-line { position: absolute; left: 50px; right: 14px; top: calc(var(--g-ppm) * (var(--g-d) + 6)); border-top: 1px solid #b0e3e214; }
+#screen-game .depth-grid-line.major { border-top-color: #b0e3e22e; }
+#screen-game .depth-grid-line span { position: absolute; top: -8px; left: 0; font-size: 9px; color: #bbdedfb3; background: #0a3a4a40; padding: 0 6px 0 0; line-height: 16px; font-variant-numeric: tabular-nums; }
+#screen-game .surface-caption { position: absolute; left: 50px; top: calc(var(--g-ppm) * 6 + 8px); color: #d4f2e8b3; letter-spacing: .13em; font-weight: 600; font-size: 8px; display: flex; gap: 6px; align-items: center; }
 #screen-game .surface-dot { width: 4px; height: 4px; border-radius: 50%; background: #b6e6c5; }
-#screen-game .depth-readout { position: absolute; left: 24px; top: 43px; text-shadow: 0 2px 25px #102f4480; z-index: 2; }
+#screen-game .world-boat { position: absolute; left: var(--g-boat-x, 260px); width: var(--g-boat-w, 300px); height: calc(var(--g-boat-w, 300px) * .40625); top: calc(var(--g-ppm) * 6 - var(--g-boat-w, 300px) * .2875); display: block; overflow: visible; transform-origin: 50% 70.77%; will-change: transform; filter: drop-shadow(0 4px 4px #04182233); }
+#screen-game .world-waves { position: absolute; left: 0; width: 100%; top: calc(var(--g-ppm) * 6 - 11px); height: 24px; overflow: hidden; }
+#screen-game .wave { position: absolute; left: 0; top: 0; width: 200%; height: 24px; display: block; }
+#screen-game .wave-back { top: -4px; animation: game-wave-a 11s linear infinite; }
+#screen-game .wave-front { animation: game-wave-b 7s linear infinite; }
+@keyframes game-wave-a {
+  to { transform: translateX(-50%) }
+}
+@keyframes game-wave-b {
+  from { transform: translateX(-50%) }
+  to { transform: translateX(0) }
+}
+#screen-game .ocean.paused .wave { animation-play-state: paused; }
+#screen-game .depth-readout { position: absolute; left: 50px; top: 38px; text-shadow: 0 2px 25px #102f4480; z-index: 2; }
 #screen-game .depth-readout strong { font-size: 50px; line-height: 1; font-weight: 400; letter-spacing: -.045em; font-variant-numeric: tabular-nums; }
 #screen-game .depth-readout>span { font-size: 18px; color: #add6d7; margin-left: 6px; }
 #screen-game .depth-readout small { display: block; font-size: 10px; font-variant-numeric: tabular-nums; color: #b6d8d6; margin-top: 8px; }
-#screen-game .diver-track { position: absolute; left: 15px; right: 154px; top: 75px; transition: top .15s linear; display: flex; align-items: center; }
-#screen-game .diver { position: relative; width: 140px; margin-left: 32%; transform: translateY(-50%); animation: game-float 4s ease-in-out infinite; }
-#screen-game .diver svg { width: 100%; height: auto; filter: drop-shadow(0 8px 6px #071c2a33); position: relative; z-index: 1; }
+
+/* The depth gauge: the whole 0 to 110 m range at the panel edge, colored like the water, with the 30 m window, the maximum depth and the diver. */
+#screen-game .depth-gauge { position: absolute; left: 12px; top: 18px; bottom: 18px; width: 12px; z-index: 3; pointer-events: none; }
+#screen-game .gauge-track { position: relative; width: 100%; height: 100%; border-radius: 6px; border: 1px solid #b0e3e24d; box-shadow: 0 0 0 1px #05161f66; }
+#screen-game .gauge-fill { position: absolute; inset: 0; border-radius: 5px; filter: brightness(1.55) saturate(1.15); }
+#screen-game .gauge-ticks { position: absolute; inset: 0; }
+#screen-game .gauge-tick { position: absolute; left: 100%; width: 4px; top: calc(var(--g-d) / 110 * 100%); border-top: 1px solid #d4f2e88c; }
+#screen-game .gauge-tick span { position: absolute; left: 7px; top: -6px; font-size: 8px; line-height: 12px; color: #c9e6e6b3; font-variant-numeric: tabular-nums; }
+#screen-game .gauge-window { position: absolute; left: -2px; right: -2px; top: 0; height: 40px; border: 1px solid #e8fbf5b3; border-radius: 3px; background: #ffffff1f; will-change: transform; }
+#screen-game .gauge-max { position: absolute; left: -4px; right: -4px; top: -1px; height: 2px; background: var(--g-gold); box-shadow: 0 0 6px #e2ca8399; will-change: transform; }
+#screen-game .gauge-diver { position: absolute; left: 50%; top: 0; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: var(--g-teal); border: 2px solid #0b2430; box-shadow: 0 0 8px #73e5d099; will-change: transform; }
+
+/* The diver is placed by game.js (the track is its center) and turned for the entry; the float is the sprite's own gentle bobbing. */
+#screen-game .diver-track { position: absolute; left: 0; top: 0; width: 140px; height: 66px; margin: -33px 0 0 -70px; z-index: 1; pointer-events: none; will-change: transform; }
+#screen-game .diver { position: relative; width: 100%; animation: game-float 4s ease-in-out infinite; }
+#screen-game .diver svg { display: block; width: 100%; height: auto; filter: drop-shadow(0 8px 6px #071c2a33); position: relative; z-index: 1; }
 #screen-game .diver-shadow { position: absolute; background: #112f4122; height: 10px; width: 70%; border-radius: 50%; bottom: 0; left: 14%; filter: blur(6px); }
-#screen-game .diver-depth-line { flex: 1; border-top: 1px dashed #bfe7df3b; transform: translateY(-20px); margin-left: -15px; }
 #screen-game .ocean.paused .diver { animation-play-state: paused; }
+#screen-game .ocean.on-boat .diver, #screen-game .ocean.entering .diver { animation: none; }
+/* The torch in the diver's hand shows from 40 m (the same state as the beam). */
+#screen-game .diver-torch { opacity: 0; transition: opacity .4s; }
+#screen-game .ocean.dark .diver-torch { opacity: 1; }
 @keyframes game-float {
   0%,100% {
-    transform: translateY(-50%) rotate(-1deg)
+    transform: rotate(-1deg)
   }
   50% {
-    transform: translateY(calc(-50% - 4px)) rotate(1deg)
+    transform: translateY(-4px) rotate(1deg)
   }
 }
 #screen-game .speedometer { position: absolute; right: 15px; bottom: 15px; width: 112px; z-index: 5; pointer-events: none; background: #0a293878; backdrop-filter: blur(14px); border: 1px solid #8fc8c23d; border-radius: 13px; padding: 12px 8px 11px; box-shadow: 0 4px 10px #0b2b3433; text-align: center; color: #bdd9d5; }
@@ -98,6 +143,14 @@
 #screen-game .speed-direction { margin-top: 5px; font-size: 7px; font-weight: 650; letter-spacing: .14em; }
 #screen-game .speedometer.ascending { color: #a6f0dc; }
 #screen-game .speedometer.descending { color: #eed291; }
+/* From 40 m (the torch's depth) the dial glows softly, like a luminous dial in the dark. */
+#screen-game .speedometer { transition: border-color .8s,box-shadow .8s; }
+#screen-game .speedometer.glow { border-color: #8ff5e08a; box-shadow: 0 0 16px #5fe8cf4d,0 0 40px #3fd6bd29,inset 0 0 18px #5fe8cf26; }
+#screen-game .speedometer.glow .meter-title, #screen-game .speedometer.glow .speed-reading strong { text-shadow: 0 0 9px #7ff3dccc; }
+#screen-game .speedometer.glow .meter-dial { filter: drop-shadow(0 0 3px #6ff0d7d9); }
+#screen-game .speedometer.glow .meter-dial>path { opacity: 1; }
+#screen-game .speedometer.glow .meter-dial>g[stroke] { opacity: .95; }
+#screen-game .speedometer.glow .meter-dial>g[fill] { fill: #d6f6ee; }
 #screen-game .gesture-overlay { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; pointer-events: none; z-index: 4; overflow: visible; }
 #screen-game .ocean.dragging .gesture-overlay { opacity: 1; }
 #screen-game #game-gesture-tether { stroke: #b2f7e5; stroke-width: 2; stroke-dasharray: 4 5; opacity: .8; }
@@ -116,7 +169,7 @@
 #screen-game .speed-menu button span { font-size: 9px; color: #8eb1b7; }
 #screen-game .speed-menu button:hover { background: #234853; }
 #screen-game .speed-menu button.selected { background: #31594f; color: #a8ecd8; }
-#screen-game .ocean-footer { position: absolute; bottom: 13px; left: 15px; right: 143px; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #98c5c7; font-size: 9px; }
+#screen-game .ocean-footer { position: absolute; bottom: 13px; left: 56px; right: 143px; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #98c5c7; font-size: 9px; }
 #screen-game .ocean-footer>span { max-width: 190px; line-height: 1.5; }
 #screen-game .scene-meta { display: flex; justify-content: space-between; gap: 10px; color: #79959f; font-size: 9px; padding: 14px 18px; }
 #screen-game .signal-dock { margin: 0 20px 14px; }
@@ -276,8 +329,7 @@
   #screen-game .depth-readout strong { font-size: 43px; }
   #screen-game .profile-section { padding: 14px 16px 8px; }
   #screen-game #game-profile { height: 151px; }
-  #screen-game .diver-track { right: 140px; }
-  #screen-game .diver { width: 128px; margin-left: 21%; }
+  #screen-game .diver-track { width: 128px; height: 60px; margin: -30px 0 0 -64px; }
 }
 @media (prefers-reduced-motion:reduce) {
   #screen-game *, #screen-game *::before, #screen-game *::after { animation: none!important; transition: none!important; }
@@ -313,9 +365,6 @@
 /* The indicators show the firmware's outputs (they are not controls). */
 #screen-game .signal { cursor: default; }
 #screen-game .signal.unknown .signal-visual { border-style: dashed; opacity: .7; }
-
-/* The diver follows the 5 Hz state updates smoothly. */
-#screen-game .diver-track { transition: top .2s linear; }
 
 /* The cell panel: voltages sent to the firmware, and the simulated truth. */
 #screen-game .truth-row { display: flex; align-items: baseline; gap: 8px; padding: 8px 0; margin-bottom: 8px; border-top: 1px solid #263e45; border-bottom: 1px solid #263e45; }
