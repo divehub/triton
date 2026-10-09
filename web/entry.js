@@ -37,6 +37,7 @@ export class EntryView {
     this.busy = 0;
     this.booting = false;
     this.init = null;
+    this.remembered = null; // the firmware pair kept in this browser, by role (the worker's `rememberedInfo`), or null
     this.urlLoading = null; // {controller, timer, cancelled, timedOut, phase} while "Load from URLs" runs
     this.urlResult = { main: null, handset: null }; // the last outcome per field: {kind: 'ok'|'bad'|'busy', text}
     this.root = byId('screen-entry');
@@ -79,13 +80,8 @@ export class EntryView {
       event.stopPropagation();
       this.input.click();
     });
+    // The drop zone is a target for the mouse and for drops; its "choose files…" button is the one keyboard stop.
     this.dropzone.addEventListener('click', () => this.input.click());
-    this.dropzone.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        this.input.click();
-      }
-    });
     this.input.addEventListener('change', () => {
       const files = [...this.input.files];
       this.input.value = '';
@@ -94,6 +90,8 @@ export class EntryView {
     const over = (event) => {
       if (this.root.hidden) return;
       event.preventDefault();
+      // A drag over the page shows the drop zone, even when the sources are folded away.
+      if (event.type === 'dragenter') byId('firmware-sources').open = true;
       this.dropzone.classList.add('over');
     };
     document.addEventListener('dragenter', over);
@@ -180,15 +178,40 @@ export class EntryView {
     this.root.hidden = true;
   }
 
+  /** The remembered pair as the worker reported it (or null): the banner follows it, and the sources fold away. */
   renderRemembered(remembered) {
-    this.rememberedBanner.hidden = !remembered;
+    this.remembered = remembered || null;
     // With firmware in the cache, the drop zone and URL loader fold away (they stay one click away).
     byId('firmware-sources').open = !remembered;
-    if (remembered) {
-      const names = Object.values(remembered).map((file) => `${file.name} (${formatBytes(file.size)})`).join(', ');
-      const releases = [...new Set(Object.values(remembered).map((file) => file.release && file.release.name).filter(Boolean))];
-      byId('remembered-text').textContent = `Verified firmware files${releases.length ? ` (${releases.join(', ')})` : ''} from an earlier visit are stored in this browser: ${names}. `;
-    }
+    this.renderRememberedBanner();
+  }
+
+  /** True while every remembered file is in its slot (the entry screen takes them automatically, after verifying them again). */
+  rememberedInUse() {
+    const roles = Object.keys(this.remembered || {});
+    return roles.length > 0 && roles.every((role) => this.slots[role] && this.slots[role].remembered);
+  }
+
+  /**
+   * The banner about the files kept in this browser. While they are in the slots it only says so and offers Forget; "Use the
+   * remembered files" shows when a slot was removed or filled by another file.
+   */
+  renderRememberedBanner() {
+    const remembered = this.remembered;
+    this.rememberedBanner.hidden = !remembered;
+    if (!remembered) return;
+    const releases = [...new Set(Object.values(remembered).map((file) => file.release && file.release.name).filter(Boolean))];
+    const kind = releases.length ? `${releases.join(', ')} ` : '';
+    const inUse = this.rememberedInUse();
+    byId('use-remembered').hidden = inUse;
+    byId('remembered-text').textContent = inUse
+      ? `Using the verified ${kind}firmware files remembered from an earlier visit.`
+      : `Verified ${kind}firmware files from an earlier visit are stored in this browser: ${Object.values(remembered).map((file) => `${file.name} (${formatBytes(file.size)})`).join(', ')}.`;
+  }
+
+  /** The sources (drop zone, URLs) are needed only while a file is missing: open then, folded once both slots are filled. */
+  syncSources() {
+    byId('firmware-sources').open = !(this.slots.main && this.slots.handset);
   }
 
   /** The saved profile of the release in use; before any file is provided, of every release that has one. */
@@ -233,6 +256,7 @@ export class EntryView {
     for (const file of files) await this.inspectBytes(file.name, file.size, () => file.arrayBuffer());
     this.problem.hidden = true;
     this.refresh();
+    this.syncSources();
   }
 
   /**
@@ -410,6 +434,8 @@ export class EntryView {
         ? `Loaded and verified ${accepted === 1 ? 'the file' : 'both files'}.`
         : run.cancelled ? 'Cancelled.' : `${accepted} of ${jobs.length} loaded; see the messages above.`;
       this.refresh();
+      // Synchronised only after a clean load: a failed field keeps its message in view.
+      if (accepted === jobs.length) this.syncSources();
     }
   }
 
@@ -450,6 +476,7 @@ export class EntryView {
     }
     this.busy -= 1;
     this.refresh();
+    this.syncSources();
   }
 
   async forget() {
@@ -471,6 +498,7 @@ export class EntryView {
 
   async removeSlot(role) {
     this.slots[role] = null;
+    this.syncSources(); // a file is missing again: show where to get it
     try {
       await this.client.request('clear-firmware', { role });
     } catch (_) { /* the slot is already cleared on the page */ }
@@ -504,6 +532,7 @@ export class EntryView {
 
   refresh() {
     for (const role of ['main', 'handset']) this.renderSlot(role);
+    this.renderRememberedBanner();
     this.renderRejected();
     this.renderReleaseLine();
     this.renderProfileNote();

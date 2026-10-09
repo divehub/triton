@@ -27,6 +27,16 @@ export const RAW_LIMITS = Object.freeze({
 /** The seven calculated model inputs; the engine's `inputs` object carries these and the seven other fields. */
 export const SENSOR_KEYS = Object.freeze(['oxygen1Mv', 'oxygen2Mv', 'oxygen3Mv', 'pressure1Mbar', 'pressure2Mbar', 'temperature1C', 'temperature2C']);
 
+// Pressure and temperature sensor numbering. The page uses the firmware's own numbering of the two MS5837 sensors, which is
+// the reverse of the engine's input keys (the Renode model names, kept unchanged so `inputs.json` and the command-line
+// scripts stay compatible): the firmware's sensor 1 is the device on I2C2 (engine keys `pressure2Mbar` and
+// `temperature2C`), its sensor 2 the device on I2C1 (`pressure1Mbar` and `temperature1C`). The basic settings keep
+// their sensor offsets in page order, [sensor 1, sensor 2], and these tables map them to the engine keys.
+export const PRESSURE_KEYS = Object.freeze(['pressure2Mbar', 'pressure1Mbar']);
+export const TEMPERATURE_KEYS = Object.freeze(['temperature2C', 'temperature1C']);
+/** The bus each page sensor (index 0 is sensor 1) sits on. */
+export const SENSOR_BUSES = Object.freeze(['I2C2', 'I2C1']);
+
 // Sums that land a few ulps outside a limit only because base + (raw - base) is not exact in floating point are
 // snapped to the limit; anything visibly outside is rejected (the readings are never clipped).
 const SNAP = 1e-9;
@@ -90,11 +100,11 @@ export function calculate(settings) {
     result[key] = number(oxygen + offset, key, RAW_LIMITS.oxygen);
   });
   pressureOffsets.forEach((offset, index) => {
-    const key = `pressure${index + 1}Mbar`;
+    const key = PRESSURE_KEYS[index];
     result[key] = number(pressure + offset, key, RAW_LIMITS.pressure);
   });
   temperatureOffsets.forEach((offset, index) => {
-    const key = `temperature${index + 1}C`;
+    const key = TEMPERATURE_KEYS[index];
     result[key] = number(temperature + offset, key, RAW_LIMITS.temperature);
   });
   return result;
@@ -124,8 +134,8 @@ export function fromInputs(raw, previous) {
     result.waterType = previous.waterType;
   }
   const oxygen = [1, 2, 3].map((index) => number(raw[`oxygen${index}Mv`], `oxygen${index}Mv`, RAW_LIMITS.oxygen));
-  const pressures = [1, 2].map((index) => number(raw[`pressure${index}Mbar`], `pressure${index}Mbar`, RAW_LIMITS.pressure));
-  const temperatures = [1, 2].map((index) => number(raw[`temperature${index}C`], `temperature${index}C`, RAW_LIMITS.temperature));
+  const pressures = PRESSURE_KEYS.map((key) => number(raw[key], key, RAW_LIMITS.pressure));
+  const temperatures = TEMPERATURE_KEYS.map((key) => number(raw[key], key, RAW_LIMITS.temperature));
   result.oxygenBaseMv = clamp(average(oxygen), BASE_LIMITS.oxygenBaseMv);
   result.oxygenVariationsMv = oxygen.map((value) => value - result.oxygenBaseMv);
   result.depthM = clamp((average(pressures) - result.surfacePressureMbar) * 100 /
@@ -137,12 +147,12 @@ export function fromInputs(raw, previous) {
   return result;
 }
 
-/** Names shown to the user in place of the internal value names in a validation message. */
+/** Names shown to the user in place of the internal value names in a validation message (the sensors by page numbering). */
 export const FRIENDLY_NAMES = Object.freeze({
   oxygenBaseMv: 'Oxygen base', oxygen1Mv: 'Oxygen cell 1', oxygen2Mv: 'Oxygen cell 2', oxygen3Mv: 'Oxygen cell 3',
   surfacePressureMbar: 'Surface pressure', depthM: 'Depth', temperatureBaseC: 'Base temperature',
-  pressure1Mbar: 'Pressure sensor 1', pressure2Mbar: 'Pressure sensor 2',
-  temperature1C: 'Temperature sensor 1', temperature2C: 'Temperature sensor 2',
+  pressure2Mbar: 'Pressure sensor 1', pressure1Mbar: 'Pressure sensor 2',
+  temperature2C: 'Temperature sensor 1', temperature1C: 'Temperature sensor 2',
 });
 
 /** The "Not applied" explanation for a validation error: friendly names, one sentence, and what happened. */

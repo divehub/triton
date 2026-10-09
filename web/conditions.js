@@ -23,7 +23,7 @@
 //   view.rawFields() -> [{name, checkbox}] view.rawValid(name) -> boolean  (the field's own min/max/step)
 //   view.renderPreview(settings, values)   view.setStatus(text)          view.setError(text|null)
 
-import { SENSOR_KEYS, calculate, explainRejection, fromInputs, pressureMbar } from './sensors.js';
+import { PRESSURE_KEYS, SENSOR_KEYS, TEMPERATURE_KEYS, calculate, explainRejection, fromInputs, pressureMbar } from './sensors.js';
 
 export const BASIC_IDS = Object.freeze([
   'oxygen-base', 'oxygen-offset-1', 'oxygen-offset-2', 'oxygen-offset-3',
@@ -175,9 +175,10 @@ export class ConditionsController {
     settings.temperatureBaseC = readNumber(view, 'temperature-base', 'Base temperature');
     const pressure = pressureMbar(settings.surfacePressureMbar, settings.depthM, settings.waterType);
     for (const i of [1, 2, 3]) view.setBasic(`oxygen-offset-${i}`, inputs[`oxygen${i}Mv`] - settings.oxygenBaseMv);
+    // Page sensor numbers are the firmware's, the reverse of the engine's keys (sensors.js): sensor 1 is pressure2Mbar.
     for (const i of [1, 2]) {
-      view.setBasic(`pressure-offset-${i}`, inputs[`pressure${i}Mbar`] - pressure);
-      view.setBasic(`temperature-offset-${i}`, inputs[`temperature${i}C`] - settings.temperatureBaseC);
+      view.setBasic(`pressure-offset-${i}`, inputs[PRESSURE_KEYS[i - 1]] - pressure);
+      view.setBasic(`temperature-offset-${i}`, inputs[TEMPERATURE_KEYS[i - 1]] - settings.temperatureBaseC);
     }
     this.scenarioSettings = this.readBasic();
     view.renderPreview(this.scenarioSettings, calculate(this.scenarioSettings));

@@ -75,13 +75,27 @@ test('sensors: signed variations alter individual sensors independently and leav
     surfacePressureMbar: 1000, depthM: 10, waterType: 'fresh', pressureVariationsMbar: [-25, 10],
     temperatureBaseC: 4, temperatureVariationsC: [-8, 3],
   };
+  // The page numbers the sensors as the firmware does, the reverse of the engine keys: sensor 1 (the first variation) is the
+  // I2C2 device (pressure2Mbar, temperature2C), sensor 2 the I2C1 device (pressure1Mbar, temperature1C).
   assert.deepEqual(plain(calculate(settings)), {
     oxygen1Mv: 50, oxygen2Mv: 60, oxygen3Mv: 65,
-    pressure1Mbar: 1955.665, pressure2Mbar: 1990.665,
-    temperature1C: -4, temperature2C: 7,
+    pressure2Mbar: 1955.665, pressure1Mbar: 1990.665,
+    temperature2C: -4, temperature1C: 7,
   });
   assert.equal(settings.oxygenVariationsMv[0], -10);
   assert.equal(Object.hasOwn(calculate(settings), 'battery1Mv'), false);
+});
+
+test('sensors: the page numbers the two MS5837 sensors as the firmware does, the reverse of the engine keys', () => {
+  assert.deepEqual([...sensors.PRESSURE_KEYS], ['pressure2Mbar', 'pressure1Mbar']);
+  assert.deepEqual([...sensors.TEMPERATURE_KEYS], ['temperature2C', 'temperature1C']);
+  assert.deepEqual([...sensors.SENSOR_BUSES], ['I2C2', 'I2C1']);
+  // The engine keys themselves are unchanged (inputs.json and the command-line scripts use them) and all seven stay calculated.
+  assert.deepEqual([...sensors.SENSOR_KEYS].sort(), ['oxygen1Mv', 'oxygen2Mv', 'oxygen3Mv', 'pressure1Mbar', 'pressure2Mbar', 'temperature1C', 'temperature2C']);
+  // An unequal pair reverses into offsets in page order: sensor 1 is the I2C2 reading.
+  const settings = fromInputs({ ...rawDefaults, pressure1Mbar: 1000, pressure2Mbar: 1030, temperature1C: 18, temperature2C: 22 });
+  near(settings.pressureVariationsMbar[0] - settings.pressureVariationsMbar[1], 30, 'sensor 1 minus sensor 2 (I2C2 minus I2C1)');
+  assert.deepEqual(plain(settings.temperatureVariationsC), [2, -2]);
 });
 
 test('sensors: all physical output limits are inclusive even when outside basic slider ranges', () => {
@@ -92,8 +106,8 @@ test('sensors: all physical output limits are inclusive even when outside basic 
   };
   assert.deepEqual(plain(calculate(settings)), {
     oxygen1Mv: 0, oxygen2Mv: 250, oxygen3Mv: 100,
-    pressure1Mbar: 100, pressure2Mbar: 30000,
-    temperature1C: -20, temperature2C: 85,
+    pressure2Mbar: 100, pressure1Mbar: 30000, // sensor 1 is the engine's pressure2Mbar / temperature2C
+    temperature2C: -20, temperature1C: 85,
   });
 });
 
@@ -110,12 +124,12 @@ test('sensors: out-of-range combined readings reject the whole patch without sil
   for (const [key, value, message] of [
     ['oxygenVariationsMv', [-10.1, 0, 0], 'oxygen1Mv'],
     ['oxygenVariationsMv', [0, 241, 0], 'oxygen2Mv'],
-    ['pressureVariationsMbar', [-913.26, 0], 'pressure1Mbar'],
-    ['pressureVariationsMbar', [0, 28986.76], 'pressure2Mbar'],
-    ['temperatureVariationsC', [-40.1, 0], 'temperature1C'],
-    ['temperatureVariationsC', [0, 65.1], 'temperature2C'],
+    ['pressureVariationsMbar', [-913.26, 0], 'pressure2Mbar'], // page sensor 1
+    ['pressureVariationsMbar', [0, 28986.76], 'pressure1Mbar'], // page sensor 2
+    ['temperatureVariationsC', [-40.1, 0], 'temperature2C'],
+    ['temperatureVariationsC', [0, 65.1], 'temperature1C'],
   ]) assert.throws(() => calculate({ ...defaults(), [key]: value }), new RegExp(message));
-  assert.throws(() => calculate({ ...defaults(), surfacePressureMbar: 30000, depthM: 1 }), /pressure1Mbar/);
+  assert.throws(() => calculate({ ...defaults(), surfacePressureMbar: 30000, depthM: 1 }), /pressure2Mbar/);
 });
 
 test('sensors: a sum that misses a limit only by floating-point rounding is snapped to the limit, not rejected', () => {
@@ -170,8 +184,8 @@ test('sensors: reverse conversion keeps selected surface and water type and deri
   assert.equal(settings.surfacePressureMbar, 500);
   assert.equal(settings.waterType, 'fresh');
   near(settings.depthM, 10);
-  near(settings.pressureVariationsMbar[0], -5);
-  near(settings.pressureVariationsMbar[1], 5);
+  near(settings.pressureVariationsMbar[0], 5); // sensor 1 is pressure2Mbar
+  near(settings.pressureVariationsMbar[1], -5);
   assert.deepEqual(plain(calculate(settings)), raw);
 });
 
@@ -206,7 +220,11 @@ test('sensors: round trips preserve unequal sensor readings throughout the engin
 test('sensors: a rejected value is explained with friendly names and the outcome', () => {
   assert.equal(sensors.explainRejection('oxygen2Mv must be between 0 and 250'), 'Oxygen cell 2 must be between 0 and 250. Changes have not been applied.');
   assert.equal(sensors.explainRejection('Depth needs a number.'), 'Depth needs a number. Changes have not been applied.');
-  assert.equal(sensors.explainRejection('pressure1Mbar must be between 100 and 30000'), 'Pressure sensor 1 must be between 100 and 30000. Changes have not been applied.');
+  // The sensors are named by the page's (firmware) numbers, which are the reverse of the engine keys.
+  assert.equal(sensors.explainRejection('pressure2Mbar must be between 100 and 30000'), 'Pressure sensor 1 must be between 100 and 30000. Changes have not been applied.');
+  assert.equal(sensors.explainRejection('pressure1Mbar must be between 100 and 30000'), 'Pressure sensor 2 must be between 100 and 30000. Changes have not been applied.');
+  assert.equal(sensors.explainRejection('temperature2C must be between -20 and 85'), 'Temperature sensor 1 must be between -20 and 85. Changes have not been applied.');
+  assert.equal(sensors.explainRejection('temperature1C must be between -20 and 85'), 'Temperature sensor 2 must be between -20 and 85. Changes have not been applied.');
 });
 
 // =====================================================================================================
@@ -1297,12 +1315,46 @@ test('page: depth, water type and signed sensor offsets send the approved hydros
   await h.edit('depth', 110);
   assert.ok(Math.abs(h.posts()[1].body.inputs.pressure1Mbar - 12070.247875) < 1e-9);
   await applyResponse(h, 1);
-  await h.edit('pressure-offset-1', -25);
-  assert.ok(Math.abs(h.posts()[2].body.inputs.pressure1Mbar - 12045.247875) < 1e-9);
-  assert.ok(Math.abs(h.posts()[2].body.inputs.pressure2Mbar - 12070.247875) < 1e-9);
+  await h.edit('pressure-offset-1', -25); // sensor 1 is the firmware's first sensor, the engine's pressure2Mbar (I2C2)
+  assert.ok(Math.abs(h.posts()[2].body.inputs.pressure2Mbar - 12045.247875) < 1e-9);
+  assert.ok(Math.abs(h.posts()[2].body.inputs.pressure1Mbar - 12070.247875) < 1e-9);
   await applyResponse(h, 2);
   assert.match(h.control('preview-pressure').textContent, /P1: 12045\.25 · P2: 12070\.25 mbar/);
   assert.equal(h.control('depth-value').textContent, '110.00 m');
+});
+
+test('page: sensor numbers are the firmware\'s in the basic view, the previews and the raw fields: sensor 1 is the I2C2 device (pressure2Mbar, temperature2C)', async () => {
+  // Attaching derives the basic offsets from the engine's inputs: sensor 1 is the I2C2 reading, sensor 2 the I2C1 reading.
+  const h = await scenarioHarness({ pressure1Mbar: 1000, pressure2Mbar: 1030, temperature1C: 18, temperature2C: 22 });
+  assert.ok(Math.abs(Number(h.control('pressure-offset-1').value) - Number(h.control('pressure-offset-2').value) - 30) < 1e-9);
+  assert.equal(Number(h.control('temperature-offset-1').value), 2);
+  assert.equal(Number(h.control('temperature-offset-2').value), -2);
+  assert.equal(h.control('preview-pressure').textContent, 'P1: 1030.00 · P2: 1000.00 mbar');
+  assert.equal(h.control('preview-temperature').textContent, 'T1: 22.00 · T2: 18.00 °C');
+  // An edit of the basic sensor 2 offset reaches the I2C1 inputs (pressure1Mbar, temperature1C) and leaves the I2C2 ones alone.
+  await h.edit('temperature-offset-2', 5);
+  assert.equal(h.posts()[0].body.inputs.temperature1C, 25);
+  assert.equal(h.posts()[0].body.inputs.temperature2C, 22);
+  assert.equal(h.control('preview-temperature').textContent, 'T1: 22.00 · T2: 25.00 °C');
+  await applyResponse(h, 0);
+  await h.edit('pressure-offset-1', Number(h.control('pressure-offset-1').value) + 10);
+  assert.ok(Math.abs(h.posts()[1].body.inputs.pressure2Mbar - 1040) < 1e-9, 'sensor 1 is pressure2Mbar');
+  assert.ok(Math.abs(h.posts()[1].body.inputs.pressure1Mbar - 1000) < 1e-9);
+  // Rejections name the page's sensor number, not the engine key.
+  await h.edit('pressure-offset-1', 1e6);
+  assert.match(h.control('basic-input-error').textContent, /^Pressure sensor 1 must be between 100 and 30000\./);
+  // The raw fields keep the engine names and say which sensor each is, in the page's order.
+  const labelOf = (name) => h.raw(name).closest('label').textContent;
+  assert.equal(labelOf('pressure2Mbar'), 'Pressure sensor 1 (I2C2, absolute mbar)');
+  assert.equal(labelOf('pressure1Mbar'), 'Pressure sensor 2 (I2C1, absolute mbar)');
+  assert.equal(labelOf('temperature2C'), 'Temperature sensor 1 (I2C2, °C)');
+  assert.equal(labelOf('temperature1C'), 'Temperature sensor 2 (I2C1, °C)');
+  const names = h.document.getElementById('sensor-form').querySelectorAll('input').map((input) => input.name);
+  assert.ok(names.indexOf('pressure2Mbar') < names.indexOf('pressure1Mbar') && names.indexOf('temperature2C') < names.indexOf('temperature1C'), 'sensor 1 is listed first');
+  // One short note explains the mapping where the engine names are shown.
+  const note = h.control('sensor-numbering-note').textContent;
+  assert.match(note, /sensor 1 is the MS5837 on I2C2 \(pressure2Mbar, temperature2C\)/);
+  assert.match(note, /sensor 2 the one on I2C1 \(pressure1Mbar, temperature1C\)/);
 });
 
 test('page: keyboard disclosure controls do not send physical handset button actions', async () => {
@@ -2282,6 +2334,63 @@ test('entry: "Remember these files" is on by default, unticking it boots without
   await memory.runtime.request('close-session');
 });
 
+test('entry: the sources fold once both files are in and open again when one is missing; the remembered banner offers "Use" only while the files are not in the slots', async () => {
+  const answers = proxyFor({
+    [MAIN_FETCHED]: () => proxyBody(srec('main', 'TRITON-5.8-65.3')),
+    [HANDSET_FETCHED]: () => proxyBody(srec('handset', 'TRITON-5.8-65.3')),
+  });
+  const m = await mountEntry({ storageKind: 'opfs', respond: answers, booted: () => {} });
+  const sources = m.el('firmware-sources');
+  assert.equal(sources.open, true, 'no file yet: the sources are open');
+  // One file is not enough; the second one folds the sources, which brings the Boot button into reach.
+  m.type('main', MAIN_EXAMPLE);
+  m.type('handset', '');
+  await m.view.loadUrls();
+  assert.equal(sources.open, true, 'one file is still missing');
+  m.type('main', '');
+  m.type('handset', HANDSET_EXAMPLE);
+  await m.view.loadUrls();
+  assert.equal(sources.open, false, 'both files are in');
+  // Removing one opens them again; a drag over the page shows the drop zone even when they are folded.
+  await m.view.removeSlot('handset');
+  assert.equal(sources.open, true, 'a file is missing again');
+  m.type('handset', HANDSET_EXAMPLE);
+  await m.view.loadUrls();
+  assert.equal(sources.open, false);
+  const dragged = m.document.dispatch('dragenter', { dataTransfer: { files: [] } });
+  assert.equal(dragged.defaultPrevented, true);
+  assert.equal(sources.open, true, 'dragging a file over the page shows the drop zone');
+  // The drop zone is a mouse target; its button is the one keyboard stop, so it is not a second, nested "button".
+  assert.doesNotMatch(html, /id="dropzone"[^>]*(?:tabindex|role=)/);
+
+  // Remembered files: the page takes them automatically and the banner then only says so and offers Forget.
+  await m.view.boot('stored');
+  await m.runtime.request('close-session');
+  const info = await m.runtime.request('info');
+  m.view.slots.main = null;
+  m.view.slots.handset = null;
+  m.view.renderRemembered(info.remembered);
+  m.view.refresh();
+  assert.equal(m.el('remembered-banner').hidden, false);
+  assert.equal(m.el('use-remembered').hidden, false, 'the files are not in the slots yet');
+  assert.match(m.el('remembered-text').textContent, /^Verified TRITON firmware files from an earlier visit are stored in this browser: /);
+  await m.view.useRemembered();
+  assert.equal(m.view.rememberedInUse(), true);
+  assert.equal(m.el('use-remembered').hidden, true, 'already in use: nothing to offer');
+  assert.equal(m.el('forget-remembered').hidden, false);
+  assert.match(m.el('remembered-text').textContent, /^Using the verified TRITON firmware files remembered from an earlier visit\.$/);
+  assert.equal(sources.open, false, 'remembered files in use: the sources stay folded');
+  await m.view.removeSlot('main');
+  assert.equal(m.el('use-remembered').hidden, false, 'a removed file can be taken again');
+  assert.equal(sources.open, true);
+  await m.view.useRemembered();
+  assert.equal(m.el('use-remembered').hidden, true);
+  assert.equal(sources.open, false);
+  // The Remember option applies when booting, so it sits with the boot-time choices, after the sources and the start options.
+  assert.ok(html.indexOf('id="remembered-banner"') < html.indexOf('id="firmware-sources"') && html.indexOf('id="start-options"') < html.indexOf('id="remember"') && html.indexOf('id="remember"') < html.indexOf('id="boot"'));
+  await m.runtime.request('close-session');
+});
+
 test('urls (page): a mixed release pair is refused exactly like a dropped file, whether it comes from a URL or from a drop', async () => {
   const m = await mountEntry({
     respond: proxyFor({
@@ -2516,7 +2625,8 @@ const decoState = (health, extra = {}) => ({
   ...initialState, inputs: { ...initialInputs },
   decoHealth: { tissues: 'valid', oxygen: 'calibrated', details: {}, ...health }, ...extra,
 });
-const shownWarnings = (m) => ['oxygen', 'tissues'].filter((id) => !m.document.getElementById(`deco-warning-${id}`).hidden).map((id) => m.document.getElementById(`deco-warning-${id}`).textContent);
+// Only the invalid-tissue warning exists: the oxygen warning was removed (its paragraph with it).
+const shownWarnings = (m) => ['tissues'].filter((id) => !m.document.getElementById(`deco-warning-${id}`).hidden).map((id) => m.document.getElementById(`deco-warning-${id}`).textContent);
 
 test('deco: only a proven bad state warns, and each warning names the next step', () => {
   assert.deepEqual(deco.decoWarnings(null), []);

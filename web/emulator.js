@@ -13,7 +13,7 @@ import { handsetKeyAction } from './keys.js';
 import { LcdView } from './lcd.js';
 import { ReplayController, STATUS_STRIP, activityText, describeEntry, driveText, historyText } from './replay.js';
 import { describeRelease } from './releases.js';
-import { SENSOR_KEYS } from './sensors.js';
+import { PRESSURE_KEYS, SENSOR_KEYS, TEMPERATURE_KEYS } from './sensors.js';
 import { readZip } from './zip.js';
 
 const PROFILE_FILES = ['eeprom.bin', 'nor.ngc', 'rtc-state.json', 'inputs.json', 'led-colors.json'];
@@ -69,8 +69,9 @@ class ConditionsDom {
     byId('depth-value').textContent = `${settings.depthM.toFixed(2)} m`;
     byId('temperature-base-value').textContent = `${settings.temperatureBaseC.toFixed(2)} °C`;
     byId('preview-oxygen').textContent = `${[1, 2, 3].map((i) => `Cell ${i}: ${values[`oxygen${i}Mv`].toFixed(2)}`).join(' · ')} mV`;
-    byId('preview-pressure').textContent = `${[1, 2].map((i) => `P${i}: ${values[`pressure${i}Mbar`].toFixed(2)}`).join(' · ')} mbar`;
-    byId('preview-temperature').textContent = `${[1, 2].map((i) => `T${i}: ${values[`temperature${i}C`].toFixed(2)}`).join(' · ')} °C`;
+    // P1/P2 and T1/T2 are the firmware's sensor numbers (sensor 1 is the engine's pressure2Mbar / temperature2C; see sensors.js).
+    byId('preview-pressure').textContent = `${PRESSURE_KEYS.map((key, i) => `P${i + 1}: ${values[key].toFixed(2)}`).join(' · ')} mbar`;
+    byId('preview-temperature').textContent = `${TEMPERATURE_KEYS.map((key, i) => `T${i + 1}: ${values[key].toFixed(2)}`).join(' · ')} °C`;
   }
 
   setStatus(text) {
@@ -439,7 +440,7 @@ export class EmulatorView {
     if (output.kind === 'led') {
       color = h('select', { onchange: () => { if (!this.connectionError) this.sendAction('led-colors', { colors: { [output.id]: color.value } }); } },
         [['unknown', 'Unknown'], ['red', 'Red'], ['white', 'White']].map(([value, text]) => h('option', { value }, text)));
-      row.append(h('label', { class: 'output-color' }, h('span', {}, 'LED color'), color));
+      row.append(h('label', { class: 'output-color' }, h('span', {}, 'LED colour'), color));
     }
     return { row, indicator, name, status, detail, replay, activity, history, historyBody, color, kind: output.kind };
   }
@@ -509,7 +510,7 @@ export class EmulatorView {
       if (row.color) {
         // A select is only written where something changed (an open dropdown reacts to any write; see syncUartSelect).
         const color = ['red', 'white'].includes(output.color) ? output.color : 'unknown';
-        const label = `Color for ${output.label || output.id}`;
+        const label = `Colour for ${output.label || output.id}`;
         if (row.color.getAttribute('aria-label') !== label) row.color.setAttribute('aria-label', label);
         if (document.activeElement !== row.color && row.color.value !== color) row.color.value = color;
         const disabled = !!this.connectionError;
@@ -724,16 +725,12 @@ export class EmulatorView {
     return SENSOR_KEYS.every((key) => inputs[key] === previous[key]);
   }
 
-  /** The decompression warnings of the basic view: only a proven bad state shows (see deco.js), each with its next step. */
+  /** The decompression warning of the basic view: only a proven invalid tissue state shows (see deco.js), with its next step. */
   renderDeco(state) {
-    const warnings = decoWarnings(state);
-    byId('deco-health').hidden = warnings.length === 0;
-    for (const id of ['oxygen', 'tissues']) {
-      const element = byId(`deco-warning-${id}`);
-      const warning = warnings.find((entry) => entry.id === id);
-      element.hidden = !warning;
-      if (warning) setText(element, warning.text);
-    }
+    const warning = decoWarnings(state).find((entry) => entry.id === 'tissues');
+    byId('deco-health').hidden = !warning;
+    byId('deco-warning-tissues').hidden = !warning;
+    if (warning) setText(byId('deco-warning-tissues'), warning.text);
   }
 
   /** Release, fixtures, clock persistence provenance, executed instructions with the idle fast-forward share, machine resets. */

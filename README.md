@@ -36,8 +36,10 @@ Open <http://127.0.0.1:8770> and provide the two SREC files of one release.
 The page has two views:
 - **Basic view.** Shows the Vibrator, Red LED and White LED indicators, the LCD, the handset buttons and the run controls. Its simulated conditions apply immediately:
   - oxygen: a base voltage plus three cell offsets;
-  - pressure: depth, water type and surface pressure;
+  - pressure: depth, water type and surface pressure, plus two sensor offsets;
   - temperature: a base plus two sensor offsets.
+
+  The two pressure/temperature sensors are numbered as the firmware numbers them, which is the reverse of the engine's input names: **sensor 1 is the MS5837 on I2C2** (`pressure2Mbar`, `temperature2C` in `inputs.json`), **sensor 2 the one on I2C1** (`pressure1Mbar`, `temperature1C`). The engine keys and `inputs.json` are unchanged; the page maps them (P1/T1 are sensor 1), and Advanced names the bus on each raw field.
 - **Advanced.** Holds the raw inputs (applied with Apply inputs), output command histories, HUD colour labels, the UART console and the technical controls.
 
 **Decompression warnings.** The basic view warns, with the next step, when the engine's read-only report shows invalid stored tissues: "Decompression state invalid: restart the boards to let the firmware reset it." (Uncalibrated oxygen cells are reported in Advanced but not shown as a warning.) Both conditions are behaviours of the original firmware (it loads NaN tissues from a restarted profile, and its ppO2 is NaN with uncalibrated cells, which keeps the no-decompression limit at 99), not defects of the engine. Two labelled emulator fixtures, on by default and switchable under Start options, work around the first and make every start begin at the surface (depth 0; a new session also resets the oxygen cells to their defaults); see [DESIGN.md](DESIGN.md) section 17. A cold boot makes the firmware clear the oxygen calibration; the page says so.
@@ -118,7 +120,7 @@ Steps, commands and checks: [deploy/README.md](deploy/README.md).
   - The peripheral models replay recorded Renode transcripts identically; those recordings remain as regression tests in `testdata/` and `crates/*/tests/`. The Renode setup that produced them lives in a separate analysis workspace that is not public.
   - With the fixture on (the default), start-up ordering differs as intended.
 - **NEPTUN:** a 10.5 s dual boot releases the handset at 1.05 s and shows the B1 battery-selection screen, with no CPU faults and all 62 CAN frames forwarded.
-- **Tests:** 960 Rust tests pass (12 ignored), as do the 10 TRITON scenarios (with and without the fixture), 25 app tests and 111 page tests.
+- **Tests:** 960 Rust tests pass (12 ignored), as do the 10 TRITON scenarios (with and without the fixture), 25 app tests and 114 page tests.
 
 ## Known differences and limits
 

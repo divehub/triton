@@ -11,8 +11,15 @@ import { WorkerClient } from './worker-client.js';
 
 const screens = { loading: byId('screen-loading'), entry: byId('screen-entry'), emulator: byId('screen-emulator') };
 
+let currentScreen = 'loading';
+
 function showScreen(name) {
+  const changed = name !== currentScreen;
+  currentScreen = name;
   for (const [key, element] of Object.entries(screens)) element.hidden = key !== name;
+  // A new screen starts at its top: the Boot button the user pressed sits far down a long entry page (a phone), and the
+  // emulator would otherwise open scrolled past its display.
+  if (changed && typeof window.scrollTo === 'function') window.scrollTo(0, 0);
 }
 
 function setBadge(text, kind) {

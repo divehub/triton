@@ -29,9 +29,9 @@ export function parseSurfacePressure(value) {
 }
 
 /**
- * The warnings to show for a state document: `[{id: 'oxygen' | 'tissues', text}]`, in the order they are shown. Only a
- * proven bad state warns (`unknown` never does, which is what NEPTUN, a handset-only run and an engine without the report
- * give). Each text names the next step.
+ * The warnings to show for a state document: `[{id: 'tissues', text}]` (at most one). Only a proven bad state warns
+ * (`unknown` never does, which is what NEPTUN, a handset-only run and an engine without the report give). The text names
+ * the next step.
  */
 export function decoWarnings(state) {
   const health = state && typeof state === 'object' ? state.decoHealth : null;
