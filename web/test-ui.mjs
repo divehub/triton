@@ -3815,11 +3815,11 @@ test('game (dive): depth and gas advance over the emulator\'s virtual time, the 
   assert.equal(hits, 2);
   assert.equal(deep.maxDepth, MAX_DEPTH_METERS, 'the maximum stays');
 
-  // A held oxygen valve (60 SL/min = 1 SL/s into the 4 L loop) follows the analytic mixing; the diluent selection refills the loop.
+  // A held oxygen valve (100 SL/min, the default, = 5/3 SL/s into the 4 L loop) follows the analytic mixing; the diluent selection refills the loop.
   const injected = new game.GameSim();
   injected.rebase(0);
   injected.advanceTo(10, { oxygen: true });
-  near(getLoopReadings(injected.loop).fractions.o2, 1 - 0.79 * Math.exp(-10 / 4), 'ten seconds of oxygen');
+  near(getLoopReadings(injected.loop).fractions.o2, 1 - 0.79 * Math.exp(-(100 / 60) * 10 / 4), 'ten seconds of oxygen');
   injected.setGas('tx1845');
   near(getLoopReadings(injected.loop).fractions.he, 0.45);
   assert.equal(injected.gas.name, 'Trimix 18/45');
@@ -3989,7 +3989,7 @@ test('game (view): pacing follows the speed menu, Uncapped is unpaced, a held va
   await settle();
   assert.deepEqual(g.view.valveFlags(), { oxygen: true, diluent: false });
   g.feed(10, 2000);
-  near(g.view.sim.loop.totals.oxygen, 5, 'five virtual seconds at 60 SL/min');
+  near(g.view.sim.loop.totals.oxygen, 500 / 60, 'five virtual seconds at 100 SL/min');
   // Choosing another speed while injecting changes the speed that comes back.
   g.view.chooseSpeed(4);
   assert.equal(g.text('mav-status'), 'Injecting at 1× · returns to 4×');
@@ -3997,7 +3997,7 @@ test('game (view): pacing follows the speed menu, Uncapped is unpaced, a held va
   g.view.holdValve('oxygen', 'pointer:1', false);
   assert.equal(g.speeds().at(-1), 4);
   assert.equal(g.text('header-speed'), '4×');
-  assert.equal(g.text('mav-status'), '60 surface L/min · 1× while held');
+  assert.equal(g.text('mav-status'), '100 surface L/min · 1× while held');
   assert.deepEqual(g.view.valveFlags(), { oxygen: false, diluent: false });
 
   // Over Uncapped as well, from the keyboard shortcut and a focused key, which are separate sources.
@@ -4073,32 +4073,24 @@ test('game (view): the handset is operated through its pins: bezel keys, the dis
   frame.dispatch('click', { clientY: 240 });
   frame.dispatch('click', { clientY: 470 });
   assert.deepEqual(await counts(), [2, 2, 1]);
-  // The keyboard drives the handset only while it has the focus; held keys are one press and never scroll the page.
-  device.dispatch('keydown', { key: 'ArrowUp', code: 'ArrowUp', repeat: false });
-  device.dispatch('keydown', { key: 'ArrowDown', code: 'ArrowDown', repeat: false });
+  // Enter confirms only with the handset focused. The arrow keys press the handset's Up and Down wherever the focus is
+  // (one press per key press, no page scroll), except in a field being edited. The water takes no keys: diving is touch
+  // and drag only.
   device.dispatch('keydown', { key: 'Enter', code: 'Enter', repeat: false });
-  assert.deepEqual(await counts(), [3, 3, 2]);
-  const held = device.dispatch('keydown', { key: 'ArrowDown', code: 'ArrowDown', repeat: true });
-  assert.deepEqual(await counts(), [3, 3, 2], 'a held key is one press');
-  assert.equal(held.defaultPrevented, true, 'and does not scroll the page');
-  g.document.dispatch('keydown', { key: 'ArrowDown', code: 'ArrowDown', repeat: false });
-  g.document.dispatch('keydown', { key: 'Enter', code: 'Enter', repeat: false });
-  assert.deepEqual(await counts(), [3, 3, 2], 'the page-wide keys belong to the water and the valves, not the handset');
-  assert.equal(g.view.sim.direction, 0, 'and the handset keys never moved the diver');
-  // The water has its own arrow keys while it has the focus: hold to move, release to stop.
+  assert.deepEqual(await counts(), [2, 2, 2]);
   const ocean = g.el('ocean');
-  ocean.dispatch('keydown', { key: 'ArrowDown', code: 'ArrowDown' });
-  assert.equal(g.view.sim.direction, 1);
-  near(g.view.sim.rate, 10);
-  g.document.dispatch('keyup', { code: 'ArrowDown' });
-  assert.equal(g.view.sim.direction, 0);
-  ocean.dispatch('keydown', { key: 'ArrowUp', code: 'ArrowUp' });
-  assert.equal(g.view.sim.direction, -1);
-  near(g.view.sim.rate, 6);
-  g.view.chooseSpeed(0);
-  assert.equal(g.view.sim.direction, 0, 'a pause stops the motion');
-  ocean.dispatch('keydown', { key: 'ArrowDown', code: 'ArrowDown' });
-  assert.equal(g.view.sim.direction, 0, 'and a paused water takes no keys');
+  g.document.dispatch('keydown', { target: ocean, key: 'ArrowUp', code: 'ArrowUp', repeat: false });
+  g.document.dispatch('keydown', { target: device, key: 'ArrowDown', code: 'ArrowDown', repeat: false });
+  g.document.dispatch('keydown', { key: 'ArrowDown', code: 'ArrowDown', repeat: false });
+  assert.deepEqual(await counts(), [3, 4, 2]);
+  const held = g.document.dispatch('keydown', { key: 'ArrowDown', code: 'ArrowDown', repeat: true });
+  assert.deepEqual(await counts(), [3, 4, 2], 'a held key is one press');
+  assert.equal(held.defaultPrevented, true, 'and does not scroll the page');
+  g.document.dispatch('keydown', { key: 'Enter', code: 'Enter', repeat: false });
+  assert.deepEqual(await counts(), [3, 4, 2], 'Enter outside the handset is not Confirm');
+  g.document.dispatch('keydown', { target: g.el('mav-flow'), key: 'ArrowUp', code: 'ArrowUp', repeat: false });
+  assert.deepEqual(await counts(), [3, 4, 2], 'a field being edited keeps its arrow keys');
+  assert.equal(g.view.sim.direction, 0, 'and no key ever moves the diver');
   g.view.hide();
 });
 

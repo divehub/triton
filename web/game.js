@@ -79,7 +79,6 @@ export class GameView {
     this.motionPointer = null;
     this.motionOrigin = null;
     this.motionReach = 180;
-    this.motionKeys = new Set();
     this.previousPaint = '';
     this.alertsKey = '';
     // The worker sends the first LCD frame while it creates the session, so it can reach `onFrame` before `show` runs: frames
@@ -383,7 +382,6 @@ export class GameView {
     const pointer = this.motionPointer;
     this.motionPointer = null;
     this.motionOrigin = null;
-    this.motionKeys.clear();
     const ocean = $('ocean');
     ocean.classList.remove('dragging');
     if (pointer !== null && typeof ocean.hasPointerCapture === 'function' && ocean.hasPointerCapture(pointer)) ocean.releasePointerCapture(pointer);
@@ -403,12 +401,6 @@ export class GameView {
     $('gesture-contact').setAttribute('cx', x);
     $('gesture-contact').setAttribute('cy', y);
     this.changeMotion(rate);
-  }
-
-  updateKeyboardMotion() {
-    const up = this.motionKeys.has('ArrowUp');
-    const down = this.motionKeys.has('ArrowDown');
-    this.changeMotion(up === down ? 0 : up ? -6 : 10);
   }
 
   // ---- inputs for the emulated sensors ---------------------------------------------------------------------------
@@ -497,15 +489,12 @@ export class GameView {
       const third = Math.floor((3 * (event.clientY - bounds.top)) / bounds.height);
       this.pressHandset(third <= 0 ? 'up' : third === 1 ? 'confirm' : 'down');
     });
+    // Enter confirms only with the handset focused (elsewhere it activates the focused control); the arrow keys press Up
+    // and Down from anywhere in the game (the document listener below).
     $('device').addEventListener('keydown', (event) => {
-      const action = handsetKeyAction(event);
-      // A held key is one press (no auto-repeat), and the page must not scroll under the handset's arrow keys either.
-      if (!action) {
-        if (event.repeat && !event.altKey && !event.ctrlKey && !event.metaKey && ['ArrowUp', 'ArrowDown'].includes(event.key)) event.preventDefault();
-        return;
-      }
+      if (handsetKeyAction(event) !== 'confirm') return;
       event.preventDefault();
-      this.pressHandset(action);
+      this.pressHandset('confirm');
     });
 
     // The water: press and hold, drag up to ascend or down to descend; release holds depth.
@@ -542,13 +531,7 @@ export class GameView {
         if (event.pointerId === this.motionPointer) this.stopMotion();
       });
     }
-    ocean.addEventListener('keydown', (event) => {
-      if (event.target !== ocean || event.metaKey || event.ctrlKey || event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.code)) return;
-      event.preventDefault();
-      if (this.clock.speed === 0 || this.motionPointer !== null) return;
-      this.motionKeys.add(event.code);
-      this.updateKeyboardMotion();
-    });
+    // Ascent and descent are touch and drag only; the arrow keys belong to the handset.
     ocean.addEventListener('blur', () => this.stopMotion());
 
     // The play control.
@@ -621,10 +604,17 @@ export class GameView {
       }
     });
 
-    // Keyboard: O and D hold the valves, Space pauses and resumes, Escape lets everything go.
+    // Keyboard: the arrow keys press the handset's Up and Down wherever the focus is (except while editing a field), O and
+    // D hold the valves, Space pauses and resumes, Escape lets everything go.
     document.addEventListener('keydown', (event) => {
       const target = event.target;
       if (!this.active || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+      const editing = target && typeof target.closest === 'function' && target.closest('input,select,textarea,[contenteditable]');
+      if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !event.shiftKey && !editing) {
+        event.preventDefault(); // one press per key press (no auto-repeat), and the page does not scroll
+        if (!event.repeat) this.pressHandset(event.key === 'ArrowUp' ? 'up' : 'down');
+        return;
+      }
       if (target && typeof target.closest === 'function' && target.closest('input,select,textarea,button,summary')) return;
       const gas = event.code === 'KeyO' ? 'oxygen' : event.code === 'KeyD' ? 'diluent' : null;
       if (gas && this.clock.speed !== 0) {
@@ -644,7 +634,6 @@ export class GameView {
     });
     document.addEventListener('keyup', (event) => {
       if (!this.active) return;
-      if (this.motionKeys.delete(event.code)) this.updateKeyboardMotion();
       const gas = event.code === 'KeyO' ? 'oxygen' : event.code === 'KeyD' ? 'diluent' : null;
       if (gas) this.holdValve(gas, 'shortcut', false);
     });

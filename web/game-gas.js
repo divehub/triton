@@ -2,7 +2,7 @@
  * Ideal-gas counterlung model of the dive game.
  *
  * The loop stays at 4 ambient liters and is perfectly mixed. All added/vented gas quantities and MAV flow use
- * surface-equivalent liters (SL), referenced to 1.01325 bar. The adjustable 60 SL/min default is an arbitrary game
+ * surface-equivalent liters (SL), referenced to 1.01325 bar. The adjustable 100 SL/min default is an arbitrary game
  * setting, not a measurement of a real MAV. No net oxygen consumption is modeled: CMF is assumed to compensate
  * consumption perfectly.
  *
@@ -18,7 +18,7 @@ export const LOOP_VOLUME_LITERS = 4;
 export const SURFACE_PRESSURE_BAR = 1.01325;
 export const WATER_DENSITY_KG_M3 = 1020;
 export const GRAVITY_M_S2 = 9.80665;
-export const DEFAULT_MAV_FLOW_SL_MIN = 60;
+export const DEFAULT_MAV_FLOW_SL_MIN = 100;
 export const MAX_DEPTH_METERS = 110;
 
 const GASES = ['o2', 'n2', 'he'];
