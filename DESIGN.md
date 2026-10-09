@@ -457,7 +457,7 @@ The state document gains `decoHealth`: `{tissues: "valid"|"invalid"|"unknown", o
 - **tissues:** all 32 words finite is `valid`; any NaN or infinity is `invalid`; all zero (RAM before the firmware initialised it) is `unknown`.
 - **oxygen:** only in mode 2. A non-finite ppO2 is `uncalibrated`, a finite non-zero one `calibrated`. A ppO2 of zero (not computed yet) is decided by the cached cell flags: `uncalibrated` when every enabled cell has calibration state 0 (flags bits 2-3), else `unknown`.
 - **Unavailable:** a handset-only run and a release whose addresses are not proven (NEPTUN: the main image is a different build, no byte-identical counterpart) report `unknown` with the reason in `details`; the addresses are in the per-release table (`docs/releases.md`), never taken from TRITON.
-- The page shows a warning only for a proven bad state, each naming the next step: "Oxygen not calibrated: Menu → Calibration → Air → Auto → Start → Save", "Decompression state invalid: restart the boards to let the firmware reset it." (with the repair fixture off: close the session, tick it and boot again). The Cold boot button and the cold-boot start option carry a hint that the firmware clears the oxygen calibration.
+- The page shows a warning only for proven invalid tissues, naming the next step: "Decompression state invalid: restart the boards to let the firmware reset it." (with the repair fixture off: close the session, tick it and boot again). Uncalibrated oxygen is not shown as a warning (user decision, 2026-10-09); the report still carries it. The Cold boot button and the cold-boot start option carry a hint that the firmware clears the oxygen calibration.
 
 ### 17.3 The two fixtures (both on by default, both switchable)
 

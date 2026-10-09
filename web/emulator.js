@@ -690,7 +690,9 @@ export class EmulatorView {
     const boardsRecreated = !!next.inputs && this.inputsGeneration !== host.generation && this.engineSensors !== null && !this.sameSensors(next.inputs, this.engineSensors);
     if (next.inputs && (this.inputsEpoch !== host.profileEpoch || boardsRecreated)) {
       this.conditions.attach(next.inputs);
-      byId('serial-form').elements.namedItem('serialNumber').value = next.serialNumber ?? 0;
+      // An erased EEPROM reads 4294967295, beyond the 9-digit range the form accepts: the field then offers 1.
+      const serial = next.serialNumber;
+      byId('serial-form').elements.namedItem('serialNumber').value = Number.isInteger(serial) && serial >= 0 && serial <= 999999999 ? serial : 1;
       this.inputsEpoch = host.profileEpoch;
     }
     if (next.inputs) {
@@ -782,7 +784,7 @@ export class EmulatorView {
     button.textContent = busy ? 'Cancel' : 'Advance';
     byId('advance-progress').hidden = !busy;
     if (busy) byId('advance-progress').firstElementChild.style.width = `${Math.min(100, (100 * progress.done) / progress.total)}%`;
-    for (const control of document.querySelectorAll('#run-toggle, [data-action="step"], [data-action="reset"], [data-action="cold"], [data-action="wake"], #serial-form button, #advance-seconds')) {
+    for (const control of document.querySelectorAll('#run-toggle, [data-action="reset"], [data-action="cold"], [data-action="wake"], #serial-form button, #advance-seconds')) {
       control.disabled = busy;
     }
   }

@@ -27,36 +27,6 @@
     <section id="screen-entry" class="card entry" hidden aria-labelledby="entry-heading">
       <h2 id="entry-heading">Start the emulator</h2>
       <p class="lead">This page runs the unchanged <strong>main 5.8</strong> and <strong>handset 65.3</strong> firmware of a TRITON or NEPTUN release on a WebAssembly model of the two Cortex-M4F boards connected over CAN, with the handset display shown live. Engine: <code id="engine-label">…</code>.</p>
-      <ul class="facts">
-        <li>This is a <strong>functional model, not a claim of physical accuracy</strong>. It is a new engine ported from the behaviour of Renode 1.17.0; results from the Renode setup do not transfer automatically, and every capture is labeled with the engine that produced it.</li>
-        <li>Power, standby, reset, CAN wire timing, sensors and the display are simulated with explicit fixtures (see the notes under the controls). Buttons are simulated electrical pulses.</li>
-        <li>The firmware is <strong>not part of this page</strong>. Choose your two original S-record files, both from the same release (TRITON or NEPTUN), or load them from URLs; they are checked in your browser by SHA-256 and content, and never uploaded.</li>
-      </ul>
-
-      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose or drop the two firmware files">
-        <div><strong>Drop both .srec files here</strong>, or <button type="button" id="choose-files" class="link">choose files…</button></div>
-        <div class="small muted">Either order. The files are recognised by their content, not their names.</div>
-        <input id="file-input" type="file" accept=".srec,.s19,.s28,.s37,.mot,.txt,text/plain" multiple hidden>
-      </div>
-
-      <form id="url-form" class="url-loader" novalidate aria-labelledby="url-heading">
-        <h3 id="url-heading">Or load them from URLs</h3>
-        <p id="url-intro" class="small muted">Paste the address of each original S-record file: <code>https://api.multi3s.com/static/NAME.srec</code>, or a Wayback Machine capture of it, <code>https://web.archive.org/web/TIMESTAMP/https://api.multi3s.com/static/NAME.srec</code>. Either field may stay empty; the files are recognised by their content, so a file in the wrong field still lands in the right slot.</p>
-        <div id="url-fields" class="url-fields">
-          <label>Main controller 5.8 URL<input id="url-main" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://web.archive.org/web/…/https://api.multi3s.com/static/….srec" aria-describedby="url-main-info"></label>
-          <p id="url-main-info" class="small url-info" aria-live="polite"></p>
-          <progress id="url-main-progress" class="url-progress" max="1" aria-label="Main controller download progress" hidden></progress>
-          <label>Handset 65.3 URL<input id="url-handset" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://web.archive.org/web/…/https://api.multi3s.com/static/….srec" aria-describedby="url-handset-info"></label>
-          <p id="url-handset-info" class="small url-info" aria-live="polite"></p>
-          <progress id="url-handset-progress" class="url-progress" max="1" aria-label="Handset download progress" hidden></progress>
-        </div>
-        <div id="url-actions" class="actions-row">
-          <button type="submit" id="url-load" disabled>Load from URLs</button>
-          <button type="button" id="url-cancel" hidden>Cancel</button>
-        </div>
-        <p id="url-status" class="small" role="status" aria-live="polite"></p>
-        <p id="url-proxy-note" class="small muted"></p>
-      </form>
 
       <div class="slots">
         <article id="slot-main" class="slot" data-role="main" aria-live="polite">
@@ -82,6 +52,35 @@
         <p id="remember-note" class="small warn-text" hidden>Remembering files is unavailable here: this browser or mode does not provide the origin-private file system.</p>
       </div>
 
+      <!-- Open while no firmware is cached; closed when remembered files are in use (entry.js renderRemembered). -->
+      <details id="firmware-sources" class="firmware-sources" open>
+        <summary>Choose firmware files or load them from URLs</summary>
+      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose or drop the two firmware files">
+        <div><strong>Drop both .srec files here</strong>, or <button type="button" id="choose-files" class="link">choose files…</button></div>
+        <div class="small muted">Either order. The files are recognised by their content, not their names.</div>
+        <input id="file-input" type="file" accept=".srec,.s19,.s28,.s37,.mot,.txt,text/plain" multiple hidden>
+      </div>
+
+      <form id="url-form" class="url-loader" novalidate aria-labelledby="url-heading">
+        <h3 id="url-heading">Or load them from URLs</h3>
+        <p id="url-intro" class="small muted">Paste the address of each original S-record file: <code>https://api.multi3s.com/static/NAME.srec</code>, or a Wayback Machine capture of it, <code>https://web.archive.org/web/TIMESTAMP/https://api.multi3s.com/static/NAME.srec</code>. Either field may stay empty; the files are recognised by their content, so a file in the wrong field still lands in the right slot.</p>
+        <div id="url-fields" class="url-fields">
+          <label>Main controller 5.8 URL<input id="url-main" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://web.archive.org/web/…/https://api.multi3s.com/static/….srec" aria-describedby="url-main-info"></label>
+          <p id="url-main-info" class="small url-info" aria-live="polite"></p>
+          <progress id="url-main-progress" class="url-progress" max="1" aria-label="Main controller download progress" hidden></progress>
+          <label>Handset 65.3 URL<input id="url-handset" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://web.archive.org/web/…/https://api.multi3s.com/static/….srec" aria-describedby="url-handset-info"></label>
+          <p id="url-handset-info" class="small url-info" aria-live="polite"></p>
+          <progress id="url-handset-progress" class="url-progress" max="1" aria-label="Handset download progress" hidden></progress>
+        </div>
+        <div id="url-actions" class="actions-row">
+          <button type="submit" id="url-load" disabled>Load from URLs</button>
+          <button type="button" id="url-cancel" hidden>Cancel</button>
+        </div>
+        <p id="url-status" class="small" role="status" aria-live="polite"></p>
+        <p id="url-proxy-note" class="small muted"></p>
+      </form>
+      </details>
+
       <details id="start-options" class="start-options">
         <summary>Start options</summary>
         <div class="inputs">
@@ -105,6 +104,12 @@
         <button type="button" id="boot" class="primary" disabled>Boot emulator</button>
         <span id="boot-hint" class="small muted">Provide both firmware files to continue.</span>
       </div>
+
+      <ul class="facts">
+        <li>This is a <strong>functional model, not a claim of physical accuracy</strong>. It is a new engine ported from the behaviour of Renode 1.17.0; results from the Renode setup do not transfer automatically, and every capture is labeled with the engine that produced it.</li>
+        <li>Power, standby, reset, CAN wire timing, sensors and the display are simulated with explicit fixtures (see the notes under the controls). Buttons are simulated electrical pulses.</li>
+        <li>The firmware is <strong>not part of this page</strong>. Choose your two original S-record files, both from the same release (TRITON or NEPTUN), or load them from URLs; they are checked in your browser by SHA-256 and content, and never uploaded.</li>
+      </ul>
     </section>
 
     <!-- ===== Emulator ===== -->
@@ -141,7 +146,6 @@
           <h2>Execution</h2>
           <div class="transport">
             <button id="run-toggle" type="button" data-action="resume">Resume</button>
-            <button type="button" data-action="step">Step 0.1 s</button>
             <button type="button" data-action="reset" class="wide">Restart boards</button>
           </div>
           <label class="speed-row">Speed
@@ -247,7 +251,7 @@
           <p id="capture-path" class="mono"></p>
           <div class="divider"></div>
           <form id="serial-form" class="inputs">
-            <label>Emulated serial number (0 to 999 999 999)<input name="serialNumber" type="number" inputmode="numeric" min="0" max="999999999" step="1" value="0" required></label>
+            <label>Emulated serial number (0 to 999 999 999)<input name="serialNumber" type="number" inputmode="numeric" min="0" max="999999999" step="1" value="1" required></label>
             <button type="submit">Set serial and restart</button>
           </form>
           <p id="storage-summary" class="mono"></p>

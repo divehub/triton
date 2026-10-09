@@ -182,6 +182,8 @@ export class EntryView {
 
   renderRemembered(remembered) {
     this.rememberedBanner.hidden = !remembered;
+    // With firmware in the cache, the drop zone and URL loader fold away (they stay one click away).
+    byId('firmware-sources').open = !remembered;
     if (remembered) {
       const names = Object.values(remembered).map((file) => `${file.name} (${formatBytes(file.size)})`).join(', ');
       const releases = [...new Set(Object.values(remembered).map((file) => file.release && file.release.name).filter(Boolean))];

@@ -37,9 +37,8 @@ export function decoWarnings(state) {
   const health = state && typeof state === 'object' ? state.decoHealth : null;
   if (!health || typeof health !== 'object') return [];
   const warnings = [];
-  if (health.oxygen === 'uncalibrated') {
-    warnings.push({ id: 'oxygen', text: `Oxygen not calibrated: ${CALIBRATION_ROUTE}` });
-  }
+  // An uncalibrated oxygen cell is not shown as a warning (user decision): the firmware's own calibration prompt covers
+  // it. The report still carries it (`decoHealth.oxygen`) for the advanced details.
   if (health.tissues === 'invalid') {
     const fixture = state.decoStorageFixture;
     const off = !!fixture && fixture.enabled === false;

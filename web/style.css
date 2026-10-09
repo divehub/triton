@@ -203,7 +203,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .divider { border-top: 1px solid var(--border-soft); margin: 22px 0; }
 .transport { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .transport button { text-align: center; font-size: 13px; }
-.transport .wide { grid-column: 1 / -1; background: transparent; }
+.transport .wide { background: transparent; }
 .speed-row { margin-top: 12px; font-size: 12px; }
 dl { margin: 20px 0 0; display: grid; gap: 13px; }
 dl div { display: grid; gap: 4px; }
@@ -351,6 +351,9 @@ footer { margin-top: 20px; color: var(--text-dim); font-size: 12px; line-height:
 .rejected li { padding: 11px 13px; border: 1px solid var(--notice-border); border-radius: 9px; background: var(--notice-bg); color: var(--notice-text); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
 .remember { margin-top: 22px; display: grid; gap: 10px; }
 .banner { padding: 12px 14px; border: 1px solid var(--info-border); border-radius: 9px; background: var(--info-bg); color: var(--info-text); font-size: 13px; line-height: 1.5; }
+.firmware-sources { margin-top: 18px; }
+.firmware-sources > .dropzone { margin-top: 14px; }
+.entry ul.facts { margin-top: 24px; }
 .start-options { margin-top: 18px; }
 .start-options .inputs { margin: 14px 0 4px; }
 .start-options .inputs > p { grid-column: 1 / -1; margin: 0; }
@@ -372,7 +375,7 @@ footer { margin-top: 20px; color: var(--text-dim); font-size: 12px; line-height:
   .controls { padding: 17px; }
   .buttons { grid-template-columns: 1fr 1fr 1fr; }
   button small { display: none; }
-  .transport { grid-template-columns: repeat(3, 1fr); }
+  .transport { grid-template-columns: 1fr 1fr; }
   .transport .wide { grid-column: auto; }
   .controls dl { grid-template-columns: 1fr 1fr; }
   .slots { grid-template-columns: 1fr; }

@@ -2517,17 +2517,16 @@ const decoState = (health, extra = {}) => ({
   decoHealth: { tissues: 'valid', oxygen: 'calibrated', details: {}, ...health }, ...extra,
 });
 const shownWarnings = (m) => ['oxygen', 'tissues'].filter((id) => !m.document.getElementById(`deco-warning-${id}`).hidden).map((id) => m.document.getElementById(`deco-warning-${id}`).textContent);
-const ORIGIN_OXYGEN = 'Oxygen not calibrated: Menu → Calibration → Air → Auto → Start → Save';
 
 test('deco: only a proven bad state warns, and each warning names the next step', () => {
   assert.deepEqual(deco.decoWarnings(null), []);
   assert.deepEqual(deco.decoWarnings({}), [], 'an engine without the report');
   assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'unknown', oxygen: 'unknown' } }), [], 'unknown (NEPTUN, handset only, not yet running) never warns');
   assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'valid', oxygen: 'calibrated' } }), []);
-  assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'valid', oxygen: 'uncalibrated' } }), [{ id: 'oxygen', text: ORIGIN_OXYGEN }]);
+  assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'valid', oxygen: 'uncalibrated' } }), [], 'uncalibrated oxygen is not shown as a warning');
   const restart = 'Decompression state invalid: restart the boards to let the firmware reset it.';
   assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'invalid', oxygen: 'calibrated' } }), [{ id: 'tissues', text: restart }]);
-  assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'invalid', oxygen: 'uncalibrated' }, decoStorageFixture: { enabled: true } }).map((w) => w.id), ['oxygen', 'tissues']);
+  assert.deepEqual(deco.decoWarnings({ decoHealth: { tissues: 'invalid', oxygen: 'uncalibrated' }, decoStorageFixture: { enabled: true } }).map((w) => w.id), ['tissues']);
   const off = deco.decoWarnings({ decoHealth: { tissues: 'invalid', oxygen: 'calibrated' }, decoStorageFixture: { enabled: false } });
   assert.match(off[0].text, /^Decompression state invalid: the repair fixture is off\. Close the session, tick .* under Start options and boot again\.$/);
   // The surface pressure setting: a finite number inside the engine's range, else null; a blank text is not zero.
@@ -2551,12 +2550,11 @@ test('page: the decompression warnings show only for a proven bad state, name th
   show({});
   assert.equal(m.document.getElementById('deco-health').hidden, true, 'a healthy state shows nothing');
   show({ oxygen: 'uncalibrated' });
-  assert.equal(m.document.getElementById('deco-health').hidden, false);
-  assert.deepEqual(shownWarnings(m), [ORIGIN_OXYGEN]);
+  assert.equal(m.document.getElementById('deco-health').hidden, true, 'uncalibrated oxygen is not shown as a warning');
   show({ oxygen: 'uncalibrated', tissues: 'invalid' });
-  assert.deepEqual(shownWarnings(m), [ORIGIN_OXYGEN, 'Decompression state invalid: restart the boards to let the firmware reset it.']);
+  assert.deepEqual(shownWarnings(m), ['Decompression state invalid: restart the boards to let the firmware reset it.']);
   show({ oxygen: 'calibrated', tissues: 'invalid' });
-  assert.deepEqual(shownWarnings(m), ['Decompression state invalid: restart the boards to let the firmware reset it.'], 'a calibrated oxygen removes only its own warning');
+  assert.deepEqual(shownWarnings(m), ['Decompression state invalid: restart the boards to let the firmware reset it.']);
   show({ oxygen: 'unknown', tissues: 'unknown' });
   assert.equal(m.document.getElementById('deco-health').hidden, true, 'unknown never warns (NEPTUN reports it)');
   show({ tissues: 'invalid' }, { decoStorageFixture: { enabled: false, applied: false, reason: 'Switched off.' } });
