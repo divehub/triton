@@ -323,12 +323,12 @@ function addDaysBcd(dateRegister, days) {
 
 // The workload the benchmark was measured with (DESIGN.md 16.6), as ngc::scenario::dive pins it: batteries at the 1500 mV
 // that fit the Photolithium type the wizard chooses (a fresh profile's 4100 mV makes the firmware ask for a battery change
-// and stand by) and both decompression fixtures off (the profile is built through the firmware's own routes instead).
+// and stand by) and all three profile fixtures off (the profile is built through the firmware's own routes instead).
 const PINNED_INPUTS = new TextEncoder().encode('{"battery1Mv": 1500, "battery2Mv": 1500}\n');
 
 function openSession(session, options, routineAccel, profile) {
   const pinned = profile['inputs.json'] ? profile : { ...profile, 'inputs.json': PINNED_INPUTS };
-  session.createSession({ mode: 'dual', bootMode: 'handset-wake', idleFastForward: options.idleFf, routineAccel, decoStorageFixture: false, startAtSurface: false }, pinned);
+  session.createSession({ mode: 'dual', bootMode: 'handset-wake', idleFastForward: options.idleFf, routineAccel, eepromFactoryInit: false, decoStorageFixture: false, startAtSurface: false }, pinned);
 }
 
 function runStage(session, options, routineAccel, name, profile, timeline, seconds) {

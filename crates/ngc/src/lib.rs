@@ -19,6 +19,7 @@ pub mod srec;
 
 pub mod actions;
 pub mod deco;
+pub mod eeprom_init;
 pub mod fixtures;
 pub mod handset;
 pub mod main_board;

@@ -18,7 +18,9 @@
 //! * [`storage_fixture`]: **an emulator fixture, on by default and switchable**. Before a board is created it looks at
 //!   the stored EEPROM image and, if the tissue block is entirely erased while the date record is set, erases the date
 //!   record so that the firmware takes its own four-day reset path. It touches no other byte: not the oxygen
-//!   calibration, not the tissue words, no RAM.
+//!   calibration, not the tissue words, no RAM. It runs *after* the EEPROM factory-init fixture ([`crate::eeprom_init`]), which
+//!   fills a never-saved tissue block with its surface values: with that fixture on, the block is no longer entirely erased and
+//!   this repair applies only to profiles whose factory init is switched off (or skipped for the release).
 //!
 //! Evidence class: the layout and the firmware behavior were established on this engine with Renode-hooked runs of the
 //! unchanged TRITON images (a synthetic reproduction, not a physical observation); the engine's decompression arithmetic
@@ -240,6 +242,13 @@ impl StorageFixture {
 /// written. Skipped, with the reason, when switched off, in a handset-only run and for a release whose record layout is not
 /// proven.
 pub fn storage_fixture(enabled: bool, dual: bool, release: &Release, image: Option<&mut [u8]>) -> StorageFixture {
+    storage_fixture_after(enabled, dual, release, image, false)
+}
+
+/// [`storage_fixture`] for an image the EEPROM factory-init fixture ([`crate::eeprom_init`], which runs first) has just been over:
+/// `factory_filled_tissues` says it filled the stored tissue block at this board creation, which only changes the wording of the
+/// "not needed" reason (the block is not entirely erased any more, so there is nothing to repair).
+pub fn storage_fixture_after(enabled: bool, dual: bool, release: &Release, image: Option<&mut [u8]>, factory_filled_tissues: bool) -> StorageFixture {
     if !enabled {
         return StorageFixture::skipped(false, "Switched off (decoStorageFixture: false, or --no-deco-storage-fixture).");
     }
@@ -259,7 +268,12 @@ pub fn storage_fixture(enabled: bool, dual: bool, release: &Release, image: Opti
         return StorageFixture::skipped(true, format!("Skipped: the EEPROM image has {} bytes, not {EEPROM_BYTES}.", image.len()));
     }
     if image[block..block + EEPROM_TISSUE_BYTES].iter().any(|&byte| byte != 0xFF) {
-        return StorageFixture::skipped(true, "Not needed: the stored tissue block holds saved data.");
+        let reason = if factory_filled_tissues {
+            "Not needed: the stored tissue block was filled with its firmware-derived values by the EEPROM factory-init fixture, so the firmware loads finite tissues."
+        } else {
+            "Not needed: the stored tissue block holds saved data."
+        };
+        return StorageFixture::skipped(true, reason);
     }
     let record = &mut image[date..date + EEPROM_DATE_BYTES];
     if record.iter().all(|&byte| byte == 0xFF) {

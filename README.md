@@ -12,6 +12,7 @@ A hosted copy runs at **<https://triton.divehub.ai>**.
 | Browser app | [web/README.md](web/README.md) |
 | Publishing: GitHub Pages site and Vercel firmware proxy | [deploy/README.md](deploy/README.md) |
 | Supported releases and per-release addresses | [docs/releases.md](docs/releases.md) |
+| EEPROM records a first boot leaves erased, and the factory-init fixture | [docs/eeprom.md](docs/eeprom.md) |
 | Renode behavior the engine reproduces | [docs/renode-semantics.md](docs/renode-semantics.md) |
 | Peripheral framework | [docs/framework.md](docs/framework.md) |
 | Recorded test data | [testdata/README.md](testdata/README.md) |
@@ -42,7 +43,7 @@ The page has two views:
   The two pressure/temperature sensors are numbered as the firmware numbers them, which is the reverse of the engine's input names: **sensor 1 is the MS5837 on I2C2** (`pressure2Mbar`, `temperature2C` in `inputs.json`), **sensor 2 the one on I2C1** (`pressure1Mbar`, `temperature1C`). The engine keys and `inputs.json` are unchanged; the page maps them (P1/T1 are sensor 1), and Advanced names the bus on each raw field.
 - **Advanced.** Holds the raw inputs (applied with Apply inputs), output command histories, HUD color labels, the UART console and the technical controls.
 
-**Decompression warnings.** The basic view warns, with the next step, when the engine's read-only report shows invalid stored tissues: "Decompression state invalid: restart the boards to let the firmware reset it." (Uncalibrated oxygen cells are reported in Advanced but not shown as a warning.) Both conditions are behaviors of the original firmware (it loads NaN tissues from a restarted profile, and its ppO2 is NaN with uncalibrated cells, which keeps the no-decompression limit at 99), not defects of the engine. Two labeled emulator fixtures, on by default and switchable under Start options, work around the first and make every start begin at the surface (depth 0; a new session also resets the oxygen cells to their defaults); see [DESIGN.md](DESIGN.md) section 17. A cold boot makes the firmware clear the oxygen calibration; the page says so.
+**Decompression warnings.** The basic view warns, with the next step, when the engine's read-only report shows invalid stored tissues: "Decompression state invalid: restart the boards to let the firmware reset it." (Uncalibrated oxygen cells are reported in Advanced but not shown as a warning.) Both conditions are behaviors of the original firmware (it loads NaN tissues from a restarted profile, and its ppO2 is NaN with uncalibrated cells, which keeps the no-decompression limit at 99), not defects of the engine. Labeled emulator fixtures, on by default and switchable under Start options, work around the first and make every start begin at the surface (depth 0; a new session also resets the oxygen cells to their defaults); see [DESIGN.md](DESIGN.md) section 17. A third one fills the EEPROM records the firmware's first-boot defaults never write (serial 1, the oxygen-toxicity values that otherwise make the handset print `ΔvC?a?%`, the surface-equilibrium tissues, the no-fly time) with values derived from the firmware's own code, never over stored data: [DESIGN.md](DESIGN.md) section 18 and [docs/eeprom.md](docs/eeprom.md). A cold boot makes the firmware clear the oxygen calibration; the page says so.
 
 **Replay pulses** (on by default) flashes HUD and vibrator activations that happened between status updates. It only animates the display and does not change firmware timing.
 
@@ -73,7 +74,7 @@ python3 web/build.py                                                            
 ## Tests and native tools
 
 ```sh
-./cargo test --workspace --release                 # about 960 tests; those that need firmware skip without it
+./cargo test --workspace --release                 # about 1010 tests; those that need firmware skip without it
 NGC_FIRMWARE_DIR=/path/to/firmware ./cargo test --workspace --release   # with your firmware: the whole suite
 
 node web/test-ui.mjs                               # page behavior on a minimal DOM (no engine, no firmware)
@@ -95,7 +96,7 @@ Pass file paths as absolute paths: `./cargo` runs from the repository root.
 
 Further CLI options:
 - `--no-i2c-idle-high` (run, bench, scenario) turns off the main I2C idle-high fixture, which is on by default.
-- `--no-deco-storage-fixture` and `--no-start-at-surface` (run with `--data-dir`) turn off the two decompression fixtures, which are on by default (see [DESIGN.md](DESIGN.md) section 17). `run` prints the read-only decompression state (`decoHealth`; `--json` has the details).
+- `--no-eeprom-factory-init`, `--no-deco-storage-fixture` and `--no-start-at-surface` (run with `--data-dir`) turn off the EEPROM factory init and the two decompression fixtures, which are on by default (see [DESIGN.md](DESIGN.md) sections 17 and 18). `run` prints the read-only decompression state (`decoHealth`; `--json` has the details).
 - `--pc-trace N out.u32le --pc-trace-after S` records a steady-state PC window.
 - `--no-routine-accel` (run, bench, scenario) turns off the exact acceleration of the firmware's soft-float runtime routines, which is on by default; `--shadow-routine-accel` replays and interprets every accelerated call and compares them. Results are identical either way. The page's session-create JSON key is `routineAccel`.
 - `bench --dive` builds a valid-tissue profile through firmware routes and measures dives at 20 and 30 m (`--dive-depths`, `--dive-seconds`, `--dive-png`, `--json`); `--verify-routine-accel` runs it with the acceleration on and off and requires identical checkpoints. `node web/bench-node.mjs --dive` does the same through the browser ABI.
@@ -120,7 +121,7 @@ Steps, commands and checks: [deploy/README.md](deploy/README.md).
   - The peripheral models replay recorded Renode transcripts identically; those recordings remain as regression tests in `testdata/` and `crates/*/tests/`. The Renode setup that produced them lives in a separate analysis workspace that is not public.
   - With the fixture on (the default), start-up ordering differs as intended.
 - **NEPTUN:** a 10.5 s dual boot releases the handset at 1.05 s and shows the B1 battery-selection screen, with no CPU faults and all 62 CAN frames forwarded.
-- **Tests:** 960 Rust tests pass (12 ignored), as do the 10 TRITON scenarios (with and without the fixture), 25 app tests and 114 page tests.
+- **Tests:** 1014 Rust tests pass (14 ignored), as do the 10 TRITON scenarios (with and without the fixture), 25 app tests and 115 page tests.
 
 ## Known differences and limits
 
@@ -134,7 +135,8 @@ Steps, commands and checks: [deploy/README.md](deploy/README.md).
 - **Fixtures:**
   - The main I2C idle-high lines (PB6/PB7/PB10/PB11) are an explicit fixture, on by default.
   - Output histories record commanded drive (PB15 enable changes exactly; motor commands sampled every 20 virtual ms; HUD commands every 50 virtual ms), not physical edges.
-  - The emulated serial number (0–999 999 999) is synthetic.
+  - The emulated serial number (0–999 999 999) is synthetic; a fresh profile's is 1.
+  - **EEPROM factory init** (on by default; `eepromFactoryInit`, `--no-eeprom-factory-init`, a start option of the page): before every board creation, each inventoried main-EEPROM record that is still entirely erased and that the firmware's first-boot defaults never write (serial number, oxygen-toxicity model and dose, the 32 tissue words, the no-fly records) receives the value the firmware's own code implies; a brand-new profile starts from an erased image with them. The values are firmware-derived, not the manufacturer's factory image; nothing stored, calibrated or initialized by the firmware is touched. TRITON and NEPTUN (identical record table). The state lists what was filled. It runs before the decompression storage fixture, which then has nothing to repair. The scenarios and the dive benchmark pin it off. Details and the records left erased: [docs/eeprom.md](docs/eeprom.md).
   - **Decompression storage fixture** (on by default; `decoStorageFixture`, `--no-deco-storage-fixture`, a start option of the page): before every board creation, a stored tissue block that was never saved loses the saved decompression date, so the original firmware resets its tissues instead of loading NaN. It touches no other byte (not the oxygen calibration). TRITON only. The state says whether it was applied.
   - **Start at the surface** (on by default; `startAtSurface`, `--no-start-at-surface`, a start option): every board creation sets both pressure inputs to the surface pressure plus the sensor offsets (depth 0); a new session, including a profile import or reset, also resets the three oxygen cells to their defaults. `inputs.json` keeps its format; the surface pressure is a session setting that the page remembers in the browser.
   - The sensor inputs are fixtures. A fresh profile starts with both batteries at **4100 mV** (range 0 to 4200 mV; the Renode runner used 1500 mV, so the scenarios and recorded-evidence tests pin 1500 mV explicitly, and a saved profile keeps its stored values). The firmware compares the voltage with the battery type chosen in its wizard: at 4100 mV the B1 prompt is identical to the one at 1500 mV, but after choosing Alkaline the next start shows "Change battery" and the main board stands by (set about 1500 mV for Alkaline; Li-Ion 3.7V-18650 starts normally at 4100 mV). A synthetic reproduction, not a physical observation.

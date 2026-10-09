@@ -26,14 +26,17 @@
 //!   and an internal counter.
 //! * An IWDG expiry or `AIRCR.SYSRESETREQ` performs a Renode-style machine reset instead of ending the run (see
 //!   `System::machine_reset`).
-//! * Two labeled emulator fixtures act at every board creation, both **on by default** and switchable
-//!   ([`SessionConfig::deco_storage_fixture`], [`SessionConfig::start_at_surface`]): the runner has neither. The pre-boot
-//!   EEPROM consistency repair ([`crate::deco`]) and the start at the surface ([`crate::surface_start`]; a new session also
-//!   resets the oxygen cells). The state names them (`decoStorageFixture`, `startAtSurface`) next to the read-only
-//!   `decoHealth`; DESIGN.md section 17.
+//! * Three labeled emulator fixtures act at every board creation, all **on by default** and switchable
+//!   ([`SessionConfig::eeprom_factory_init`], [`SessionConfig::deco_storage_fixture`], [`SessionConfig::start_at_surface`]):
+//!   the runner has none. The EEPROM factory init ([`crate::eeprom_init`]; a brand-new profile starts from an erased image, an
+//!   existing one has its still-erased inventoried records filled), then the pre-boot EEPROM consistency repair
+//!   ([`crate::deco`]) on the resulting image, and the start at the surface ([`crate::surface_start`]; a new session also
+//!   resets the oxygen cells). The state names them (`eepromFactoryInit`, `decoStorageFixture`, `startAtSurface`) next to the
+//!   read-only `decoHealth`; DESIGN.md sections 17 and 18.
 
 use crate::actions::{self, Request};
 use crate::deco::{self, StorageFixture};
+use crate::eeprom_init::{self, FactoryInit};
 use crate::firmware::Firmware;
 use crate::fixtures::{python_float, Inputs};
 use crate::models::lcd::NgcParallelLcd;
@@ -82,10 +85,19 @@ pub struct SessionConfig {
     /// generation counts the history domains of this session (creation, every restart/cold/wake/serial/reset, every machine
     /// reset). The browser passes a fresh random value per session so that two sessions never share an epoch.
     pub history_nonce: u64,
+    /// The EEPROM factory-init fixture (`eepromFactoryInit`, `--no-eeprom-factory-init`; **on by default**, see
+    /// [`crate::eeprom_init`] and `docs/eeprom.md`): before every board creation, each inventoried main-EEPROM record that is still
+    /// entirely erased and that the firmware's first-boot defaults never write (serial number, oxygen-toxicity model and dose, the
+    /// 32 tissue words, the no-fly records) receives the value its own code implies; a brand-new profile starts from an erased
+    /// image and gets the whole list. Releases with a proven record table (TRITON, NEPTUN). An emulator fixture with
+    /// firmware-derived values, not the manufacturer's factory image; the state names it (`eepromFactoryInit`). It runs before
+    /// [`SessionConfig::deco_storage_fixture`].
+    pub eeprom_factory_init: bool,
     /// The pre-boot EEPROM consistency fixture (`decoStorageFixture`, `--no-deco-storage-fixture`; **on by default**, see
     /// [`crate::deco`]): before every board creation, a stored tissue block that is entirely erased while the saved
     /// decompression date is set loses the date record, so that the firmware takes its own four-day reset path instead of
-    /// loading NaN tissues. TRITON only. An emulator fixture; the state names it (`decoStorageFixture`).
+    /// loading NaN tissues. TRITON only. An emulator fixture; the state names it (`decoStorageFixture`). With
+    /// [`SessionConfig::eeprom_factory_init`] on, the tissue block is filled first and this repair has nothing to do.
     pub deco_storage_fixture: bool,
     /// The start-at-the-surface fixture (`startAtSurface`, `--no-start-at-surface`; **on by default**, see
     /// [`crate::surface_start`]): every board creation starts both pressure inputs at [`SessionConfig::surface_pressure_mbar`]
@@ -110,6 +122,7 @@ impl Default for SessionConfig {
             start_paused: false,
             i2c_idle_high: true,
             history_nonce: 0,
+            eeprom_factory_init: true,
             deco_storage_fixture: true,
             start_at_surface: true,
             surface_pressure_mbar: surface_start::DEFAULT_SURFACE_MBAR,
@@ -205,6 +218,8 @@ struct Launched {
     system: System,
     provenance: Vec<(String, Provenance)>,
     info: RtcInfo,
+    /// What the EEPROM factory-init fixture did for this board creation.
+    eeprom_factory: FactoryInit,
     /// What the pre-boot EEPROM consistency fixture did for this board creation.
     deco_storage: StorageFixture,
     /// What the start-at-the-surface fixture did for this board creation.
@@ -226,6 +241,8 @@ pub struct Session {
     stored: Profile,
     dirty: Dirty,
     rtc: RtcBook,
+    /// The EEPROM factory-init fixture of the last board creation (`eepromFactoryInit` of the state).
+    eeprom_factory: FactoryInit,
     /// The pre-boot EEPROM consistency fixture of the last board creation (`decoStorageFixture` of the state).
     deco_storage: StorageFixture,
     /// The start-at-the-surface fixture of the last board creation (`startAtSurface` of the state).
@@ -318,6 +335,7 @@ impl Session {
             stored: profile,
             dirty: Dirty { inputs: dual, ..Dirty::default() },
             rtc: RtcBook { saved, ready: true, provenance: launched.provenance, info: launched.info },
+            eeprom_factory: launched.eeprom_factory,
             deco_storage: launched.deco_storage,
             surface_start: launched.surface_start,
             storage_ready: dual,
@@ -446,6 +464,7 @@ impl Session {
             host_pacing: pacing,
             realtime_factor: self.host.realtime_factor,
             output_history_epoch: &epoch,
+            eeprom_factory: &self.eeprom_factory,
             deco_storage: &self.deco_storage,
             surface_start: &self.surface_start,
         })
@@ -628,6 +647,7 @@ impl Session {
         self.system = launched.system;
         self.rtc.provenance = launched.provenance;
         self.rtc.info = launched.info;
+        self.eeprom_factory = launched.eeprom_factory;
         self.deco_storage = launched.deco_storage;
         self.surface_start = launched.surface_start;
         self.rtc.ready = true;
@@ -862,9 +882,10 @@ fn routine_accel_mode(config: &SessionConfig) -> armv7m::RoutineAccelMode {
 }
 
 /// `launch_system`: builds, loads the storage, restores the RTC and applies the boot fixtures, in the runner's order.
-/// The two emulator fixtures of the decompression handling act here: the start-at-the-surface fixture on the `inputs` the
-/// system is built with (`new_session` is true for [`Session::new`]: the oxygen cells are reset as well) and the pre-boot
-/// EEPROM consistency fixture on the stored EEPROM image before it is loaded.
+/// The emulator fixtures act here: the start-at-the-surface fixture on the `inputs` the system is built with (`new_session` is
+/// true for [`Session::new`]: the oxygen cells are reset as well), and on the stored EEPROM image before it is loaded first the
+/// EEPROM factory init (a brand-new profile becomes an erased image with the inventoried values) and then the pre-boot EEPROM
+/// consistency fixture.
 #[allow(clippy::too_many_arguments)]
 fn launch_system(
     config: &SessionConfig,
@@ -892,11 +913,15 @@ fn launch_system(
     };
     let mut system = System::build_with(system_config, main, handset, options)?;
     let mut eeprom_image = stored.eeprom.clone();
-    let deco_storage = deco::storage_fixture(config.deco_storage_fixture, dual, system.release(), eeprom_image.as_deref_mut());
+    // 1. The factory init: the inventoried records that are still entirely erased (all of them on a brand-new profile).
+    let record_table = main.and_then(|firmware| eeprom_init::record_table(system.release(), firmware));
+    let eeprom_factory = eeprom_init::apply(config.eeprom_factory_init, dual, system.release(), record_table, &mut eeprom_image);
+    // 2. The date-erase repair on the image that results (it has nothing to do once the tissue block is filled).
+    let deco_storage = deco::storage_fixture_after(config.deco_storage_fixture, dual, system.release(), eeprom_image.as_deref_mut(), eeprom_factory.filled_tissues());
     if let Some(main_board) = system.main.as_mut() {
         main_board.eeprom.load_backing(&labels.eeprom(), eeprom_image.as_deref()).map_err(|e| e.to_string())?;
-        if deco_storage.applied {
-            // The repaired image is the profile from now on: ask for it to be saved.
+        if deco_storage.applied || eeprom_factory.applied {
+            // The repaired or filled image is the profile from now on: ask for it to be saved.
             main_board.eeprom.flush();
         }
         let qspi_id = main_board.ids.qspi;
@@ -924,7 +949,7 @@ fn launch_system(
         main_bkp1_wake_override: dual && boot_mode == BootMode::HandsetWake,
     };
     system.apply_boot_fixtures()?;
-    Ok(Launched { system, provenance, info, deco_storage, surface_start })
+    Ok(Launched { system, provenance, info, eeprom_factory, deco_storage, surface_start })
 }
 
 /// `%Y%m%dT%H%M%S%fZ` of a UTC time in microseconds since the Unix epoch.

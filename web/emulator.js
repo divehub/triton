@@ -358,6 +358,7 @@ export class EmulatorView {
         `Start options: ${options.mode === 'handset' ? 'handset only' : 'dual (main + handset over CAN)'}, ${options.bootMode === 'cold' ? 'cold boot' : 'handset wake'}, ` +
         `${options.simultaneousStart ? 'simultaneous CPU start' : 'handset released by the inferred PE3 supply enable'}, board-ID ADC sample ${options.adcSample}, ` +
         `I2C idle-high fixture ${options.i2cIdleHigh === false ? 'off' : 'on'}, ` +
+        `EEPROM factory init ${options.eepromFactoryInit === false ? 'off' : 'on'}, ` +
         `stored decompression state repair ${options.decoStorageFixture === false ? 'off' : 'on'}, start at the surface ${options.startAtSurface === false ? 'off' : 'on'}, ` +
         `idle fast-forward ${options.idleFastForward === false ? 'off' : 'on'}${info.profile === 'none' ? ', saved profile not used' : ''}.`),
     );
@@ -751,8 +752,8 @@ export class EmulatorView {
       const health = healthLine(state);
       if (health) lines.push(health);
       lines.push(...fixtureLines(state));
-      const missing = ((this.host && this.host.unsupportedOptions) || []).filter((name) => ['decoStorageFixture', 'startAtSurface', 'surfacePressureMbar'].includes(name));
-      if (missing.length) lines.push(`This engine build does not know the option${missing.length > 1 ? 's' : ''} ${missing.join(', ')}; the decompression fixtures are not available.`);
+      const missing = ((this.host && this.host.unsupportedOptions) || []).filter((name) => ['eepromFactoryInit', 'decoStorageFixture', 'startAtSurface', 'surfacePressureMbar'].includes(name));
+      if (missing.length) lines.push(`This engine build does not know the option${missing.length > 1 ? 's' : ''} ${missing.join(', ')}; the profile fixtures are not available.`);
     }
     const rtc = state.rtcPersistence;
     if (rtc) {

@@ -166,7 +166,9 @@ fn the_state_document_has_every_runner_field_and_the_engine_fields() {
 #[test]
 fn sensor_inputs_round_through_f32_and_are_reported_once_as_profile_changes() {
     let (main, handset) = firmware_or_skip!();
-    let mut session = dual(SessionConfig::default(), Profile::default(), &main, &handset);
+    // The runner's own behavior is the subject here, so the EEPROM factory init (an emulator fixture that starts a fresh EEPROM filled;
+    // `eeprom_init.rs`) is off.
+    let mut session = dual(SessionConfig { eeprom_factory_init: false, ..SessionConfig::default() }, Profile::default(), &main, &handset);
     // The launch of a fresh profile creates the backing files (erased EEPROM, empty NOR header) and marks the sensor controls
     // as changed (the runner writes inputs.json on startup); a second call has nothing.
     let first = session.take_profile_changes().expect("the files created by the launch");

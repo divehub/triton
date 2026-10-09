@@ -1479,6 +1479,8 @@ test('structure: every element the scripts look up exists in index.html, and the
   assert.doesNotMatch(html, /<details class="variations" open/, 'Sensor variations start closed');
   assert.match(html, /name="serialNumber"[^>]*max="999999999"/);
   assert.match(html, /<input type="checkbox" id="start-i2c-idle" checked>/, 'the I2C idle-high fixture is a start option, on by default');
+  assert.match(html, /<input type="checkbox" id="start-eeprom-init" checked>/, 'the EEPROM factory init is a start option, on by default');
+  assert.ok(html.indexOf('id="start-eeprom-init"') < html.indexOf('id="start-deco-fixture"'), 'it sits next to the decompression fixtures, first because it runs first');
   assert.match(html, /<input type="checkbox" id="start-deco-fixture" checked>/, 'the stored decompression state repair is a start option, on by default');
   assert.match(html, /<input type="checkbox" id="start-surface" checked>/, 'the start at the surface is a start option, on by default');
   assert.match(html, /<input type="checkbox" id="remember" checked>/, 'Remember these files starts checked');
@@ -2709,6 +2711,12 @@ test('deco: only a proven bad state warns, and each warning names the next step'
   assert.deepEqual(deco.fixtureLines({}), []);
   const lines = deco.fixtureLines({ decoStorageFixture: { enabled: true, applied: true, reason: 'Repaired.' }, startAtSurface: { enabled: true, surfacePressureMbar: 900, note: 'Depth 0.' } });
   assert.deepEqual(lines, ['Fixture: stored decompression state repair (applied at the last start). Repaired.', 'Fixture: start at the surface (on, surface 900 mbar). Depth 0.']);
+  // The EEPROM factory init comes first: how many records it filled, switched off, or not needed.
+  const records = [{ id: '0x01', range: '0x000..0x003', value: '1', reason: 'x' }, { id: '0x67', range: '0x0b8..0x0bb', value: '0.0', reason: 'y' }];
+  assert.deepEqual(deco.fixtureLines({ eepromFactoryInit: { enabled: true, applied: true, reason: 'Filled.', records }, startAtSurface: { enabled: false } }), ['Fixture: EEPROM factory init (applied at the last start, 2 records filled). Filled.', 'Fixture: start at the surface (off).']);
+  assert.equal(deco.fixtureLines({ eepromFactoryInit: { enabled: true, applied: true, reason: 'One.', records: records.slice(0, 1) } })[0], 'Fixture: EEPROM factory init (applied at the last start, 1 record filled). One.');
+  assert.equal(deco.fixtureLines({ eepromFactoryInit: { enabled: true, applied: false, reason: 'Not needed.', records: [] } })[0], 'Fixture: EEPROM factory init (on, not needed at the last start). Not needed.');
+  assert.equal(deco.fixtureLines({ eepromFactoryInit: { enabled: false, applied: false, reason: 'Switched off.', records: [] } })[0], 'Fixture: EEPROM factory init (off). Switched off.');
 });
 
 test('page: the decompression warnings show only for a proven bad state, name the next step and go away with it', async () => {
@@ -2733,6 +2741,7 @@ test('page: the decompression warnings show only for a proven bad state, name th
   // The region is a live status region with the warnings inside, and Advanced describes the report and the fixtures.
   assert.match(html, /<section id="deco-health" class="deco-health" aria-label="Decompression state" role="status" hidden>/);
   show({ tissues: 'invalid' }, {
+    eepromFactoryInit: { enabled: true, applied: true, reason: 'Eight records were filled.', records: new Array(8).fill({ id: '0x67', range: '0x0b8..0x0bb', value: '0.0', reason: 'z' }) },
     decoStorageFixture: { enabled: true, applied: true, reason: 'The date record was erased.', previousDateRecord: '0x50100454' },
     startAtSurface: { enabled: true, surfacePressureMbar: 1013.25, note: 'Depth 0 at every start.' },
   });
@@ -2740,6 +2749,7 @@ test('page: the decompression warnings show only for a proven bad state, name th
   m.view.render();
   const info = m.document.getElementById('session-info').textContent;
   assert.match(info, /Decompression state \(read-only report\): tissues invalid, oxygen calibrated\./);
+  assert.match(info, /Fixture: EEPROM factory init \(applied at the last start, 8 records filled\)\. Eight records were filled\./);
   assert.match(info, /Fixture: stored decompression state repair \(applied at the last start\)\. The date record was erased\./);
   assert.match(info, /Fixture: start at the surface \(on, surface 1013\.25 mbar\)\. Depth 0 at every start\./);
 });
@@ -2758,23 +2768,28 @@ test('page: the cold boot hint sits at the Cold boot button and appears in the s
   assert.equal(m.el('start-cold-hint').hidden, true);
 });
 
-test('entry and runtime: the decompression fixtures are start options, on by default, with the remembered surface pressure', async () => {
+test('entry and runtime: the profile fixtures are start options, on by default, with the remembered surface pressure', async () => {
   const m = await mountEntry();
-  assert.equal(m.el('start-deco-fixture').checked && m.el('start-surface').checked, true, 'both fixtures start checked');
-  assert.deepEqual(plain(m.view.options()), { ...plain(m.view.options()), decoStorageFixture: true, startAtSurface: true, surfacePressureMbar: null });
+  assert.equal(m.el('start-eeprom-init').checked && m.el('start-deco-fixture').checked && m.el('start-surface').checked, true, 'all three fixtures start checked');
+  assert.deepEqual(plain(m.view.options()), { ...plain(m.view.options()), eepromFactoryInit: true, decoStorageFixture: true, startAtSurface: true, surfacePressureMbar: null });
+  m.el('start-eeprom-init').checked = false;
+  assert.equal(m.view.options().eepromFactoryInit, false, 'the factory init is switched off on its own');
+  assert.equal(m.view.options().decoStorageFixture, true);
+  m.el('start-eeprom-init').checked = true;
   m.el('start-deco-fixture').checked = false;
   m.el('start-surface').checked = false;
   globalThis.window.localStorage.setItem('ngc-wasm.surface-pressure', '900');
   const options = m.view.options();
-  assert.deepEqual([options.decoStorageFixture, options.startAtSurface, options.surfacePressureMbar], [false, false, 900]);
+  assert.deepEqual([options.eepromFactoryInit, options.decoStorageFixture, options.startAtSurface, options.surfacePressureMbar], [true, false, false, 900]);
   globalThis.window.localStorage.setItem('ngc-wasm.surface-pressure', '50');
   assert.equal(m.view.options().surfacePressureMbar, null, 'a remembered value outside the engine\'s range is not sent');
 
   // The worker passes them on: on unless switched off; the surface pressure only when valid.
-  assert.deepEqual(Object.fromEntries(['decoStorageFixture', 'startAtSurface'].map((key) => [key, Runtime.normalizeConfig({})[key]])), { decoStorageFixture: true, startAtSurface: true });
+  assert.deepEqual(Object.fromEntries(['eepromFactoryInit', 'decoStorageFixture', 'startAtSurface'].map((key) => [key, Runtime.normalizeConfig({})[key]])), { eepromFactoryInit: true, decoStorageFixture: true, startAtSurface: true });
   assert.equal('surfacePressureMbar' in Runtime.normalizeConfig({}), false);
   assert.equal('surfacePressureMbar' in Runtime.normalizeConfig({ surfacePressureMbar: 50 }), false);
   assert.deepEqual(Runtime.normalizeConfig({ decoStorageFixture: false, startAtSurface: false, surfacePressureMbar: 900 }), { ...Runtime.normalizeConfig({}), decoStorageFixture: false, startAtSurface: false, surfacePressureMbar: 900 });
+  assert.equal(Runtime.normalizeConfig({ eepromFactoryInit: false }).eepromFactoryInit, false);
 
   const engine = new FakeEngine();
   const h = new RuntimeHarness(engine);
@@ -2783,7 +2798,7 @@ test('entry and runtime: the decompression fixtures are start options, on by def
   await h.inspect('handset', 'TRITON-5.8-65.3');
   await h.request('boot', { options: { mode: 'dual', startPaused: true, decoStorageFixture: false, surfacePressureMbar: 950 } });
   const first = engine.created[0].config;
-  assert.deepEqual([first.decoStorageFixture, first.startAtSurface, first.surfacePressureMbar], [false, true, 950]);
+  assert.deepEqual([first.eepromFactoryInit, first.decoStorageFixture, first.startAtSurface, first.surfacePressureMbar], [true, false, true, 950]);
   // An action that recreates the boards and carries a surface pressure changes the session's setting; a profile import then uses it.
   await h.request('action', { request: { action: 'reset', surfacePressureMbar: 900 } });
   await h.request('action', { request: { action: 'inputs', inputs: { oxygen1Mv: 11 }, surfacePressureMbar: 123 } });
@@ -2793,13 +2808,13 @@ test('entry and runtime: the decompression fixtures are start options, on by def
   await h.request('close-session');
   // An older engine build that does not know the options: they are dropped one at a time and the page can say so.
   const older = new FakeEngine();
-  older.rejectOptions = ['decoStorageFixture', 'startAtSurface', 'surfacePressureMbar'];
+  older.rejectOptions = ['eepromFactoryInit', 'decoStorageFixture', 'startAtSurface', 'surfacePressureMbar'];
   const o = new RuntimeHarness(older);
   await o.request('init');
   await o.inspect('main', 'TRITON-5.8-65.3');
   await o.inspect('handset', 'TRITON-5.8-65.3');
   await o.request('boot', { options: { mode: 'dual', startPaused: true, surfacePressureMbar: 900 } });
-  assert.deepEqual([...older.unsupportedOptions].sort(), ['decoStorageFixture', 'startAtSurface', 'surfacePressureMbar']);
+  assert.deepEqual([...older.unsupportedOptions].sort(), ['decoStorageFixture', 'eepromFactoryInit', 'startAtSurface', 'surfacePressureMbar']);
   await o.request('close-session');
 });
 
@@ -2879,9 +2894,9 @@ test('page: a new session starts at 0 m with the engine\'s default cells whateve
   assert.equal(h.posts().length, 0, 'showing the new session sends nothing');
 });
 
-test('structure: deco.js is a published page module and the engine option list names the decompression options', () => {
+test('structure: deco.js is a published page module and the engine option list names the profile fixture options', () => {
   const build = fs.readFileSync(path.join(here, '..', 'deploy', 'build_site.py'), 'utf8');
   assert.match(build, /"deco\.js"/, 'deco.js is on the site allowlist on purpose');
   const engineSource = fs.readFileSync(path.join(here, 'engine.js'), 'utf8');
-  assert.match(engineSource, /OPTIONAL_OPTIONS = \[[^\]]*'decoStorageFixture'[^\]]*'startAtSurface'[^\]]*'surfacePressureMbar'/);
+  assert.match(engineSource, /OPTIONAL_OPTIONS = \[[^\]]*'eepromFactoryInit'[^\]]*'decoStorageFixture'[^\]]*'startAtSurface'[^\]]*'surfacePressureMbar'/);
 });

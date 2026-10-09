@@ -49,6 +49,7 @@ impl SessionHost {
             start_paused: config.start_paused,
             i2c_idle_high: config.i2c_idle_high,
             history_nonce: config.history_nonce,
+            eeprom_factory_init: config.eeprom_factory_init,
             deco_storage_fixture: config.deco_storage_fixture,
             start_at_surface: config.start_at_surface,
             surface_pressure_mbar: config.surface_pressure_mbar,

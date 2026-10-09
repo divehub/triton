@@ -24,7 +24,7 @@
 //!                                      kind 0 eeprom.bin, 1 nor.ngc, 2 rtc-state.json, 3 inputs.json, 4 led-colors.json
 //! ngc_session_create(cfg_ptr, cfg_len) JSON {mode, bootMode, simultaneousStart, idleFastForward, routineAccel,
 //!                                      routineAccelShadow, adcSample, startPaused, i2cIdleHigh, historyNonce,
-//!                                      decoStorageFixture, startAtSurface, surfacePressureMbar}, every key
+//!                                      eepromFactoryInit, decoStorageFixture, startAtSurface, surfacePressureMbar}, every key
 //!                                      optional: `routineAccel` (default true) is the exact acceleration of the runtime-library
 //!                                      routines (memoized soft-float calls; results identical either way), `routineAccelShadow`
 //!                                      (default false) its slow verification mode;
@@ -32,14 +32,20 @@
 //!                                      the first instruction (functional I2C idle-line fixture), false leaves them low;
 //!                                      `historyNonce` (unsigned integer < 2^64, default 0) is the host's random part of
 //!                                      the state's `outputHistoryEpoch`, `"<historyNonce>-<generation>"`;
-//!                                      `decoStorageFixture` (default true) repairs, before every board creation, a stored
+//!                                      `eepromFactoryInit` (default true) fills, before every board creation, each inventoried
+//!                                      main-EEPROM record that is still entirely erased (serial number, oxygen-toxicity
+//!                                      model and dose, the 32 tissue words, the no-fly records) with the value its firmware
+//!                                      code implies, and starts a brand-new profile from an erased image (releases with a
+//!                                      proven record table: TRITON, NEPTUN); it runs before
+//!                                      `decoStorageFixture` (default true), which repairs a stored
 //!                                      tissue block that was never saved by erasing the saved decompression date record
 //!                                      (TRITON only); `startAtSurface` (default true) starts every board creation with
 //!                                      both pressure inputs at the surface pressure plus the sensor offsets, a new session
 //!                                      also with the oxygen cells at their defaults; `surfacePressureMbar` (100 to 30000,
 //!                                      default 1013.25) is the surface pressure that fixture uses (the `reset`, `cold`,
-//!                                      `wake` and `serial` actions may carry a new value). Both are labeled emulator
-//!                                      fixtures, named in the state (`decoStorageFixture`, `startAtSurface`).
+//!                                      `wake` and `serial` actions may carry a new value). All three are labeled emulator
+//!                                      fixtures, named in the state (`eepromFactoryInit`, `decoStorageFixture`,
+//!                                      `startAtSurface`).
 //!                                      Fails with a clear message when the main and handset images are of different
 //!                                      releases, and for `bootMode` "cold" on a release without a cold-boot route (NEPTUN)
 //! ngc_session_run_for(seconds)         0 still running, 1 paused/standby/error, 2 no session
@@ -852,14 +858,18 @@ mod tests {
     }
 
     #[test]
-    fn the_decompression_fixtures_are_on_by_default_and_switchable() {
+    fn the_profile_fixtures_are_on_by_default_and_switchable() {
         let defaults = HostConfig::from_json("{}").unwrap();
-        assert!(defaults.deco_storage_fixture && defaults.start_at_surface, "both labeled fixtures are on by default");
+        assert!(defaults.eeprom_factory_init && defaults.deco_storage_fixture && defaults.start_at_surface, "all three labeled fixtures are on by default");
         assert_eq!(defaults.surface_pressure_mbar, 1013.25);
         let config = HostConfig::from_json(r#"{"decoStorageFixture":false,"startAtSurface":false,"surfacePressureMbar":900}"#).unwrap();
-        assert!(!config.deco_storage_fixture && !config.start_at_surface);
+        assert!(!config.deco_storage_fixture && !config.start_at_surface && config.eeprom_factory_init, "the switches are independent");
         assert_eq!(config.surface_pressure_mbar, 900.0);
+        let config = HostConfig::from_json(r#"{"eepromFactoryInit":false}"#).unwrap();
+        assert!(!config.eeprom_factory_init && config.deco_storage_fixture && config.start_at_surface);
         for bad in [
+            r#"{"eepromFactoryInit":0}"#,
+            r#"{"eepromFactoryInit":"off"}"#,
             r#"{"decoStorageFixture":0}"#,
             r#"{"startAtSurface":"yes"}"#,
             r#"{"surfacePressureMbar":99}"#,

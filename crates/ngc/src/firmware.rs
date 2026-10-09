@@ -219,11 +219,14 @@ pub struct ReleaseAddresses {
     pub eeprom_tissue_block: AddressEntry,
     /// Main **EEPROM** physical offset of the 4-byte last-decompression date record (logical record ID `0x8a`).
     pub eeprom_deco_date: AddressEntry,
+    /// **Flash** address of the main image's EEPROM record table (0x8e entries of offset u16 and size u16, indexed by logical record
+    /// ID): the layout the factory-init fixture ([`crate::eeprom_init`]) writes by; it checks the table's SHA-256 against the image.
+    pub eeprom_record_table: AddressEntry,
 }
 
 impl ReleaseAddresses {
     /// `(name, entry)` of every address, in a stable order.
-    pub fn entries(&self) -> [(&'static str, &AddressEntry); 17] {
+    pub fn entries(&self) -> [(&'static str, &AddressEntry); 18] {
         [
             ("handsetOrientation", &self.handset_orientation),
             ("handsetErrorLoopPC", &self.handset_error_loop),
@@ -242,6 +245,7 @@ impl ReleaseAddresses {
             ("mainCellFlags", &self.main_cell_flags),
             ("eepromTissueBlock", &self.eeprom_tissue_block),
             ("eepromDecoDate", &self.eeprom_deco_date),
+            ("eepromRecordTable", &self.eeprom_record_table),
         ]
     }
 
@@ -325,6 +329,10 @@ pub static TRITON: Release = Release {
             0x17F,
             "EEPROM record table of the main image: ID 0x8a is 4 bytes at physical 0x17f (packed RTC calendar of the last decompression; 0xffffffff when erased); erasing it makes the initializer (0x08008308) take its >= 4 day reset path",
         ),
+        eeprom_record_table: AddressEntry::known(
+            0x0803_06F2,
+            "entry of ID 0 of the 568-byte table (IDs 0..=0x8d, offset u16 and size u16 each) that the EEPROM read/write wrappers 0x08010344 and 0x08010430 and the table walker 0x08010494 load; SHA-256 a69c0b84...4672",
+        ),
     },
     cold_boot_refusal: None,
 };
@@ -372,6 +380,10 @@ pub static NEPTUN: Release = Release {
         main_cell_flags: AddressEntry::unavailable(NEPTUN_MAIN_BUILD),
         eeprom_tissue_block: AddressEntry::unavailable(NEPTUN_MAIN_BUILD),
         eeprom_deco_date: AddressEntry::unavailable(NEPTUN_MAIN_BUILD),
+        eeprom_record_table: AddressEntry::known(
+            0x0805_0E38,
+            "the TRITON table (568 bytes, SHA-256 a69c0b84...4672) occurs byte for byte in the NEPTUN main image, exactly once, and three literal-pool words of its accessor code point at it (0x0801ad40, 0x0801adec, 0x0801b124), like the three sites of TRITON's wrappers; the record layout (ID to offset and size) is therefore the same. The factory values were also checked on NEPTUN's own first boot (docs/eeprom.md)",
+        ),
     },
     cold_boot_refusal: Some(
         "The cold-boot fixture is characterized for TRITON-5.8-65.3 only: with zero PWR.SR1/RCC.CSR wake flags the TRITON main requests standby after about 1.5 virtual seconds, but the NEPTUN main kept running for 40 virtual seconds without a standby request, so the fixture's observed-standby route does not exist for this release. Use Restart or Wake instead.",
@@ -1056,7 +1068,7 @@ mod tests {
                 }
             }
             let json = release.addresses.to_json();
-            assert_eq!(json.len(), 17);
+            assert_eq!(json.len(), 18);
         }
         // TRITON has every address; the NEPTUN main application variables are unavailable (never a TRITON value).
         assert!(TRITON.addresses.entries().iter().all(|(_, entry)| entry.address().is_some()));
@@ -1084,6 +1096,9 @@ mod tests {
         assert_eq!(sha256::to_hex(&main.bin_sha256), NEPTUN_MAIN.bin_sha256);
         assert_eq!(sha256::to_hex(&handset.bin_sha256), NEPTUN_HANDSET.bin_sha256);
         assert_eq!(&main.span[0x18C..0x190], &[0xFF; 4], "the same hole after the vector table as TRITON");
+        // The EEPROM record table of the NEPTUN main image is byte for byte the TRITON one (one hash, two addresses).
+        let table = crate::eeprom_init::record_table(&NEPTUN, &main).expect("the table is inside the NEPTUN image");
+        assert_eq!(sha256::digest_hex(table), crate::eeprom_init::RECORD_TABLE_SHA256);
         // The identity is by file, not by role slot: a NEPTUN main in the handset slot says so.
         let error = load(&main_bytes, Some(Role::Handset)).unwrap_err();
         assert!(matches!(&error, FirmwareError::WrongRole { release, .. } if release.id == "NEPTUN-5.8-65.3"), "{error}");

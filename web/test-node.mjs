@@ -776,6 +776,10 @@ test('runtime: the decompression fixtures are start options of the real engine: 
   assert.deepEqual(pick(booted.state), [1013.25, 1013.25, 10, 10, 10], 'a new session starts at the surface with the default cells');
   assert.equal(booted.state.startAtSurface.enabled, true);
   assert.equal(booted.state.startAtSurface.oxygenReset, true);
+  assert.equal(booted.state.eepromFactoryInit.enabled, true, 'the EEPROM factory init is on by default');
+  assert.equal(booted.state.eepromFactoryInit.applied, true, 'a fresh profile starts from the inventoried values');
+  assert.deepEqual(booted.state.eepromFactoryInit.records.map((record) => record.id), ['0x01', '0x2b', '0x67', '0x68', '0x69', '0x6a..0x89', '0x8b', '0x8d']);
+  assert.equal(booted.state.serialNumber, 1, 'the synthetic factory serial');
   assert.equal(booted.state.decoStorageFixture.enabled, true, 'the repair fixture is on by default');
   assert.equal(booted.state.decoStorageFixture.applied, false, 'a fresh EEPROM needs no repair');
   assert.equal(booted.state.decoHealth.tissues, 'unknown', 'the firmware has not run yet');
@@ -791,11 +795,16 @@ test('runtime: the decompression fixtures are start options of the real engine: 
   // Switched off, the saved inputs are used as they are, and the state says the fixtures are off.
   const off = new Harness({ storage: await seed(left) });
   await off.ready();
-  const kept = await off.request('boot', { options: { mode: 'dual', startPaused: true, startAtSurface: false, decoStorageFixture: false } });
+  const kept = await off.request('boot', { options: { mode: 'dual', startPaused: true, startAtSurface: false, decoStorageFixture: false, eepromFactoryInit: false } });
   assert.deepEqual(pick(kept.state), [4600, 4600, 60, 61, 59]);
   assert.equal(kept.state.startAtSurface.enabled, false);
   assert.equal(kept.state.decoStorageFixture.enabled, false);
   assert.match(kept.state.decoStorageFixture.reason, /^Switched off/);
+  assert.equal(kept.state.eepromFactoryInit.enabled, false);
+  assert.equal(kept.state.eepromFactoryInit.applied, false);
+  assert.match(kept.state.eepromFactoryInit.reason, /^Switched off/);
+  assert.deepEqual(kept.state.eepromFactoryInit.records, []);
+  assert.equal(kept.state.serialNumber, 4294967295, 'switched off, an erased EEPROM reads the old serial');
   await off.close();
 
   // The page's remembered surface pressure goes into the first session start.

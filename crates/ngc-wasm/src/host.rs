@@ -85,6 +85,8 @@ pub struct HostConfig {
     pub i2c_idle_high: bool,
     /// The host's random nonce of the output-history epoch (`historyNonce`, default 0).
     pub history_nonce: u64,
+    /// The EEPROM factory-init fixture (`eepromFactoryInit`, default on; `--no-eeprom-factory-init` of the CLI).
+    pub eeprom_factory_init: bool,
     /// The pre-boot EEPROM consistency fixture (`decoStorageFixture`, default on; `--no-deco-storage-fixture` of the CLI).
     pub deco_storage_fixture: bool,
     /// The start-at-the-surface fixture (`startAtSurface`, default on; `--no-start-at-surface` of the CLI).
@@ -106,6 +108,7 @@ impl Default for HostConfig {
             start_paused: false,
             i2c_idle_high: true,
             history_nonce: 0,
+            eeprom_factory_init: true,
             deco_storage_fixture: true,
             start_at_surface: true,
             surface_pressure_mbar: ngc::surface_start::DEFAULT_SURFACE_MBAR,
@@ -141,6 +144,7 @@ impl HostConfig {
                 "routineAccelShadow" => config.routine_accel_shadow = flag("routineAccelShadow")?,
                 "startPaused" => config.start_paused = flag("startPaused")?,
                 "i2cIdleHigh" => config.i2c_idle_high = flag("i2cIdleHigh")?,
+                "eepromFactoryInit" => config.eeprom_factory_init = flag("eepromFactoryInit")?,
                 "decoStorageFixture" => config.deco_storage_fixture = flag("decoStorageFixture")?,
                 "startAtSurface" => config.start_at_surface = flag("startAtSurface")?,
                 "surfacePressureMbar" => {

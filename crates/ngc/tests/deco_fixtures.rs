@@ -14,6 +14,10 @@
 //!
 //! The oxygen calibration goes through the firmware's own protocol (the CAN commands the handset's calibration menu sends:
 //! enter, air, 1000 mbar, test, commit after the success reply); no calibration flag or ppO2 value is set directly.
+//!
+//! The date-erase repair is exercised on its own here: the EEPROM factory init ([`ngc::eeprom_init`], `eeprom_init.rs`), which
+//! runs first and fills a never-saved tissue block, is switched off in these sessions (`repair_only`), because with it on the
+//! block is no longer erased and the repair has nothing to do.
 
 use emu_core::{Json, Width};
 use ngc::deco::{EEPROM_BYTES, EEPROM_DATE_BYTES, EEPROM_TISSUE_BYTES};
@@ -56,6 +60,11 @@ macro_rules! images_or_skip {
             }
         }
     };
+}
+
+/// The default configuration without the EEPROM factory init: what the date-erase repair is tested against.
+fn repair_only() -> SessionConfig {
+    SessionConfig { eeprom_factory_init: false, ..SessionConfig::default() }
 }
 
 fn act(session: &mut Session, body: &str) -> Json {
@@ -142,7 +151,7 @@ fn a_restart_after_a_first_boot_gives_finite_tissues_and_an_ndl_below_99_with_th
     let (main, handset) = images_or_skip!(&TRITON);
     for fixture in [true, false] {
         let label = if fixture { "fixture on (the default)" } else { "fixture off" };
-        let config = SessionConfig { deco_storage_fixture: fixture, ..SessionConfig::default() };
+        let config = SessionConfig { deco_storage_fixture: fixture, ..repair_only() };
         let mut session = calibrated_first_boot(config, &main, &handset);
         let first = state(&session);
         assert_eq!((health(&first, "tissues"), health(&first, "oxygen")), ("valid".to_string(), "calibrated".to_string()), "{label}: the first boot reset its tissues itself");
@@ -192,14 +201,14 @@ fn a_restart_after_a_first_boot_gives_finite_tissues_and_an_ndl_below_99_with_th
 #[test]
 fn the_fixture_writes_the_date_record_and_nothing_else() {
     let (main, handset) = images_or_skip!(&TRITON);
-    let first = calibrated_first_boot(SessionConfig::default(), &main, &handset);
+    let first = calibrated_first_boot(repair_only(), &main, &handset);
     let profile = first.shutdown();
     let saved = profile.eeprom.clone().expect("the first boot saved its EEPROM");
     assert!(saved[TISSUES..TISSUES + EEPROM_TISSUE_BYTES].iter().all(|&b| b == 0xFF) && saved[DATE..DATE + EEPROM_DATE_BYTES].iter().any(|&b| b != 0xFF));
 
     // Creating the sessions starts the boards but runs nothing: the EEPROM is what the fixture left it.
     let open = |fixture: bool, profile: &Profile| {
-        let config = SessionConfig { deco_storage_fixture: fixture, ..SessionConfig::default() };
+        let config = SessionConfig { deco_storage_fixture: fixture, ..repair_only() };
         Session::new(config, Some(&main), &handset, profile.clone()).expect("reopen")
     };
     let mut on = open(true, &profile);
@@ -330,11 +339,21 @@ fn the_health_report_follows_the_oxygen_calibration_and_a_cold_boot_clears_it() 
 #[test]
 fn a_neptun_session_reports_unknown_with_the_reason_and_skips_the_storage_fixture() {
     let (main, handset) = images_or_skip!(&NEPTUN);
-    // A saved profile shaped like the TRITON case (erased tissue block, set date): NEPTUN's record layout is not proven, so it is left alone.
+    // A saved profile shaped like the TRITON case (erased tissue block, set date): the layout of the decompression records is not proven
+    // for NEPTUN's application (its RAM addresses are not either), so the date-erase repair leaves it alone.
     let mut image = vec![0xFF; EEPROM_BYTES];
     image[DATE..DATE + EEPROM_DATE_BYTES].copy_from_slice(&[0x54, 0x04, 0x00, 0xB0]);
     let profile = Profile { eeprom: Some(image.clone()), ..Profile::default() };
-    let mut session = Session::new(SessionConfig::default(), Some(&main), &handset, profile).expect("session");
+    // With the factory init on (the default) the erased inventoried records are filled, the tissue block included, and the date record is
+    // still left alone; the repair reports its own reason.
+    let filled = Session::new(SessionConfig::default(), Some(&main), &handset, profile.clone()).expect("session");
+    let with_init = eeprom(&filled);
+    assert_eq!(&with_init[DATE..DATE + EEPROM_DATE_BYTES], &[0x54, 0x04, 0x00, 0xB0], "NEPTUN: the date record is not touched");
+    assert_eq!(&with_init[TISSUES..TISSUES + 8], &[0x4D, 0x30, 0x40, 0x3F, 0, 0, 0, 0], "NEPTUN: the factory init fills the tissue block");
+    let reason = state(&filled).get("decoStorageFixture").and_then(|f| f.get("reason")).and_then(Json::as_str).unwrap_or_default().to_string();
+    assert!(reason.contains("NEPTUN-5.8-65.3") && reason.contains("not proven"), "{reason}");
+    // With it off, the saved image is loaded as it is.
+    let mut session = Session::new(repair_only(), Some(&main), &handset, profile).expect("session");
     assert_eq!(&eeprom(&session)[..], &image[..], "NEPTUN: the EEPROM is loaded as it is");
     let booted = advance(&mut session, 3.0);
     assert_eq!((health(&booted, "tissues"), health(&booted, "oxygen")), ("unknown".to_string(), "unknown".to_string()));

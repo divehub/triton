@@ -378,9 +378,10 @@ export class Runtime {
       // Fixture (DESIGN 15.3c): the main board's I2C idle lines PB6/PB7/PB10/PB11 are driven high before guest
       // execution, as the external pull-ups would. A start option; on unless switched off.
       i2cIdleHigh: options.i2cIdleHigh !== false,
-      // Fixtures (DESIGN "Decompression state handling"), both on unless switched off: the pre-boot EEPROM consistency
-      // repair of a tissue block that was never saved, and the start at the surface (a new session also resets the
-      // oxygen cells).
+      // Fixtures (DESIGN sections 17 and 18), all on unless switched off: the EEPROM factory init (the records the firmware's
+      // first-boot defaults never write get firmware-derived values), the pre-boot EEPROM consistency repair of a tissue block
+      // that was never saved, and the start at the surface (a new session also resets the oxygen cells).
+      eepromFactoryInit: options.eepromFactoryInit !== false,
       decoStorageFixture: options.decoStorageFixture !== false,
       startAtSurface: options.startAtSurface !== false,
     };

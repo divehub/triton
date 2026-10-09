@@ -270,7 +270,8 @@ impl Recorder {
                     .with("mainI2cIdleHigh", env.options.main_i2c_idle_high)
                     // Pinned to the value of the Renode recordings (a fresh profile starts at 4100 mV; see `recorded_inputs`).
                     .with("batteryMv", Json::from_items([crate::fixtures::RECORDED_BATTERY_MV; 2]))
-                    // The decompression fixtures are on by default in a session; the recordings were made without them.
+                    // The profile fixtures are on by default in a session; the recordings were made without them.
+                    .with("eepromFactoryInit", false)
                     .with("decoStorageFixture", false)
                     .with("startAtSurface", false),
             )
@@ -299,12 +300,14 @@ pub(crate) fn recorded_inputs(mut profile: Profile) -> Profile {
     profile
 }
 
-/// Pins the two decompression fixtures off, explicitly, like [`recorded_inputs`] pins the battery voltage: the Renode
-/// recordings the scenarios compare with were made without them (a stored tissue block that was never saved keeps its date
-/// record, the EEPROM image is compared byte for byte, a reopened profile uses its inputs as saved). The fixtures have
-/// their own tests (`crates/ngc/tests/deco_fixtures.rs`).
+/// Pins the three emulator fixtures of the profile handling off, explicitly, like [`recorded_inputs`] pins the battery voltage: the
+/// Renode recordings the scenarios and the dive benchmark compare with were made without them (a fresh EEPROM starts erased and
+/// the firmware's first-boot defaults are compared byte for byte, a stored tissue block that was never saved keeps its date record, a
+/// reopened profile uses its inputs as saved). Both the scenarios and the benchmark build their sessions through this function, so
+/// their workload is the recorded one. The fixtures have their own tests (`crates/ngc/tests/deco_fixtures.rs`,
+/// `crates/ngc/tests/eeprom_init.rs`).
 pub(crate) fn recorded_config(config: SessionConfig) -> SessionConfig {
-    SessionConfig { deco_storage_fixture: false, start_at_surface: false, ..config }
+    SessionConfig { eeprom_factory_init: false, deco_storage_fixture: false, start_at_surface: false, ..config }
 }
 
 /// A [`Session`] plus the helpers every scenario uses: actions as JSON, side-effect-free RAM readbacks, evidence.
@@ -463,5 +466,16 @@ mod tests {
         assert_eq!(summary_number(summary, "CR"), Some(0x1000_0005));
         assert_eq!(summary_field(summary, "acquisitionEnabled"), Some("True"));
         assert_eq!(summary_field(summary, "missing"), None);
+    }
+
+    #[test]
+    fn the_recorded_workload_pins_every_profile_fixture_off_and_keeps_the_rest_of_the_config() {
+        // The scenarios and the dive benchmark build their sessions through `recorded_config`: a fresh EEPROM must stay erased
+        // (compared byte for byte with the Renode recordings), the stored tissue block keeps its date, a reopened profile keeps its inputs.
+        let defaults = SessionConfig::default();
+        assert!(defaults.eeprom_factory_init && defaults.deco_storage_fixture && defaults.start_at_surface, "all three are on by default");
+        let pinned = recorded_config(SessionConfig { idle_fast_forward: false, adc_sample: 1234, ..defaults });
+        assert!(!pinned.eeprom_factory_init && !pinned.deco_storage_fixture && !pinned.start_at_surface);
+        assert!(!pinned.idle_fast_forward && pinned.adc_sample == 1234, "everything else is the caller's");
     }
 }
