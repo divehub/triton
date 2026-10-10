@@ -22,7 +22,7 @@ import {
 import { createGameSound } from './game-sound.js';
 import { DIVER_X, MAX_FRAME_STEP_S, WaterScene } from './game-water.js';
 import { handsetKeyAction, isHandsetArrow } from './keys.js';
-import { LcdView } from './lcd.js';
+import { LcdView, displayPoweredOff } from './lcd.js';
 import { DEFAULT_RELEASE_ID, describeRelease, profileArea } from './releases.js';
 import { ReplayController } from './replay.js';
 
@@ -396,10 +396,11 @@ export class GameView {
     this.updateFrameVisibility();
   }
 
-  /** The canvas shows when the panel is on and a frame is in hand, otherwise the placeholder. */
+  /** The canvas shows when the panel is on and a frame is in hand, otherwise the placeholder; a handset without power is dark. */
   updateFrameVisibility() {
     const ready = !!(this.state && this.state.frameReady);
-    if (ready && this.haveFrame) this.lcd.setVisible(true);
+    if (displayPoweredOff(this.state)) this.lcd.showPoweredOff();
+    else if (ready && this.haveFrame) this.lcd.setVisible(true);
     else this.lcd.setVisible(false, ready ? 'Waiting for LCD snapshot' : 'Waiting for LCD output');
   }
 
@@ -620,13 +621,18 @@ export class GameView {
 
   // ---- the handset -----------------------------------------------------------------------------------------------
 
-  /** Presses a handset button ('up', 'down', 'confirm') through the same pin actions as the emulator view. */
+  /**
+   * Presses a handset button ('up', 'down', 'confirm') through the same pin actions as the emulator view. While the handset has
+   * no power (standby, or the main board has not enabled its supply) the button still clicks but does nothing, as on an unpowered
+   * unit: no action is sent and no error is shown.
+   */
   pressHandset(action, source = null) {
     if (this.resetting) return Promise.resolve(false);
     this.closeMenu();
     $('device').focus({ preventScroll: true });
     if (source) this.feedback(source);
     this.sfx('click', action); // every press, whichever way it came: the bezel, a tap on the display or the keyboard
+    if (displayPoweredOff(this.state)) return Promise.resolve(false);
     return this.queue.send(action);
   }
 

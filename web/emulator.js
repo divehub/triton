@@ -12,7 +12,7 @@ import { decoWarnings, fixtureLines, healthLine, parseSurfacePressure } from './
 import { faultDetail, faultReports, faultWarnings } from './faults.js';
 import { clearCellFixture } from './game-logic.js';
 import { handsetKeyAction, isHandsetArrow } from './keys.js';
-import { LcdView } from './lcd.js';
+import { LcdView, displayPoweredOff } from './lcd.js';
 import { ReplayController, STATUS_STRIP, activityText, describeEntry, driveText, historyText } from './replay.js';
 import { DEFAULT_RELEASE_ID, describeRelease, profileArea } from './releases.js';
 import { PRESSURE_KEYS, SENSOR_KEYS, TEMPERATURE_KEYS } from './sensors.js';
@@ -21,6 +21,7 @@ import { readZip } from './zip.js';
 const PROFILE_FILES = ['eeprom.bin', 'nor.ngc', 'rtc-state.json', 'inputs.json', 'led-colors.json'];
 // Actions that recreate the boards: output histories start over.
 const RESET_ACTIONS = new Set(['reset', 'cold', 'wake', 'serial']);
+const HANDSET_BUTTONS = new Set(['up', 'down', 'confirm']); // ignored while the handset has no power
 const COLD_BOOT_TITLE = 'The firmware clears the oxygen calibration on a cold boot; calibrate again afterwards';
 const CUSTOM_COLD_BOOT_TITLE = 'Cold boot of a custom build: the engine refuses it, and says why, when it cannot detect the build\'s standby request';
 // The most the UART console shows of a channel: the engine keeps a 16 KiB tail per channel and the text view needs at
@@ -431,7 +432,9 @@ export class EmulatorView {
    */
   updateFrameVisibility() {
     const ready = !!(this.state && this.state.frameReady);
-    if (ready && this.haveFrame) {
+    if (displayPoweredOff(this.state)) {
+      this.lcd.showPoweredOff(); // a handset without power is dark (the note below keeps describing the last frame)
+    } else if (ready && this.haveFrame) {
       this.lcd.setVisible(true);
       if (!this.noteShowsFrame && this.frameInfo) this.writeFrameNote();
     } else {
@@ -898,6 +901,8 @@ export class EmulatorView {
    * recreate the boards carry the page's surface-pressure setting for the engine's start-at-the-surface fixture.
    */
   sendAction(action, extra = {}) {
+    // A handset without power (standby, or no supply from the main board yet) ignores its buttons: nothing is sent, no error.
+    if (HANDSET_BUTTONS.has(action) && displayPoweredOff(this.state)) return Promise.resolve(false);
     if (RESET_ACTIONS.has(action) && extra.surfacePressureMbar === undefined) {
       const surface = this.surfacePressure();
       if (surface !== null) extra = { ...extra, surfacePressureMbar: surface };

@@ -1101,6 +1101,33 @@ test('page: the first LCD frame, which the worker sends while it creates the ses
   assert.match(globalThis.document.getElementById('frame-note').textContent, /Last LCD frame: .* · frame 2/);
 });
 
+test('page: a handset without power has a dark LCD with a small caption, and its buttons, the LCD taps and the keys send nothing', async () => {
+  installDom(html);
+  const { EmulatorView } = await import('./emulator.js');
+  const requests = [];
+  const client = { send() {}, request: (type, payload) => { requests.push({ type, payload }); return new Promise(() => {}); } };
+  const view = new EmulatorView(client, { closeSession() {}, notify() {} }, { timers: fakeTimers() });
+  const info = { options: { mode: 'dual', adcSample: 400 }, profile: 'stored', release: describeRelease(DEFAULT_RELEASE_ID), slots: { main: fakeSlot('main.srec'), handset: fakeSlot('handset.srec') } };
+  const placeholder = () => globalThis.document.getElementById('placeholder');
+  const presses = () => requests.filter((request) => request.type === 'action' && ['up', 'down', 'confirm'].includes(request.payload.request.action)).length;
+  view.show(info);
+  view.onFrame({ type: 'frame', width: 320, height: 240, version: 1, generation: 1, buffer: new ArrayBuffer(320 * 240 * 4) });
+  view.onState({ state: { ...baseState, frameReady: true, running: false, standby: true, handsetPowered: false }, host: { ...hostBase } });
+  assert.equal(globalThis.document.getElementById('frame').hidden, true, 'the last picture is not kept on a display without power');
+  assert.equal(placeholder().textContent, 'LCD powered off');
+  assert.equal(placeholder().classList.contains('lcd-off'), true);
+  assert.equal(await view.sendAction('up'), false);
+  assert.equal(await view.sendAction('confirm'), false);
+  assert.equal(presses(), 0, 'no handset press is sent while the handset has no power');
+  view.onState({ state: { ...baseState, frameReady: true, running: true, standby: false, handsetPowered: true }, host: { ...hostBase } });
+  assert.equal(globalThis.document.getElementById('frame').hidden, false, 'powered again: the frame is back');
+  assert.equal(placeholder().classList.contains('lcd-off'), false);
+  view.sendAction('up');
+  await settle();
+  assert.equal(presses(), 1);
+  view.hide();
+});
+
 test('page: a handset-only session has no sensor controls', async () => {
   const m = await mount();
   m.view.onState({ state: { ...baseState, inputs: undefined }, host: { ...hostBase } });
@@ -5451,6 +5478,43 @@ test('game (view): the three indicators show the firmware\'s outputs with the pu
   assert.equal(g.el('signal-white').tagName, 'DIV');
   assert.equal(g.el('signal-white').getAttribute('role'), 'img');
   assert.equal(g.el('signal-white').listeners.has('click'), false);
+  g.view.hide();
+});
+
+test('game (view): a handset without power has a dark display with a small caption, and its buttons click but send nothing', async () => {
+  const g = await mountGame();
+  const sent = () => g.actions().filter((request) => ['up', 'down', 'confirm'].includes(request.action)).length;
+  const clicks = () => g.sound.named('click').length;
+  g.view.onFrame({ width: 320, height: 240, version: 1, buffer: new ArrayBuffer(320 * 240 * 4) });
+  g.feed(0, 0, { frameReady: true, handsetPowered: true });
+  assert.equal(g.el('frame').hidden, false, 'a powered handset shows the firmware frame');
+  assert.equal(g.el('placeholder').classList.contains('lcd-off'), false);
+
+  // Standby: the main board cut the handset supply. The last picture is not kept; the display is dark with its caption.
+  g.feed(1, 300, { frameReady: true, running: false, standby: true, handsetPowered: false });
+  assert.equal(g.el('frame').hidden, true);
+  assert.equal(g.el('placeholder').hidden, false);
+  assert.equal(g.text('placeholder'), 'LCD powered off');
+  assert.equal(g.el('placeholder').classList.contains('lcd-off'), true);
+  const before = { sent: sent(), clicks: clicks() };
+  await g.view.pressHandset('up');
+  await g.view.pressHandset('confirm');
+  assert.equal(sent(), before.sent, 'nothing is sent to the engine');
+  assert.equal(clicks(), before.clicks + 2, 'the buttons still click');
+  assert.equal(g.view.actionError, '', 'and no "handset supply" error appears');
+
+  // Before the main board enables the supply (a boot), the same.
+  g.feed(2, 600, { frameReady: false, running: true, standby: false, handsetPowered: false });
+  assert.equal(g.text('placeholder'), 'LCD powered off');
+  await g.view.pressHandset('down');
+  assert.equal(sent(), before.sent);
+
+  // Powered again (Wake system): the frame comes back and the buttons work.
+  g.feed(3, 900, { frameReady: true, running: true, standby: false, handsetPowered: true });
+  assert.equal(g.el('frame').hidden, false);
+  assert.equal(g.el('placeholder').classList.contains('lcd-off'), false);
+  await g.view.pressHandset('up');
+  assert.equal(sent(), before.sent + 1);
   g.view.hide();
 });
 

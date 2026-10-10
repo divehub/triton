@@ -3,6 +3,18 @@
 
 const INTEGER_FILL = 0.85;
 
+/** What the dark display says while the handset has no power. */
+export const LCD_OFF_TEXT = 'LCD powered off';
+
+/**
+ * The handset (and with it its display) has no power: the engine reports the device in standby, or the main board has not
+ * enabled (or has cut) the handset supply (`handsetPowered`, the PE3 supply gate). The display is then dark, and a handset
+ * press does nothing, as on an unpowered unit.
+ */
+export function displayPoweredOff(state) {
+  return !!state && (!!state.standby || state.handsetPowered === false);
+}
+
 export class LcdView {
   /**
    * @param {{container: HTMLElement, canvas: HTMLCanvasElement, placeholder: HTMLElement, sizeLabel: HTMLElement}} parts
@@ -42,13 +54,22 @@ export class LcdView {
     return buffer;
   }
 
-  /** Shows the canvas (a frame is available and the panel is on) or the placeholder text. */
-  setVisible(visible, text) {
+  /**
+   * Shows the canvas (a frame is available and the panel is on) or the placeholder text; `off` marks the placeholder as a
+   * display without power (a dark screen with a small caption instead of a status message).
+   */
+  setVisible(visible, text, off = false) {
     this.visible = visible;
     this.canvas.hidden = !visible;
     this.placeholder.hidden = visible;
+    this.placeholder.classList.toggle('lcd-off', !visible && off);
     if (!visible && text) this.placeholder.textContent = text;
     if (visible) this.layout();
+  }
+
+  /** The display without power: dark, with the small "LCD powered off" caption (the last picture is not kept on it). */
+  showPoweredOff() {
+    this.setVisible(false, LCD_OFF_TEXT, true);
   }
 
   layout() {
