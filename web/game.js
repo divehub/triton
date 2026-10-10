@@ -15,9 +15,9 @@ import { DEFAULT_SURFACE_MBAR, parseSurfacePressure } from './deco.js';
 import { byId, confirmDialog, prefs, setText } from './dom.js';
 import { DEFAULT_MAV_FLOW_SL_MIN, MAX_DEPTH_METERS } from './game-gas.js';
 import {
-  ENTRY_SEAT, GAME_INDICATORS, GameSim, InputsSender, PlayClock, SKY_M, VIEW_WINDOW_M, cellMillivolts, cellSensitivities, clearCellFixture,
-  clockText, durationText, estimateVirtual, gameInputs, gaugeGradient, indicatorView, loadCellFixture, runState, speedLabel, stopAlerts,
-  worldGradient,
+  CELL_FAULTS, CellFixture, ENTRY_SEAT, GAME_INDICATORS, GameSim, InputsSender, PlayClock, SKY_M, VIEW_WINDOW_M, cellFault, clearCellFixture,
+  clockText, durationText, estimateVirtual, gameInputs, gaugeGradient, indicatorView, loadCellFixture, loopPpo2, runState, speedLabel,
+  stopAlerts, worldGradient,
 } from './game-logic.js';
 import { createGameSound } from './game-sound.js';
 import { DIVER_X, MAX_FRAME_STEP_S, WaterScene } from './game-water.js';
@@ -184,6 +184,7 @@ export class GameView {
     this.quitDialog = null; // the open Quit confirmation: `close(reason)` ends it from outside (the device turned off, the game ended)
     this.helpOpen = false; // the controls guide is open: the keyboard is the guide's, not the game's
     this.helpShown = false; // the guide has been shown on its own in this page (when the settings cannot remember it)
+    this.cellMenu = null; // the cell (0 to 2) whose fault menu is open: like the controls guide, it holds the keyboard
     this.notices = [];
     this.sender = null;
     this.pressTimers = new Map();
@@ -201,6 +202,7 @@ export class GameView {
     this.haveFrame = false;
     this.frameCount = 0;
     this.beginSession();
+    this.buildCellMenu();
     this.buildWater();
     this.watchMotion(motion);
     this.wire();
@@ -212,8 +214,12 @@ export class GameView {
   beginSession({ startPaused = false } = {}) {
     if (this.sender) this.sender.cancel();
     this.surfaceMbar = DEFAULT_SURFACE_MBAR;
-    this.cells = null;
-    this.sim = new GameSim({ flow: DEFAULT_MAV_FLOW_SL_MIN, onBoundary: () => this.clearGesture() });
+    this.cells = null; // the session's oxygen cells and their simulated faults (`show`): a new session starts with every cell normal
+    this.sim = new GameSim({
+      flow: DEFAULT_MAV_FLOW_SL_MIN,
+      onBoundary: () => this.clearGesture(),
+      onIntegrate: (dt, from, to) => this.advanceCells(dt, from, to),
+    });
     this.scene.reset(); // the diver is on the boat
     this.clock = new PlayClock({ onChange: (change) => this.clockChanged(change) });
     if (startPaused) this.clock.speed = 0;
@@ -278,8 +284,8 @@ export class GameView {
     // The session's surface pressure (the page's remembered setting); the sensors get it plus the water.
     const surface = parseSurfacePressure(options.surfacePressureMbar);
     this.surfaceMbar = surface === null ? DEFAULT_SURFACE_MBAR : surface;
-    this.cells = loadCellFixture(this.store, profileArea(this.release.id), this.random);
-    this.cells.sensitivities = cellSensitivities(this.cells.deviationsMv);
+    // The profile's cells (kept in the page settings); their simulated faults belong to this session only and are never stored.
+    this.cells = new CellFixture(loadCellFixture(this.store, profileArea(this.release.id), this.random));
     this.root.hidden = false;
     this.replay.clear();
     this.resetIndicators();
@@ -603,9 +609,13 @@ export class GameView {
   offerInputs({ immediate = false } = {}) {
     if (!this.active || !this.cells || this.connectionError || this.resetting) return;
     const readings = this.sim.readings(this.surfaceMbar);
-    this.sender.offer(gameInputs({
-      surfaceMbar: this.surfaceMbar, depthM: this.sim.depth, ppo2: readings.ppo2, sensitivities: this.cells.sensitivities,
-    }), { immediate });
+    this.sender.offer(gameInputs({ surfaceMbar: this.surfaceMbar, depthM: this.sim.depth, ppo2: readings.ppo2, cells: this.cells }), { immediate });
+  }
+
+  /** A piece of the dive's virtual time was integrated: a slow cell follows the loop ppO2 over it (game-logic.js `CellFixture.advance`). */
+  advanceCells(dt, from, to) {
+    if (!this.cells) return;
+    this.cells.advance(dt, loopPpo2(this.surfaceMbar, from.depth, from.o2), loopPpo2(this.surfaceMbar, to.depth, to.o2));
   }
 
   // ---- the handset -----------------------------------------------------------------------------------------------
@@ -756,6 +766,7 @@ export class GameView {
   openHelp() {
     if (!this.active || this.helpOpen || this.modalOpen || this.resetting) return;
     this.closeSound();
+    this.closeCellMenu();
     this.stopMotion();
     this.releaseValves();
     this.closeMenu();
@@ -805,12 +816,13 @@ export class GameView {
   // open the keyboard is not the game's. It holds the two settings of the sound: on or off, and the volume.
 
   popoverOpen() {
-    return this.helpOpen || this.soundOpen;
+    return this.helpOpen || this.soundOpen || this.cellMenu !== null;
   }
 
   closePopovers() {
     this.closeHelp();
     this.closeSound();
+    this.closeCellMenu();
   }
 
   insideSound(target) {
@@ -820,6 +832,7 @@ export class GameView {
   openSound() {
     if (!this.active || this.soundOpen || this.modalOpen || this.resetting) return;
     this.closeHelp();
+    this.closeCellMenu();
     this.stopMotion();
     this.releaseValves();
     this.closeMenu();
@@ -905,6 +918,119 @@ export class GameView {
     $('sound').classList.toggle('muted', muted);
     $('sound').title = on ? 'Sound' : 'Sound is off';
     $('sound').querySelector('use').setAttribute('href', muted ? '#game-i-sound-off' : '#game-i-sound');
+  }
+
+  // ---- the cell fault menu (DESIGN 26) ------------------------------------------------------------------------------
+  //
+  // Each cell reading is a button that opens a small menu under it: the six states of game-logic.js `CELL_FAULTS` as radio items,
+  // the current one checked; choosing one applies it at once (the inputs go out as after a diluent switch) and closes the menu. It
+  // has the rules of the controls guide and the sound popover: not a modal, opening it lets go of what is held, Escape, the cell
+  // again, a click outside and a focus elsewhere close it, and while it is open no game key reaches the game. The arrow keys move
+  // between the items (Home and End to the ends), Enter and Space choose; the focus goes into the menu and back to the cell.
+
+  cellButton(index) {
+    return byId(`game-cell-button-${index + 1}`);
+  }
+
+  /** The menu's six items, built once from `CELL_FAULTS` (the same labels the logic and the tests use). */
+  buildCellMenu() {
+    const menu = $('cell-menu');
+    menu.replaceChildren(...CELL_FAULTS.map((fault) => {
+      const attributes = { type: 'button', role: 'menuitemradio', 'aria-checked': 'false', tabindex: '-1', class: 'cell-menu-item', 'data-state': fault.key };
+      const item = element('button', attributes,
+        element('span', { class: 'cell-menu-check', 'aria-hidden': 'true' }),
+        element('span', { class: 'cell-menu-label' }, fault.label),
+        element('span', { class: 'cell-menu-detail' }, fault.detail));
+      item.addEventListener('click', () => {
+        if (this.cellMenu !== null) this.chooseCellFault(this.cellMenu, fault.key);
+      });
+      return item;
+    }));
+  }
+
+  cellMenuItems() {
+    return [...$('cell-menu').querySelectorAll('[role="menuitemradio"]')];
+  }
+
+  insideCellMenu(target) {
+    if (!target || typeof target.closest !== 'function') return false;
+    return !!target.closest('#game-cell-popover') || (this.cellMenu !== null && !!target.closest(`#game-cell-button-${this.cellMenu + 1}`));
+  }
+
+  /** Opens the menu of cell `index` (0 to 2) with its current state checked and focused. */
+  openCellMenu(index) {
+    if (!this.active || this.modalOpen || this.resetting || !this.cells) return;
+    if (this.cellMenu !== null) this.closeCellMenu();
+    this.closeHelp();
+    this.closeSound();
+    this.stopMotion();
+    this.releaseValves();
+    this.closeMenu();
+    this.cellMenu = index;
+    const current = this.cells.fault(index);
+    for (const item of this.cellMenuItems()) item.setAttribute('aria-checked', String(item.dataset.state === current));
+    setText($('cell-menu-title'), `Cell ${index + 1} · simulated fault`);
+    const popover = $('cell-popover');
+    popover.setAttribute('data-cell', String(index + 1));
+    popover.hidden = false;
+    this.cellButton(index).setAttribute('aria-expanded', 'true');
+    // The menu opens under the cell, near the bottom of the page: the page scrolls just enough to show all of it.
+    if (typeof popover.scrollIntoView === 'function') popover.scrollIntoView({ block: 'nearest' });
+    const checked = this.cellMenuItems().find((item) => item.dataset.state === current) || this.cellMenuItems()[0];
+    checked.focus({ preventScroll: true });
+  }
+
+  /** `focus` puts the keyboard focus back on the cell (a choice, Escape, the cell itself); a click or a focus elsewhere keeps its own. */
+  closeCellMenu({ focus = false } = {}) {
+    const index = this.cellMenu;
+    if (index === null) return;
+    this.cellMenu = null;
+    $('cell-popover').hidden = true;
+    this.cellButton(index).setAttribute('aria-expanded', 'false');
+    if (focus) this.cellButton(index).focus({ preventScroll: true });
+  }
+
+  toggleCellMenu(index) {
+    if (this.cellMenu === index) this.closeCellMenu({ focus: true });
+    else this.openCellMenu(index);
+  }
+
+  /** The diver chose a state for cell `index`: it applies at once, from the voltage the cell sends now, and the inputs go out. */
+  chooseCellFault(index, key) {
+    this.closeCellMenu({ focus: true });
+    if (!this.active || this.resetting || !this.cells) return;
+    this.settle(); // the cell's state up to now (a slow cell's lag) under the state it had
+    if (!this.cells.setFault(index, key, this.sim.readings(this.surfaceMbar).ppo2)) return;
+    this.offerInputs();
+    this.renderFixture();
+    this.render();
+  }
+
+  /** A key while the menu is open: it is the menu's, never the game's (no handset press, no pause, no swim, no valve, no scroll). */
+  cellMenuKeydown(event) {
+    const items = this.cellMenuItems();
+    const target = event.target;
+    const item = target && typeof target.closest === 'function' ? target.closest('[role="menuitemradio"]') : null;
+    const at = item ? items.indexOf(item) : -1;
+    const move = (index) => {
+      event.preventDefault();
+      items[(index + items.length) % items.length].focus();
+    };
+    if (event.code === 'Escape') {
+      event.preventDefault();
+      this.closeCellMenu({ focus: true });
+    } else if (event.key === 'ArrowDown') {
+      move(at + 1);
+    } else if (event.key === 'ArrowUp') {
+      move(at < 0 ? items.length - 1 : at - 1);
+    } else if (event.key === 'Home') {
+      move(0);
+    } else if (event.key === 'End') {
+      move(items.length - 1);
+    } else if (event.code === 'Enter' || event.code === 'NumpadEnter' || event.code === 'Space') {
+      event.preventDefault(); // chosen here, so the focused item does not also take the key as a click
+      if (item && !event.repeat) this.chooseCellFault(this.cellMenu, item.dataset.state);
+    }
   }
 
   // ---- sound -------------------------------------------------------------------------------------------------------
@@ -1104,6 +1230,24 @@ export class GameView {
     document.addEventListener('focusin', (event) => {
       if (this.helpOpen && !this.insideHelp(event.target)) this.closeHelp();
       if (this.soundOpen && !this.insideSound(event.target)) this.closeSound();
+      if (this.cellMenu !== null && !this.insideCellMenu(event.target)) this.closeCellMenu();
+    });
+    // The cells: a click, or Enter with a cell focused, opens its fault menu (Space stays the game's pause). A click outside closes it.
+    for (let index = 0; index < 3; index++) {
+      const button = this.cellButton(index);
+      button.addEventListener('click', () => this.toggleCellMenu(index));
+      button.addEventListener('keydown', (event) => {
+        if ((event.code !== 'Enter' && event.code !== 'NumpadEnter') || event.repeat || this.helpOpen || this.soundOpen) return;
+        event.preventDefault(); // handled here, not also as the button's click
+        this.toggleCellMenu(index);
+      });
+    }
+    document.addEventListener('click', (event) => {
+      if (this.cellMenu === null || this.insideCellMenu(event.target)) return;
+      const index = this.cellMenu;
+      this.closeCellMenu();
+      const focused = document.activeElement;
+      if (!focused || focused === document.body) this.cellButton(index).focus({ preventScroll: true });
     });
     $('alerts').addEventListener('click', (event) => {
       const button = event.target && typeof event.target.closest === 'function' ? event.target.closest('button') : null;
@@ -1270,6 +1414,10 @@ export class GameView {
         this.soundKeydown(event); // and the sound popover
         return;
       }
+      if (this.cellMenu !== null) {
+        this.cellMenuKeydown(event); // and a cell's fault menu
+        return;
+      }
       if (isHandsetArrow(event)) {
         const action = handsetKeyAction(event);
         event.preventDefault(); // a held key is one press, and the page does not scroll
@@ -1419,11 +1567,28 @@ export class GameView {
     $('flow-out').classList.toggle('active', ventActive);
   }
 
-  /** The cell panel: the voltages sent to the firmware, and the true loop ppO2 (the simulated truth). */
+  /**
+   * The cell panel: the voltages sent to the firmware (with any simulated fault: `data-fault`, the ring, the dimmed reading and the
+   * badge, and the cell's accessible name), and the true loop ppO2 (the simulated truth).
+   */
   renderCells(readings) {
     if (!this.cells) return;
-    const volts = cellMillivolts(readings.ppo2, this.cells.sensitivities);
-    volts.forEach((millivolts, index) => setText($(`cell-${index + 1}`), millivolts.toFixed(2)));
+    this.cells.millivolts(readings.ppo2).forEach((millivolts, index) => {
+      const text = millivolts.toFixed(2);
+      setText(byId(`game-cell-${index + 1}`), text);
+      const fault = cellFault(this.cells.fault(index));
+      const button = this.cellButton(index);
+      if (fault.key === 'normal') {
+        if (button.getAttribute('data-fault') !== null) button.removeAttribute('data-fault');
+      } else if (button.getAttribute('data-fault') !== fault.key) {
+        button.setAttribute('data-fault', fault.key);
+      }
+      const badge = byId(`game-cell-badge-${index + 1}`);
+      setText(badge, fault.badge);
+      badge.hidden = !fault.badge;
+      const name = `Cell ${index + 1}: ${text} mV, ${fault.word}. Opens the cell fault menu`;
+      if (button.getAttribute('aria-label') !== name) button.setAttribute('aria-label', name);
+    });
     setText($('loop-ppo2'), readings.ppo2.toFixed(2));
   }
 
@@ -1434,7 +1599,9 @@ export class GameView {
     if (!this.cells) return;
     this.cells.deviationsMv.forEach((deviation, index) => {
       const sensitivity = this.cells.sensitivities[index];
-      list.append(element('div', {}, `Cell ${index + 1}: ${(12 + deviation).toFixed(2)} mV in air at the surface (${deviation >= 0 ? '+' : '−'}${Math.abs(deviation).toFixed(2)} mV), ${sensitivity.toFixed(1)} mV/bar`));
+      const fault = cellFault(this.cells.fault(index));
+      const faulty = fault.key === 'normal' ? '' : ` · simulated fault: ${fault.word} (this session)`;
+      list.append(element('div', {}, `Cell ${index + 1}: ${(12 + deviation).toFixed(2)} mV in air at the surface (${deviation >= 0 ? '+' : '−'}${Math.abs(deviation).toFixed(2)} mV), ${sensitivity.toFixed(1)} mV/bar${faulty}`));
     });
     list.append(element('div', { class: 'fixture-note' }, `Kept in this browser for the ${this.release.custom ? 'custom-build' : this.release.name} profile${this.cells.drawn ? ' (newly drawn)' : ''}.`));
   }

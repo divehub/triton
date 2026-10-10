@@ -223,7 +223,7 @@
 #screen-game #game-profile-empty { fill: #8facb0; font-size: 12px; }
 #screen-game .instrument-card { display: flex; flex-direction: column; }
 #screen-game .instrument-stage { flex: 1; }
-#screen-game .loop-panel { display: grid; grid-template-columns: 1fr 1fr 1fr; margin-top: 20px; padding: 22px 25px; gap: 25px; }
+#screen-game .loop-panel { display: grid; grid-template-columns: 1fr 1fr 1fr; margin-top: 20px; padding: 22px 25px; gap: 25px; overflow: visible; }
 #screen-game .loop-controls { padding-right: 25px; border-right: 1px solid #263e45; }
 #screen-game .loop-title { margin-bottom: 18px; }
 #screen-game .gas-selector { display: flex; align-items: center; gap: 18px; margin-bottom: 13px; }
@@ -285,9 +285,8 @@
 #screen-game .state-pill.active i { background: #b8ecd1; }
 #screen-game .cmf-label { color: #7f9a91; font-size: 10px; white-space: nowrap; }
 #screen-game .sensor-heading>span { font-size: 10px; color: #6f959c; }
-#screen-game .cell-readings { display: flex; gap: 12px; justify-content: space-between; margin: 19px 0 10px; }
-#screen-game .cell-readings>div { flex: 1; min-width: 0; }
-#screen-game .cell-readings>div>span { display: block; font-size: 10px; color: #74969c; letter-spacing: .1em; }
+#screen-game .cell-readings { position: relative; display: flex; gap: 12px; justify-content: space-between; margin: 19px 0 10px; }
+#screen-game .cell-label { display: block; font-size: 10px; color: #74969c; letter-spacing: .1em; }
 #screen-game .cell-readings strong { display: block; font-size: 27px; font-weight: 450; letter-spacing: -.055em; font-variant-numeric: tabular-nums; color: #9cddcd; line-height: 1.5; }
 #screen-game .cell-readings small { font-size: 10px; color: #8facb0; font-variant-numeric: tabular-nums; }
 #screen-game .sensor-note { font-size: 10px; line-height: 1.45; color: #7b979e; }
@@ -412,3 +411,28 @@
 #screen-game .diluent-note { color: #6f8c93; }
 #screen-game .fixture-list { margin-top: 9px; font-size: 10px; line-height: 1.6; color: #86a1a7; font-variant-numeric: tabular-nums; }
 #screen-game .fixture-note { color: #6f8c93; }
+
+/* The cells are buttons (DESIGN 26): a click or Enter opens the fault menu under the cell. The padding is taken back by the margin,
+   so the reading sits exactly where it did; a simulated fault shows as a ring (amber, red for a short), a dimmed reading and a badge
+   on the unit's line. The ring, the badge and the menu take no space, so nothing moves between states. */
+#screen-game .cell-reading { --g-cell-ring: transparent; position: relative; display: block; flex: 1; min-width: 0; margin: -4px -5px; padding: 4px 5px; border: 0; border-radius: 8px; background: transparent; text-align: left; box-shadow: 0 0 0 1px var(--g-cell-ring); transition: background .12s, box-shadow .12s; }
+#screen-game .cell-reading:hover, #screen-game .cell-reading[aria-expanded="true"] { background: #ffffff0d; }
+#screen-game .cell-reading[data-fault] { --g-cell-ring: #d9a441; }
+#screen-game .cell-reading[data-fault="shorted"] { --g-cell-ring: #e0675e; }
+#screen-game .cell-reading[data-fault] strong { opacity: .5; }
+#screen-game .cell-badge { position: absolute; right: 5px; bottom: 4px; max-width: calc(100% - 30px); overflow: hidden; text-overflow: ellipsis; padding: 0 4px; border: 1px solid #6b5a2a; border-radius: 4px; background: #33290f; color: #f2d58c; font-size: 10px; line-height: 14px; white-space: nowrap; }
+#screen-game .cell-reading[data-fault="shorted"] .cell-badge { border-color: #753d3b; background: #352020; color: #f4b5ac; }
+#screen-game .cell-popover { position: absolute; top: calc(100% + 8px); z-index: 30; width: 252px; padding: 9px 6px 6px; background: #102b36; border: 1px solid #466974; border-radius: 10px; box-shadow: 0 15px 30px #04131db3; font-size: 12px; line-height: 1.4; color: var(--g-text); }
+#screen-game .cell-popover[data-cell="1"] { left: -5px; }
+#screen-game .cell-popover[data-cell="2"] { left: calc((100% - 24px) / 3 + 7px); }
+#screen-game .cell-popover[data-cell="3"] { right: -5px; }
+#screen-game .cell-popover-title { margin: 0 8px 6px; font-size: 10px; font-weight: 650; letter-spacing: .13em; text-transform: uppercase; color: #769ea5; }
+#screen-game .cell-menu { display: grid; gap: 1px; }
+#screen-game .cell-menu-item { display: flex; align-items: center; gap: 8px; width: 100%; margin: 0; padding: 5px 8px; border: 0; border-radius: 6px; background: transparent; text-align: left; white-space: nowrap; color: #c9dcdc; }
+#screen-game .cell-menu-item:hover, #screen-game .cell-menu-item:focus { background: #1d3d49; }
+#screen-game .cell-menu-item:focus-visible { outline: 1px solid var(--g-teal); outline-offset: -1px; }
+#screen-game .cell-menu-check { flex-shrink: 0; width: 12px; height: 12px; border: 1px solid #5d7f88; border-radius: 50%; }
+#screen-game .cell-menu-item[aria-checked="true"] .cell-menu-check { border-color: var(--g-teal); background: radial-gradient(circle, var(--g-teal) 0 3px, transparent 3.5px); }
+#screen-game .cell-menu-item[aria-checked="true"] .cell-menu-label { color: var(--g-teal); }
+#screen-game .cell-menu-label { color: #e5eeed; }
+#screen-game .cell-menu-detail { margin-left: auto; padding-left: 10px; font-size: 10px; color: #86a1a7; }

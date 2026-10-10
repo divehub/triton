@@ -1,6 +1,7 @@
-// The dive game's logic without a DOM (DESIGN 21): the oxygen-cell fixture, the depth and gas to sensor inputs, the throttled
-// sender of those inputs, the play clock (speed, pause and the MAV override), the dive simulation that follows the emulator's
-// virtual time, and the run state and alerts. game.js is the DOM side; the Node tests drive this file directly.
+// The dive game's logic without a DOM (DESIGN 21): the oxygen-cell fixture and its simulated faults (DESIGN 26), the depth and
+// gas to sensor inputs, the throttled sender of those inputs, the play clock (speed, pause and the MAV override), the dive
+// simulation that follows the emulator's virtual time, and the run state and alerts. game.js is the DOM side; the Node tests
+// drive this file directly.
 //
 // Everything the game shows or sends is a game fixture feeding the emulated sensors: the depth and the loop gas are simulated,
 // the cell voltages are a labeled fixture (below), and the firmware's own reading is on the handset. It is a functional model,
@@ -79,6 +80,124 @@ export function cellMillivolts(ppo2, sensitivities) {
   return sensitivities.map((sensitivity) => Math.min(RAW_LIMITS.oxygen[1], Math.max(RAW_LIMITS.oxygen[0], ppo2 * sensitivity)));
 }
 
+// ---- simulated cell faults (DESIGN 26): chosen from a menu on each cell, for the current game session only -------------------
+//
+// A fault changes only the voltage the game sends for that cell; what the handset shows is the firmware's business. The "normal"
+// value below is the fixture's (ppO2 x sensitivity, saturated at the engine's 250 mV input limit). Faults live in the session's
+// CellFixture: they are never stored, so Reset all, Quit and a new Start game begin with every cell normal.
+
+/** A current-limited cell never sends more than this (about 0.96 bar for a nominal 57 mV/bar cell). */
+export const CELL_LIMIT_MV = 55;
+/** A slow cell follows its normal value with a first-order lag of this time constant (virtual seconds). */
+export const CELL_SLOW_TAU_S = 60;
+/** A drifting cell sends this fraction of its normal value. */
+export const CELL_DRIFT_FACTOR = 0.8;
+
+/**
+ * The states of a cell, in the menu's order: `key` (the `data-fault` of a faulty cell), the menu's `label` and `detail`, the cell's
+ * `badge` and the `word` its accessible name uses.
+ */
+export const CELL_FAULTS = Object.freeze([
+  { key: 'normal', label: 'Normal', detail: 'Follows the loop', badge: '', word: 'normal' },
+  { key: 'stuck', label: 'Stuck', detail: 'Holds its present voltage', badge: 'Stuck', word: 'stuck' },
+  { key: 'limited', label: 'Current-limited', detail: `Never above ${CELL_LIMIT_MV} mV`, badge: `Limited ${CELL_LIMIT_MV} mV`, word: 'current-limited' },
+  { key: 'shorted', label: 'Shorted', detail: 'Sends 0 mV', badge: 'Shorted 0 mV', word: 'shorted' },
+  { key: 'slow', label: 'Slow', detail: `Lags the loop by ${CELL_SLOW_TAU_S} s`, badge: `Slow (${CELL_SLOW_TAU_S} s lag)`, word: 'slow' },
+  { key: 'drifting', label: 'Drifting', detail: `Reads ${Math.round(CELL_DRIFT_FACTOR * 100)} % of normal`, badge: `Drifting ${Math.round(CELL_DRIFT_FACTOR * 100)} %`, word: 'drifting' },
+].map((fault) => Object.freeze(fault)));
+
+/** The description of a state by its key (normal for an unknown key). */
+export function cellFault(key) {
+  return CELL_FAULTS.find((fault) => fault.key === key) || CELL_FAULTS[0];
+}
+
+/**
+ * One step of a first-order lag (time constant `tau`) toward a target that moves linearly from `from` to `to` over `dt`, solved
+ * exactly: one step or many over the same straight path give the same value, and on a steady ramp the value trails the target by
+ * exactly `tau`.
+ */
+export function lagStep(value, from, to, dt, tau) {
+  if (!(dt > 0)) return value;
+  const decay = -Math.expm1(-dt / tau); // 1 - e^(-dt/tau), accurate for small steps
+  return value - (value - from) * decay + (to - from) * (1 - (tau * decay) / dt);
+}
+
+/** The voltage a cell sends for its normal value and its fault (`{key, mv}`; `mv` is the held or lagging value). */
+export function faultedMillivolts(normalMv, fault) {
+  switch (fault.key) {
+    case 'stuck':
+    case 'slow':
+      return fault.mv;
+    case 'limited':
+      return Math.min(normalMv, CELL_LIMIT_MV);
+    case 'shorted':
+      return 0;
+    case 'drifting':
+      return normalMv * CELL_DRIFT_FACTOR;
+    default:
+      return normalMv;
+  }
+}
+
+/**
+ * The oxygen cells of one game session: the profile's deviations (`loadCellFixture`), their sensitivities and each cell's fault.
+ * `millivolts(ppo2)` is what the game sends (and shows) for a loop ppO2, to 0.001 mV; `setFault` puts a cell in a state, starting
+ * Stuck and Slow from the voltage the cell sends at that moment; `advance` moves a slow cell over virtual time.
+ */
+export class CellFixture {
+  constructor({ deviationsMv, drawn = false }) {
+    this.deviationsMv = [...deviationsMv];
+    this.drawn = drawn;
+    this.sensitivities = cellSensitivities(this.deviationsMv);
+    this.clearFaults();
+  }
+
+  /** Every cell back to normal. */
+  clearFaults() {
+    this.faults = Array.from({ length: this.deviationsMv.length }, () => ({ key: 'normal', mv: null }));
+  }
+
+  /** The fixture's voltages without a fault, saturated at the engine's input limit. */
+  normalMillivolts(ppo2) {
+    return cellMillivolts(ppo2, this.sensitivities);
+  }
+
+  /** The voltages sent for a loop ppO2, each with its cell's fault, to 0.001 mV (the resolution the game sends). */
+  millivolts(ppo2) {
+    return this.normalMillivolts(ppo2).map((normal, index) => round(faultedMillivolts(normal, this.faults[index]), 3));
+  }
+
+  fault(index) {
+    return this.faults[index].key;
+  }
+
+  /**
+   * Puts cell `index` in the state `key` for the loop ppO2 now. Stuck holds, and Slow starts from, the exact voltage the cell sends
+   * at this moment (whatever state it was in); Normal restores the fixture value at once. Returns whether the state changed.
+   */
+  setFault(index, key, ppo2) {
+    if (!CELL_FAULTS.some((fault) => fault.key === key)) throw new RangeError(`Unknown cell state ${key}`);
+    if (!(index >= 0 && index < this.faults.length)) throw new RangeError(`Unknown cell ${index}`);
+    if (this.faults[index].key === key) return false;
+    const sent = this.millivolts(ppo2)[index];
+    this.faults[index] = { key, mv: key === 'stuck' || key === 'slow' ? sent : null };
+    return true;
+  }
+
+  /**
+   * `dt` virtual seconds of the dive, the loop ppO2 moving from `ppo2From` to `ppo2To`: a slow cell follows its normal value with
+   * the 60 s first-order lag, solved exactly over the step (the other states have nothing to integrate).
+   */
+  advance(dt, ppo2From, ppo2To) {
+    if (!(dt > 0) || !this.faults.some((fault) => fault.key === 'slow')) return;
+    const from = this.normalMillivolts(ppo2From);
+    const to = this.normalMillivolts(ppo2To);
+    this.faults.forEach((fault, index) => {
+      if (fault.key === 'slow') fault.mv = lagStep(fault.mv, from[index], to[index], dt, CELL_SLOW_TAU_S);
+    });
+  }
+}
+
 // ---- depth and gas to the engine's sensor inputs -----------------------------------------------------------------------
 
 /** Absolute pressure (mbar) at a depth: the session's surface pressure plus EN13319 water (1020 kg/m3, 9.80665 m/s2). */
@@ -86,16 +205,22 @@ export function ambientMbar(surfaceMbar, depthM) {
   return pressureMbar(surfaceMbar, depthM, 'en13319');
 }
 
+/** The loop ppO2 (bar) for an oxygen fraction at a depth: the fraction times the ambient pressure sent to the firmware. */
+export function loopPpo2(surfaceMbar, depthM, o2Fraction) {
+  return o2Fraction * (ambientMbar(surfaceMbar, depthM) / 1000);
+}
+
 /**
  * The `inputs` the game sends: both pressure inputs get the same absolute pressure (through the page's sensor numbering,
- * sensors.js `PRESSURE_KEYS`) and the three cells their voltage. The temperature inputs are not part of it: they keep the value
- * the emulator has.
+ * sensors.js `PRESSURE_KEYS`) and the three cells their voltage: the session's `cells` (a CellFixture, with any simulated fault),
+ * or the plain fixture for `sensitivities`. The temperature inputs are not part of it: they keep the value the emulator has.
  */
-export function gameInputs({ surfaceMbar, depthM, ppo2, sensitivities }) {
+export function gameInputs({ surfaceMbar, depthM, ppo2, sensitivities, cells = null }) {
   const pressure = round(ambientMbar(surfaceMbar, depthM), 2);
   const inputs = {};
   for (const key of PRESSURE_KEYS) inputs[key] = pressure;
-  cellMillivolts(ppo2, sensitivities).forEach((millivolts, index) => { inputs[`oxygen${index + 1}Mv`] = round(millivolts, 3); });
+  const millivolts = cells ? cells.millivolts(ppo2) : cellMillivolts(ppo2, sensitivities);
+  millivolts.forEach((value, index) => { inputs[`oxygen${index + 1}Mv`] = round(value, 3); });
   return inputs;
 }
 
@@ -274,9 +399,15 @@ const SURFACE_EPSILON_M = 1e-9;
  * belong to the current or the last dive (empty until the first descent). Long dives keep thinning their samples.
  */
 export class GameSim {
-  constructor({ flow = DEFAULT_MAV_FLOW_SL_MIN, onBoundary } = {}) {
+  /**
+   * `onBoundary()` runs when the diver arrives at the surface or the floor; `onIntegrate(dt, from, to)` after every integrated piece
+   * of virtual time, with the depth and the loop's oxygen fraction before and after it (`{depth, o2}`): the session's cells follow
+   * the loop with it (a slow cell's lag), on the same virtual time and in the same steps as the gas.
+   */
+  constructor({ flow = DEFAULT_MAV_FLOW_SL_MIN, onBoundary, onIntegrate } = {}) {
     this.flow = flow;
     this.onBoundary = onBoundary || (() => {});
+    this.onIntegrate = onIntegrate || null;
     this.reset();
   }
 
@@ -399,6 +530,7 @@ export class GameSim {
   /** `dt` seconds of the loop, the session time and the dive time, the depth moving linearly to `depth`. */
   integrate(dt, depth, valves) {
     if (!(dt > 0)) return; // arriving at once (already at the boundary): nothing to integrate before the rest at rest
+    const from = this.onIntegrate ? { depth: this.depth, o2: this.o2Fraction() } : null;
     advanceLoop(this.loop, { depth, dt, oxygen: !!valves.oxygen, diluent: !!valves.diluent, flow: this.flow });
     this.elapsed += dt;
     if (this.diving) this.diveTime += dt;
@@ -407,6 +539,13 @@ export class GameSim {
     if (this.loop.last.adv > 1e-12) this.lastActivity.adv = this.elapsed;
     if (this.loop.last.vent > 1e-12) this.lastActivity.vent = this.elapsed;
     this.pendingVent += this.loop.last.vent;
+    if (from) this.onIntegrate(dt, from, { depth, o2: this.o2Fraction() });
+  }
+
+  /** The loop's oxygen fraction now (the `fractions.o2` of `getLoopReadings`, without the rest of the snapshot). */
+  o2Fraction() {
+    const gas = this.loop.gas;
+    return gas.o2 / (gas.o2 + gas.n2 + gas.he);
   }
 
   /**
@@ -435,7 +574,7 @@ export class GameSim {
   readings(surfaceMbar) {
     const loop = getLoopReadings(this.loop);
     const ambientBar = ambientMbar(surfaceMbar, this.depth) / 1000;
-    return { ...loop, ambientBar, ppo2: loop.fractions.o2 * ambientBar };
+    return { ...loop, ambientBar, ppo2: loopPpo2(surfaceMbar, this.depth, loop.fractions.o2) };
   }
 }
 

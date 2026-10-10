@@ -3772,6 +3772,106 @@ test('game (sensors): both pressure inputs get the surface pressure plus EN13319
   assert.throws(() => at(-1), /depthM/);
 });
 
+test('game (cell faults): six states change only the voltage sent for their cell: stuck holds, limited caps at 55 mV, shorted is 0, drifting is 80 %, normal restores with the deviation', () => {
+  assert.deepEqual(game.CELL_FAULTS.map((fault) => fault.key), ['normal', 'stuck', 'limited', 'shorted', 'slow', 'drifting'], 'the menu\'s order');
+  assert.deepEqual(game.CELL_FAULTS.map((fault) => fault.badge), ['', 'Stuck', 'Limited 55 mV', 'Shorted 0 mV', 'Slow (60 s lag)', 'Drifting 80 %']);
+  assert.deepEqual([game.CELL_LIMIT_MV, game.CELL_SLOW_TAU_S, game.CELL_DRIFT_FACTOR], [55, 60, 0.8]);
+  const cells = new game.CellFixture({ deviationsMv: [-0.5, 0.25, 1], drawn: true });
+  assert.equal(cells.drawn, true);
+  assert.deepEqual(cells.deviationsMv, [-0.5, 0.25, 1]);
+  const normal = (ppo2) => game.cellMillivolts(ppo2, cells.sensitivities).map((value) => Math.round(value * 1000) / 1000);
+  const air = game.AIR_SURFACE_PPO2;
+  assert.deepEqual(cells.millivolts(air), [11.5, 12.25, 13], 'every cell normal: the fixture, each with its deviation');
+  assert.deepEqual([0, 1, 2].map((index) => cells.fault(index)), ['normal', 'normal', 'normal']);
+
+  // Stuck holds the exact voltage the cell sent when it was chosen, whatever the loop does; the other cells follow the loop.
+  assert.equal(cells.setFault(1, 'stuck', 0.7), true);
+  const held = normal(0.7)[1];
+  for (const ppo2 of [air, 1.3, 0, 2.5]) assert.equal(cells.millivolts(ppo2)[1], held, `stuck at a ppO2 of ${ppo2}`);
+  assert.deepEqual([cells.millivolts(1.3)[0], cells.millivolts(1.3)[2]], [normal(1.3)[0], normal(1.3)[2]], 'the other cells are untouched');
+  assert.equal(cells.setFault(1, 'stuck', 0.2), false, 'choosing the same state again keeps it as it is');
+  assert.equal(cells.millivolts(0.2)[1], held);
+
+  // Current-limited: min(normal, 55 mV).
+  cells.setFault(1, 'limited', 0.7);
+  assert.equal(cells.millivolts(0.5)[1], normal(0.5)[1], 'a lower voltage passes unchanged');
+  assert.ok(normal(1.3)[1] > 55);
+  assert.equal(cells.millivolts(1.3)[1], 55, 'never more than 55 mV');
+  // Shorted: 0 mV. Drifting: 80 % of the normal value.
+  cells.setFault(1, 'shorted', 1.3);
+  assert.deepEqual([cells.millivolts(1.3)[1], cells.millivolts(air)[1]], [0, 0]);
+  cells.setFault(1, 'drifting', 1.3);
+  closeTo(cells.millivolts(1.3)[1], 0.8 * normal(1.3)[1], 0.0011, 'drifting');
+  closeTo(cells.millivolts(air)[1], 0.8 * 12.25, 0.0011, 'drifting in air');
+  // The engine's 250 mV saturation stays, and the faults work on the saturated value.
+  assert.equal(cells.millivolts(10)[1], 200, '80 % of the 250 mV limit');
+  cells.setFault(1, 'limited', 10);
+  assert.equal(cells.millivolts(10)[1], 55);
+  assert.equal(cells.millivolts(10)[0], 250);
+  // Normal restores at once, with the cell's own deviation.
+  cells.setFault(1, 'normal', 10);
+  assert.deepEqual(cells.millivolts(air), [11.5, 12.25, 13]);
+
+  // Stuck and Slow start from the voltage the cell sends at that moment, whatever its state: a stuck cell after drifting holds the
+  // drifting value, a slow cell after a short starts at 0 mV.
+  cells.setFault(2, 'drifting', 1);
+  const drifting = cells.millivolts(1)[2];
+  cells.setFault(2, 'stuck', 1);
+  assert.equal(cells.millivolts(1.6)[2], drifting);
+  cells.setFault(0, 'shorted', 1);
+  cells.setFault(0, 'slow', 1);
+  assert.equal(cells.millivolts(1)[0], 0, 'continuity: the slow cell starts where the short left it');
+  // What the game sends is what the fixture gives, every cell with its state.
+  const inputs = game.gameInputs({ surfaceMbar: 1013.25, depthM: 10, ppo2: 1.2, cells });
+  assert.deepEqual([inputs.oxygen1Mv, inputs.oxygen2Mv, inputs.oxygen3Mv], cells.millivolts(1.2));
+  assert.deepEqual([inputs.oxygen1Mv, inputs.oxygen2Mv, inputs.oxygen3Mv], [0, normal(1.2)[1], drifting]);
+  assert.throws(() => cells.setFault(0, 'wet', 1), /Unknown cell state wet/);
+  assert.throws(() => cells.setFault(3, 'stuck', 1), /Unknown cell 3/);
+  cells.clearFaults();
+  assert.deepEqual(cells.millivolts(air), [11.5, 12.25, 13], 'cleared: every cell normal again');
+});
+
+test('game (cell faults): a slow cell follows its normal value with an exact 60 s first-order lag over the dive\'s virtual time', () => {
+  // The exact response: 63 % of a step after one time constant; one step or many along the same straight path give the same value.
+  near(game.lagStep(0, 10, 10, 60, 60), 10 * (1 - Math.exp(-1)), 'one time constant toward a steady value');
+  assert.equal(game.lagStep(5, 10, 12, 0, 60), 5, 'no time, no change');
+  let many = 3;
+  for (let index = 0; index < 400; index++) many = game.lagStep(many, 10 + 0.05 * index * 0.25, 10 + 0.05 * (index + 1) * 0.25, 0.25, 60);
+  closeTo(many, game.lagStep(3, 10, 15, 100, 60), 1e-9, 'one step of 100 s equals 400 steps of 0.25 s on a ramp');
+  closeTo(game.lagStep(3, 10, 10, 0.001, 60), 3 + 7 * (1 - Math.exp(-0.001 / 60)), 1e-12, 'a tiny step stays accurate');
+  // On a steady ramp the lag trails the target by exactly 60 s: after 20 time constants from rest, and at once from the trail.
+  closeTo(game.lagStep(10, 10, 10 + 0.5 * 1200, 1200, 60), 10 + 0.5 * (1200 - 60), 1e-6, 'from rest, 60 s behind');
+  closeTo(game.lagStep(20 - 0.5 * 60, 20, 20 + 0.5 * 7, 7, 60), 20 + 0.5 * (7 - 60), 1e-9, 'on the trail it stays on it');
+
+  // On the dive's virtual time: a steady 10 m/min descent on air, the slow cell chosen at the surface.
+  const surfaceMbar = 1013.25;
+  const cells = new game.CellFixture({ deviationsMv: [0, 0.5, -0.5] });
+  const ppo2Of = (sample) => game.loopPpo2(surfaceMbar, sample.depth, sample.o2);
+  const sim = new game.GameSim({ onIntegrate: (dt, from, to) => cells.advance(dt, ppo2Of(from), ppo2Of(to)) });
+  sim.advanceTo(0);
+  cells.setFault(1, 'slow', sim.readings(surfaceMbar).ppo2);
+  assert.equal(cells.millivolts(sim.readings(surfaceMbar).ppo2)[1], 12.5, 'it starts from what it was sending');
+  sim.setMotionRate(10);
+  sim.advanceTo(600);
+  closeTo(sim.depth, 100, 1e-6);
+  const now = () => cells.millivolts(sim.readings(surfaceMbar).ppo2);
+  const trail = game.cellMillivolts(game.loopPpo2(surfaceMbar, 90, 0.21), cells.sensitivities)[1];
+  closeTo(now()[1], trail, 0.002, 'on a steady descent the slow cell reads what the loop gave 60 s (10 m) earlier');
+  closeTo(now()[0], game.cellMillivolts(sim.readings(surfaceMbar).ppo2, cells.sensitivities)[0], 0.0006, 'the normal cells follow at once');
+  // Holding depth: the gap closes with the 60 s time constant.
+  sim.stopMotion();
+  const target = game.cellMillivolts(sim.readings(surfaceMbar).ppo2, cells.sensitivities)[1];
+  const gap = target - cells.faults[1].mv;
+  assert.ok(gap > 10, `the gap at 100 m: ${gap}`);
+  sim.advanceTo(660);
+  closeTo(target - cells.faults[1].mv, gap * Math.exp(-1), 1e-6, 'one time constant later');
+  // No virtual time (a paused emulator sends the same virtual time): no change.
+  const frozen = cells.faults[1].mv;
+  sim.advanceTo(660);
+  sim.advanceTo(659);
+  assert.equal(cells.faults[1].mv, frozen);
+});
+
 test('game (sensors): inputs are coalesced, serialized and sent a few times per second at most, newest first', () => {
   const clock = fakeTimers();
   let wall = 0;
@@ -5163,6 +5263,7 @@ test('game (help): a square 36 px "?" button named Controls is the last control 
   assert.deepEqual(panel.querySelectorAll('kbd').map((chip) => chip.textContent), ['W', 'S', '↑', '↓', 'Enter', 'O', 'D', 'Space', 'Esc']);
   assert.match(panel.textContent, /top third is Up, middle is Confirm, bottom is Down/);
   assert.match(panel.textContent, /Holding a valve runs the clock at 1×/);
+  assert.match(panel.textContent, /Click an oxygen cell to choose a simulated fault for it\./);
   g.view.hide();
 });
 
@@ -5403,6 +5504,237 @@ test('game (view): the header names the release or the custom build, Start pause
   assert.equal(globalThis.document.title, 'NGC system emulator · WebAssembly', 'the window title is the emulator\'s again');
 });
 
+// ---- simulated cell faults (DESIGN 26): the menu on each cell ---------------------------------------------------------
+
+/** The items of the open cell menu, by state key. */
+function cellMenuItem(g, key) {
+  return g.el('cell-menu').querySelectorAll('[role="menuitemradio"]').find((item) => item.dataset.state === key);
+}
+
+test('game (cell faults): a cell is a button that opens a menu of six states under it; choosing one applies it at once, sends the inputs and shows it', async () => {
+  const g = await mountGame();
+  g.feed(0, 0);
+  await settle();
+  const button = g.el('cell-button-2');
+  assert.equal(button.tagName, 'BUTTON');
+  assert.equal(button.getAttribute('type'), 'button');
+  assert.equal(button.getAttribute('aria-haspopup'), 'menu');
+  assert.equal(button.getAttribute('aria-controls'), 'game-cell-menu');
+  assert.equal(button.title, 'Simulate a cell fault');
+  assert.deepEqual([button.getAttribute('aria-expanded'), button.getAttribute('data-fault'), g.el('cell-badge-2').hidden], ['false', null, true], 'normal: no fault, no badge');
+  assert.equal(button.getAttribute('aria-label'), 'Cell 2: 12.50 mV, normal. Opens the cell fault menu', 'the name says the cell, its value and its state');
+  assert.equal(g.text('cell-2'), '12.50');
+
+  // Opening it lets go of what is held (a swim, a valve), as the other popovers do; the game is not paused.
+  g.view.changeMotion(30);
+  g.view.holdValve('oxygen', 'shortcut', true);
+  button.click();
+  assert.equal(g.view.cellMenu, 1);
+  assert.equal(g.el('cell-popover').hidden, false);
+  assert.equal(g.el('cell-popover').getAttribute('data-cell'), '2', 'anchored under cell 2');
+  assert.equal(button.getAttribute('aria-expanded'), 'true');
+  assert.equal(g.text('cell-menu-title'), 'Cell 2 · simulated fault');
+  assert.equal(g.el('cell-menu').getAttribute('role'), 'menu');
+  assert.equal(g.el('cell-menu').getAttribute('aria-labelledby'), 'game-cell-menu-title');
+  const items = g.el('cell-menu').querySelectorAll('[role="menuitemradio"]');
+  assert.deepEqual(items.map((item) => item.querySelector('.cell-menu-label').textContent), ['Normal', 'Stuck', 'Current-limited', 'Shorted', 'Slow', 'Drifting']);
+  assert.deepEqual(items.map((item) => item.getAttribute('aria-checked')), ['true', 'false', 'false', 'false', 'false', 'false'], 'the current state is checked');
+  assert.ok(items.every((item) => item.tagName === 'BUTTON' && item.getAttribute('type') === 'button' && item.getAttribute('tabindex') === '-1'));
+  assert.equal(g.document.activeElement, items[0], 'the focus goes to the checked item');
+  assert.equal(g.view.sim.direction, 0, 'the swim stopped');
+  assert.equal(g.view.clock.injecting(), false, 'the valve was released');
+  assert.equal(g.view.clock.speed, 1, 'not paused');
+
+  // Shorted: the menu closes, the focus is back on the cell, the cell shows the fault, and the inputs go out at once.
+  g.feed(1, 1000);
+  await settle();
+  const sentBefore = g.inputs().length;
+  cellMenuItem(g, 'shorted').click();
+  await settle();
+  assert.equal(g.view.cellMenu, null);
+  assert.equal(g.el('cell-popover').hidden, true);
+  assert.equal(button.getAttribute('aria-expanded'), 'false');
+  assert.equal(g.document.activeElement, button, 'the focus is back on the cell');
+  assert.equal(g.inputs().length, sentBefore + 1, 'the inputs go out promptly');
+  assert.equal(g.inputs().at(-1).oxygen2Mv, 0, 'a short sends 0 mV');
+  assert.equal(g.inputs().at(-1).oxygen1Mv, 12.5, 'the other cells are untouched');
+  assert.equal(g.text('cell-2'), '0.00', 'the panel shows what is sent');
+  assert.equal(g.text('loop-ppo2'), '0.21', 'the simulated truth stays the truth');
+  assert.match(g.text('fixture-list'), /Cell 2: 12\.50 mV in air at the surface \(\+0\.50 mV\), [\d.]+ mV\/bar · simulated fault: shorted \(this session\)/);
+  assert.deepEqual(g.el('fixture-list').children.slice(0, 3).map((line) => /simulated fault/.test(line.textContent)), [false, true, false], 'only cell 2 says so');
+
+  // Every state: its data-fault, badge and name, the ring's color class in the CSS (amber, red for the short).
+  const expected = {
+    normal: [null, '', 'normal'], stuck: ['stuck', 'Stuck', 'stuck'], limited: ['limited', 'Limited 55 mV', 'current-limited'],
+    shorted: ['shorted', 'Shorted 0 mV', 'shorted'], slow: ['slow', 'Slow (60 s lag)', 'slow'], drifting: ['drifting', 'Drifting 80 %', 'drifting'],
+  };
+  let previous = 'shorted';
+  for (const [key, [attribute, badge, word]] of Object.entries(expected)) {
+    button.click();
+    const checked = g.el('cell-menu').querySelectorAll('[aria-checked="true"]');
+    assert.deepEqual(checked.map((item) => item.dataset.state), [previous], 'the menu checks the current state, and only it');
+    cellMenuItem(g, key).click();
+    previous = key;
+    assert.equal(button.getAttribute('data-fault'), attribute, key);
+    assert.equal(g.text('cell-badge-2'), badge, key);
+    assert.equal(g.el('cell-badge-2').hidden, key === 'normal', key);
+    assert.equal(button.getAttribute('aria-label'), `Cell 2: ${g.text('cell-2')} mV, ${word}. Opens the cell fault menu`, key);
+  }
+  assert.equal(g.text('cell-2'), (0.8 * 12.5).toFixed(2), 'drifting: 80 %');
+  button.click();
+  assert.equal(cellMenuItem(g, 'drifting').getAttribute('aria-checked'), 'true', 'the menu shows the current state');
+  cellMenuItem(g, 'normal').click();
+  assert.equal(g.text('cell-2'), '12.50', 'normal restores at once, with the deviation');
+  // Changes inside the sender's interval (four sends per wall second at most) go out when it ends, the newest only.
+  const queued = g.inputs().length;
+  g.clock.advance(250);
+  await settle();
+  assert.equal(g.inputs().length, queued + 1);
+  assert.equal(g.inputs().at(-1).oxygen2Mv, 12.5);
+  g.view.hide();
+});
+
+test('game (cell faults): the menu holds the keyboard while it is open: arrows move, Enter and Space choose, Escape, the cell, a click outside and a focus elsewhere close it', async () => {
+  const g = await mountGame();
+  g.feed(0, 0);
+  await settle();
+  const button = g.el('cell-button-1');
+  const items = g.el('cell-menu').querySelectorAll('[role="menuitemradio"]');
+  const key = (target, code, extra = {}) => target.dispatch('keydown', { key: code === 'Space' ? ' ' : code, code, repeat: false, ...extra });
+  const handset = () => g.actions().filter((request) => ['up', 'down', 'confirm'].includes(request.action)).length;
+
+  // Enter on a focused cell opens it (Space stays the game's pause).
+  assert.equal(key(button, 'Enter').defaultPrevented, true, 'Enter is the cell\'s, not also a click');
+  assert.equal(g.view.cellMenu, 0);
+  assert.equal(g.document.activeElement, items[0]);
+  // The arrow keys move between the items (wrapping), never the handset or the page; Home and End go to the ends.
+  assert.equal(key(items[0], 'ArrowDown').defaultPrevented, true);
+  assert.equal(g.document.activeElement, items[1]);
+  key(items[1], 'ArrowUp');
+  key(items[0], 'ArrowUp');
+  assert.equal(g.document.activeElement, items[5], 'up from the first is the last');
+  key(items[5], 'ArrowDown');
+  assert.equal(g.document.activeElement, items[0], 'down from the last is the first');
+  key(items[0], 'End');
+  assert.equal(g.document.activeElement, items[5]);
+  key(items[5], 'Home');
+  assert.equal(g.document.activeElement, items[0]);
+  // No game key reaches the game: no pause, no swim, no valve.
+  for (const code of ['KeyW', 'KeyS', 'KeyO', 'KeyD']) key(items[0], code);
+  await settle();
+  assert.equal(handset(), 0, 'no handset press');
+  assert.deepEqual([g.view.sim.direction, g.view.clock.injecting(), g.view.clock.speed], [0, false, 1]);
+  // Space chooses the focused item (and does not pause); the menu closes and the focus is back on the cell.
+  key(items[0], 'ArrowDown');
+  const space = key(items[1], 'Space');
+  assert.equal(space.defaultPrevented, true);
+  assert.equal(g.view.clock.speed, 1, 'Space chose; it did not pause');
+  assert.equal(g.view.cells.fault(0), 'stuck');
+  assert.equal(g.view.cellMenu, null);
+  assert.equal(g.document.activeElement, button);
+  assert.equal(g.document.dispatch('keyup', { key: ' ', code: 'Space' }).defaultPrevented, true, 'the release is not a click of the cell');
+  // Enter chooses as well.
+  key(button, 'Enter');
+  assert.equal(g.document.activeElement, items[1], 'the checked item has the focus');
+  key(items[1], 'ArrowDown');
+  key(items[2], 'Enter');
+  assert.equal(g.view.cells.fault(0), 'limited');
+  assert.equal(g.view.cellMenu, null);
+  // Escape closes without a change, the focus back on the cell.
+  button.click();
+  key(items[2], 'ArrowDown');
+  assert.equal(key(items[3], 'Escape').defaultPrevented, true);
+  assert.deepEqual([g.view.cellMenu, g.el('cell-popover').hidden, button.getAttribute('aria-expanded'), g.view.cells.fault(0)], [null, true, 'false', 'limited']);
+  assert.equal(g.document.activeElement, button);
+  // The cell again closes it; another cell opens its own.
+  button.click();
+  button.click();
+  assert.equal(g.view.cellMenu, null);
+  button.click();
+  g.el('cell-button-3').click();
+  assert.deepEqual([g.view.cellMenu, g.el('cell-popover').getAttribute('data-cell'), button.getAttribute('aria-expanded'), g.el('cell-button-3').getAttribute('aria-expanded')], [2, '3', 'false', 'true']);
+  // A click outside, and a focus elsewhere, close it.
+  g.el('loop-ppo2').click();
+  assert.equal(g.view.cellMenu, null);
+  g.el('cell-button-3').click();
+  g.el('quit').dispatch('focusin');
+  assert.equal(g.view.cellMenu, null);
+  // Opening the controls guide or the sound popover closes it, and opening it closes them.
+  g.el('cell-button-3').click();
+  g.el('help').click();
+  assert.deepEqual([g.view.cellMenu, g.view.helpOpen], [null, true]);
+  g.el('cell-button-3').click();
+  assert.deepEqual([g.view.cellMenu, g.view.helpOpen], [2, false]);
+  g.view.closeCellMenu();
+  // Closed, the arrow keys press the handset again and Space pauses.
+  key(button, 'ArrowUp');
+  await settle();
+  assert.equal(handset(), 1, 'the handset has its key again');
+  key(button, 'Space');
+  assert.equal(g.view.clock.speed, 0, 'and Space pauses');
+  g.view.hide();
+  assert.equal(g.view.cellMenu, null, 'a closed session closes it');
+});
+
+test('game (cell faults): a slow cell lags on virtual time (frozen while paused), and faults last for the session only: Reset all and a new session clear them, nothing is stored', async () => {
+  const store = memoryStore();
+  const g = await mountGame({ store });
+  resetAnswers(g);
+  g.feed(0, 0);
+  await settle();
+  const stored = () => JSON.stringify([...store.map].sort());
+  const local = () => JSON.stringify([...globalThis.window.localStorage.map].sort());
+  const before = [stored(), local()];
+  g.el('cell-button-1').click();
+  cellMenuItem(g, 'slow').click();
+  g.view.changeMotion(30);
+  for (let step = 1; step <= 60; step++) g.feed(step, step * 1000);
+  await settle();
+  const normal = game.cellMillivolts(g.view.sim.readings(1013.25).ppo2, g.view.cells.sensitivities);
+  const sent = g.inputs().at(-1);
+  assert.ok(g.view.sim.depth > 25);
+  assert.ok(sent.oxygen1Mv < normal[0] - 5, `the slow cell lags the descent (${sent.oxygen1Mv} against ${normal[0]})`);
+  closeTo(sent.oxygen2Mv, normal[1], 0.0006, 'the others follow');
+  assert.equal(Number(g.text('cell-1')), Number(sent.oxygen1Mv.toFixed(2)), 'the panel shows the lagging value');
+  // Paused: the emulator's virtual time stands still, and so does the slow cell.
+  g.view.chooseSpeed(0);
+  const frozen = g.view.cells.faults[0].mv;
+  for (let step = 1; step <= 5; step++) g.feed(60, 60000 + step * 1000, { running: false });
+  assert.equal(g.view.cells.faults[0].mv, frozen);
+  g.view.chooseSpeed(4);
+  g.feed(64, 66000);
+  assert.ok(g.view.cells.faults[0].mv > frozen, 'it goes on with the clock');
+  g.el('cell-button-2').click();
+  cellMenuItem(g, 'shorted').click();
+  assert.deepEqual(before, [stored(), local()], 'nothing about the faults is written to the page settings or localStorage');
+
+  // Reset all: the new session starts with every cell normal.
+  globalThis.window.confirm = () => true;
+  g.el('reset').click();
+  await settle();
+  assert.equal(g.view.resetting, false);
+  assert.deepEqual([0, 1, 2].map((index) => g.view.cells.fault(index)), ['normal', 'normal', 'normal']);
+  for (const index of [1, 2, 3]) {
+    assert.equal(g.el(`cell-button-${index}`).getAttribute('data-fault'), null);
+    assert.equal(g.el(`cell-badge-${index}`).hidden, true);
+    assert.match(g.el(`cell-button-${index}`).getAttribute('aria-label'), new RegExp(`^Cell ${index}: [\\d.]+ mV, normal\\.`));
+  }
+  await settle();
+  assert.deepEqual([g.inputs().at(-1).oxygen1Mv, g.inputs().at(-1).oxygen2Mv], [12.5, 12.5], 'the new session sends normal cells');
+  assert.doesNotMatch(g.text('fixture-list'), /simulated fault/);
+
+  // A new session (Quit, then Start game) starts with every cell normal too.
+  g.el('cell-button-3').click();
+  cellMenuItem(g, 'stuck').click();
+  assert.equal(g.view.cells.fault(2), 'stuck');
+  g.view.hide();
+  g.view.show(g.shown);
+  assert.deepEqual([0, 1, 2].map((index) => g.view.cells.fault(index)), ['normal', 'normal', 'normal']);
+  assert.equal(g.el('cell-button-3').getAttribute('data-fault'), null);
+  assert.ok(![...store.map.keys()].some((name) => /fault/i.test(name)) && ![...store.map.values()].some((value) => /stuck|shorted|slow|drifting|limited/.test(value)));
+  g.view.hide();
+});
+
 // ---- the game's page structure: ids, styles, publishing ------------------------------------------------------------
 
 test('game (structure): every id of the game starts with game-, the scripts find all of theirs, and the emulator\'s wiring cannot reach the game', () => {
@@ -5535,6 +5867,24 @@ test('game (structure): text that informs is at least 10 px, the MAV buttons\' n
   assert.doesNotMatch(section, /<main\b/);
   assert.equal([...html.replace(/<!--[\s\S]*?-->/g, '').matchAll(/<main\b|\srole="main"/g)].length, 2, 'the page\'s <main> and the game\'s');
   assert.match(fs.readFileSync(path.join(here, 'app.js'), 'utf8'), /appMain\.hidden = name === 'game';/);
+});
+
+test('game (structure): the cells are buttons whose fault ring, badge and menu take no space (amber rings, red for a short, a dimmed reading)', () => {
+  const css = fs.readFileSync(path.join(here, 'game.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const section = html.slice(html.indexOf('<div id="screen-game"'), html.indexOf('<script type="module" src="app.js">'));
+  const cells = section.slice(section.indexOf('<div class="cell-readings">'), section.indexOf('<div class="truth-row">'));
+  const buttons = [...cells.matchAll(/<button type="button" class="cell-reading" id="game-cell-button-(\d)" aria-haspopup="menu" aria-expanded="false" aria-controls="game-cell-menu" aria-label="Cell \1: 12\.00 mV, normal\. Opens the cell fault menu" title="Simulate a cell fault"><span class="cell-label">CELL \1<\/span><strong id="game-cell-\1">12\.00<\/strong><small>mV<\/small><span class="cell-badge" id="game-cell-badge-\1" aria-hidden="true" hidden><\/span><\/button>/g)];
+  assert.deepEqual(buttons.map((match) => match[1]), ['1', '2', '3'], 'three cell buttons, each with its reading, unit and (hidden) badge');
+  assert.match(cells, /<div class="cell-popover" id="game-cell-popover" data-cell="1" hidden><p class="cell-popover-title" id="game-cell-menu-title">[^<]*<\/p><div class="cell-menu" id="game-cell-menu" role="menu" aria-labelledby="game-cell-menu-title"><\/div><\/div>/);
+  // The padding is taken back by the margin (the reading sits where it did), the badge and the menu are positioned (no layout shift).
+  assert.match(css, /#screen-game \.cell-reading \{[^}]*margin: -4px -5px; padding: 4px 5px;/);
+  assert.match(css, /#screen-game \.cell-badge \{[^}]*position: absolute;/);
+  assert.match(css, /#screen-game \.cell-popover \{[^}]*position: absolute;/);
+  assert.match(css, /#screen-game \.loop-panel \{[^}]*overflow: visible;/, 'the menu may reach past the panel');
+  assert.match(css, /#screen-game \.cell-reading\[data-fault\] \{ --g-cell-ring: #d9a441; \}/, 'amber for every fault');
+  assert.match(css, /#screen-game \.cell-reading\[data-fault="shorted"\] \{ --g-cell-ring: #e0675e; \}/, 'red for the short');
+  assert.match(css, /#screen-game \.cell-reading\[data-fault\] strong \{ opacity: \.5; \}/, 'the reading dimmed');
+  assert.match(section, /Click a cell to simulate a fault \(this session only\)\./, 'the panel\'s note says so');
 });
 
 test('game (structure): the game modules are published on purpose, the page script is the only entry, and no new dependency or external resource appears', () => {
