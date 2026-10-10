@@ -290,9 +290,10 @@ mod tests {
     }
 
     #[test]
-    fn an_existing_eeprom_is_never_touched_and_a_new_or_erased_one_becomes_the_factory_image() {
+    fn an_existing_eeprom_is_refused_before_the_table_check_and_never_touched_even_with_erased_records() {
         // The record table check needs the real image; the real hash is accepted by the integration tests, so here the table is the
-        // only thing the unit test cannot supply: an existing EEPROM is refused before the table is looked at.
+        // only thing the unit test cannot supply: an existing EEPROM is refused before the table is looked at. (That a new or entirely
+        // erased EEPROM becomes the factory image is tested with the real image in `tests/eeprom_init.rs`.)
         let table = fake_table();
         let mut dirty = vec![0xFF; EEPROM_BYTES];
         dirty[2047] = 0x00; // one stored byte: every inventoried record is still erased, and it stays that way

@@ -420,6 +420,9 @@ export class GameSound {
         this.supported = false;
         return null;
       }
+      // A context made while the sound is off (a gesture starts it running) is suspended at once: off uses no audio thread.
+      // Turning the sound on resumes it (`setEnabled`).
+      if (!this.enabled) this.suspendContext(ctx);
     }
     this.ctx = ctx;
     this.noise = makeNoise(ctx, this.random);
@@ -472,6 +475,12 @@ export class GameSound {
     this.applyBus(0, true);
     ctx.onstatechange = () => this.syncAll();
     return g;
+  }
+
+  suspendContext(ctx) {
+    try {
+      if (ctx.state !== 'suspended' && ctx.state !== 'closed') Promise.resolve(ctx.suspend()).catch(() => {});
+    } catch { /* a context that cannot suspend stays as it is */ }
   }
 
   /**
@@ -1077,13 +1086,17 @@ export class GameSound {
 
   /**
    * Reaching the surface from below: a soft wash (no sharp edge), a couple of soft drops and a faint brightening of open air while
-   * the bus opens slowly.
+   * the bus opens slowly. The diver is out of the water whether or not the splash can play (the sound off, a suspended context):
+   * the muffling and the water's ambience end in every case.
    */
   surfaceBreak() {
     const t = this.when();
-    if (t === null) return;
-    const v = this.voice('surface', 2, t);
-    if (!v) return;
+    const v = t === null ? null : this.voice('surface', 2, t);
+    if (v) this.playSurfaceBreak(v, t);
+    this.setUnderwater(false, { delay: 0.05, ramp: 0.5 });
+  }
+
+  playSurfaceBreak(v, t) {
     const out = v.gain(dbToGain(TRIM_DB.surface) * this.rand(0.9, 1.1));
     out.connect(this.graph.bus);
     const wash = v.noise('pink', t);
@@ -1109,7 +1122,6 @@ export class GameSound {
     pulse(airEnv.gain, t + 0.05, 0.05, 0.16, 0.32);
     v.chain(air, airBand, airEnv, out);
     v.start(t + 0.9);
-    this.setUnderwater(false, { delay: 0.05, ramp: 0.5 });
   }
 
   /** A handset button: `'up'`, `'down'` or `'confirm'` (a slightly different double click): a crisp tick, a short ping, a small thud. */
@@ -1151,8 +1163,12 @@ export class GameSound {
   /**
    * One firmware vibrator pulse (often about 50 ms) as a phone's buzz, at least 120 ms long: the measured motor (see `BUZZ_REAL`),
    * spinning up from 135 Hz to 150 Hz, with the recording's 15 ms attack and its spin-down. It goes straight to the master, past
-   * the underwater low-pass: the handset buzzes on the diver's arm and is heard through the bone, not through the water. A pulse
-   * that follows within the buzz extends it instead of stacking a second one.
+   * the underwater low-pass: the handset buzzes on the diver's arm and is heard through the bone, not through the water.
+   *
+   * There is one motor at a time. A request while the motor still sounds extends it: during the buzz its end moves later; during the
+   * spin-down the level rises again smoothly from where it is (over the attack time) and the buzz goes on. So a vibrator held on,
+   * asked again with every state, is one continuous buzz for as long as it is on. A new motor starts only once the last one has
+   * stopped, and a voice that has not yet been released then is stopped first: motors never stack.
    */
   vibrate(milliseconds = 50) {
     const length = clamp((Number.isFinite(milliseconds) ? milliseconds : 50) / 1000, 0.12, 1.5);
@@ -1160,17 +1176,25 @@ export class GameSound {
     if (t === null) return;
     const release = BUZZ_RELEASE_S;
     const buzz = this.buzz;
-    if (buzz && !buzz.voice.done && t <= buzz.sustainEnd && t + length <= buzz.limit) {
-      if (t + length > buzz.sustainEnd) {
-        buzz.env.gain.cancelScheduledValues(buzz.sustainEnd);
-        buzz.sustainEnd = t + length;
-        buzz.env.gain.setValueAtTime(buzz.peak, buzz.sustainEnd);
-        buzz.env.gain.exponentialRampToValueAtTime(SILENT, buzz.sustainEnd + release);
-        buzz.voice.stop(buzz.sustainEnd + release + 0.03);
+    if (buzz && !buzz.voice.done && t < buzz.stopAt) {
+      if (t + length <= buzz.sustainEnd) return; // already buzzing at least that long
+      const gain = buzz.env.gain;
+      if (t <= buzz.sustainEnd) {
+        gain.cancelScheduledValues(buzz.sustainEnd); // the level is the peak up to the old end: it simply stays there longer
+      } else {
+        hold(gain, t); // spinning down: back up from the present level
+        gain.linearRampToValueAtTime(buzz.peak, t + BUZZ_ATTACK_S);
       }
+      buzz.sustainEnd = t + length; // at least 120 ms: after the 15 ms rise
+      gain.setValueAtTime(buzz.peak, buzz.sustainEnd);
+      gain.exponentialRampToValueAtTime(SILENT, buzz.sustainEnd + release);
+      buzz.stopAt = buzz.sustainEnd + release + 0.03;
+      buzz.voice.stop(buzz.stopAt);
       return;
     }
-    const v = this.voice('vibrate', 2, t);
+    if (buzz && !buzz.voice.done) buzz.voice.kill(); // past its stop time (silent), not yet released: never a second motor
+    this.buzz = null;
+    const v = this.voice('vibrate', 1, t);
     if (!v) return;
     const out = v.gain(dbToGain(TRIM_DB.vibrate));
     out.connect(this.graph.master);
@@ -1182,8 +1206,9 @@ export class GameSound {
     v.chain(motor, env, out);
     const peak = 1;
     pulse(env.gain, t, peak, BUZZ_ATTACK_S, release, length - BUZZ_ATTACK_S);
-    v.start(t + length + release + 0.03);
-    this.buzz = { voice: v, env, peak, sustainEnd: t + length, limit: t + 2.5 };
+    const stopAt = t + length + release + 0.03;
+    v.start(stopAt);
+    this.buzz = { voice: v, env, peak, sustainEnd: t + length, stopAt };
   }
 
   /** The torch: a small switch click; on also gives a faint hum that swells and settles. */

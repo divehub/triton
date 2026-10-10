@@ -23,14 +23,16 @@ pub const USAGE: &str = "ngc-cli bench [--main <srec>] [--handset <srec>] [--rel
     (defaults 3 x 1 s), then a menu-redraw interval (Down / Up button presses, 2 x 0.5 s). Prints wall seconds,\n  \
     virtual seconds per wall second, instructions and idle-skip statistics per interval.\n  \
     --verify-idle-ff runs the whole benchmark twice (idle fast-forward on and off) and requires identical state\n  \
-    digests (guest state and output activity histories) at every measurement point.\n  \
+    digests (guest state and output activity histories, and the exactness digest of each core: registers, retire counts,\n  \
+    predecode cache and cut-block history) at every measurement point.\n  \
     --release ID selects the default SREC directory (TRITON-5.8-65.3 or NEPTUN-5.8-65.3); --no-i2c-idle-high leaves the\n  \
     main board's I2C idle inputs low (the idle-high fixture is on by default).\n  \
     --no-routine-accel turns off the exact routine acceleration (memoized soft-float library calls, on by default),\n  \
     --shadow-routine-accel selects its verification mode, --verify-routine-accel runs the whole benchmark with it on and off and\n  \
     requires identical state digests (state, FPSCR/VFP registers, predecode cache) at every measurement point.\n  \
     --dive [--dive-seconds S] [--dive-depths 20,30] [--dive-png PREFIX] runs the committed dive benchmark instead (valid tissues, profile built\n  \
-    through firmware routes; average / burst / quiet speed and checkpoint digests; `ngc-cli bench --dive --help`).";
+    through firmware routes; average / burst / quiet speed and checkpoint digests; `ngc-cli bench --dive --help`). The options of\n  \
+    one benchmark are refused by the other.";
 
 struct Measurement {
     label: String,
@@ -298,15 +300,21 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<i32, (bool, String)
     .map_err(usage)?;
     let routine_accel = common::routine_accel_mode(&parsed).map_err(usage)?;
     let release = common::parse_release(parsed.value("release")).map_err(usage)?;
-    if parsed.flag("dive") {
-        let (main, handset) = common::load_images_in(parsed.value("main"), parsed.value("handset"), Mode::Dual, release).map_err(failed)?;
-        let main = main.expect("dual");
-        return crate::cmd_dive::run(&parsed, &main, &handset, routine_accel, out);
-    }
-    let i2c_idle_high = !parsed.flag("no-i2c-idle-high");
     if !parsed.positional.is_empty() {
         return Err(usage(format!("unexpected argument '{}'", parsed.positional[0])));
     }
+    // The options of the other benchmark are refused, not ignored (a dive run with --seconds would silently use --dive-seconds).
+    let dive = parsed.flag("dive");
+    let (values, flags): (&[&str], &[&str]) = if dive { (&["boot-seconds", "seconds", "steady-samples"], &["verify-idle-ff", "no-menu"]) } else { (&["dive-seconds", "dive-depths", "dive-png"], &[]) };
+    let other = if dive { "the boot/steady benchmark" } else { "--dive" };
+    if let Some(name) = values.iter().find(|name| parsed.value(name).is_some()).or_else(|| flags.iter().find(|name| parsed.flag(name))) {
+        return Err(usage(format!("--{name} belongs to {other}")));
+    }
+    if dive {
+        // (The dive options are validated before the firmware is read.)
+        return crate::cmd_dive::run(&parsed, release, routine_accel, out);
+    }
+    let i2c_idle_high = !parsed.flag("no-i2c-idle-high");
     let boot_seconds = common::parse_f64("boot-seconds", parsed.value("boot-seconds"), 4.5).map_err(usage)?;
     let seconds = common::parse_f64("seconds", parsed.value("seconds"), 1.0).map_err(usage)?;
     let samples = common::parse_u64("steady-samples", parsed.value("steady-samples")).map_err(usage)?.unwrap_or(3);
@@ -339,11 +347,13 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<i32, (bool, String)
     let mut status = 0;
     let mut verification = None;
     if verify || verify_accel {
+        // Both verifications compare the exactness digest too (registers, retire counts, FPSCR/VFP, the predecode cache and the
+        // cut-block history): neither optimization may change the translation state that decides later block partitions.
         let (on, off) = (&reports[0].2, &reports[1].2);
-        let mut identical = on.boot_digest == off.boot_digest && (verify || on.boot_exact == off.boot_exact);
+        let mut identical = on.boot_digest == off.boot_digest && on.boot_exact == off.boot_exact;
         let mut details = vec![format!("boot digest {}", if identical { "identical" } else { "DIFFERENT" })];
         for (a, b) in on.measurements.iter().zip(off.measurements.iter()) {
-            let same = a.digest == b.digest && a.instructions == b.instructions && a.pcs == b.pcs && (verify || a.exact == b.exact);
+            let same = a.digest == b.digest && a.instructions == b.instructions && a.pcs == b.pcs && a.exact == b.exact;
             identical &= same;
             details.push(format!("{} {}", a.label, if same { "identical" } else { "DIFFERENT" }));
         }

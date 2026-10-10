@@ -37,7 +37,7 @@
 //!                                      kind 0 eeprom.bin, 1 nor.ngc, 2 rtc-state.json, 3 inputs.json, 4 led-colors.json
 //! ngc_session_create(cfg_ptr, cfg_len) JSON {mode, bootMode, simultaneousStart, idleFastForward, routineAccel,
 //!                                      routineAccelShadow, adcSample, startPaused, i2cIdleHigh, historyNonce,
-//!                                      startAtSurface, surfacePressureMbar, initialLocalTime}, every key
+//!                                      startAtSurface, surfacePressureMbar}, every key
 //!                                      optional: `routineAccel` (default true) is the exact acceleration of the runtime-library
 //!                                      routines (memoized soft-float calls; results identical either way), `routineAccelShadow`
 //!                                      (default false) its slow verification mode;
@@ -54,16 +54,15 @@
 //!                                      profile has no `eeprom.bin` (or an entirely erased one) the session creates the
 //!                                      EEPROM from it once (releases with a proven record table: TRITON, NEPTUN), an existing
 //!                                      EEPROM is never touched, and the state says which happened (`eepromFactoryInit`).
-//!                                      `initialLocalTime` (`{year, month, day, hour, minute, second}`, the year 2000 to 2099
-//!                                      and a real calendar date and time of day, or null; default none) is the host's local
-//!                                      clock: a board whose RTC has no saved checkpoint and no EEPROM date seed starts its
-//!                                      calendar from it (24-hour format, the correct weekday), an existing checkpoint is never
-//!                                      changed, and the state says what happened (`rtcInit`, DESIGN.md section 23). The page
-//!                                      sends the browser's local clock at every session create.
+//!                                      The engine reads no host clock: a board without a saved RTC checkpoint (and, for the
+//!                                      main board of an original release, without the EEPROM date seed) starts at the RTC's
+//!                                      default calendar, 2020-01-01 (DESIGN.md section 23). A removed key such as
+//!                                      `initialLocalTime` is refused like any unknown one ("unknown session option: ...").
 //!                                      `blankEeprom` (default false) is a benchmark and test hook that the page never sends:
-//!                                      a new EEPROM stays erased, as the Renode-recorded workload of the dive benchmark needs (it
-//!                                      also keeps the Renode model of the handset buttons, pins low until TIM3 is configured; the
-//!                                      default for every firmware is pins high from reset).
+//!                                      the Renode-recorded workload of the dive benchmark as a whole (`recorded_config`): a new
+//!                                      EEPROM stays erased, the Renode model of the handset buttons (pins low until TIM3 is
+//!                                      configured; the default for every firmware is pins high from reset) and no start at
+//!                                      the surface, whatever `startAtSurface` says.
 //!                                      Fails with a clear message when the main and handset images are of different
 //!                                      releases or one is a custom build and the other an original image, and for `bootMode`
 //!                                      "cold" on a release without a cold-boot route (NEPTUN)
@@ -718,19 +717,23 @@ pub extern "C" fn ngc_destroy() {
 }
 
 /// Switches the exact routine acceleration of both cores: 0 off, 1 on, 2 shadow verification (results are
-/// identical in every mode; only host speed differs).
+/// identical in every mode; only host speed differs). Any other value is refused and changes nothing.
 #[no_mangle]
 pub extern "C" fn ngc_set_routine_accel(mode: u32) -> i32 {
-    with_state(|state| match state.system.as_mut() {
-        Some(system) => {
-            system.set_routine_accel(match mode {
-                0 => ngc::system::RoutineAccelMode::Off,
-                1 => ngc::system::RoutineAccelMode::On,
-                _ => ngc::system::RoutineAccelMode::Shadow,
-            });
-            0
+    with_state(|state| {
+        let mode = match mode {
+            0 => ngc::system::RoutineAccelMode::Off,
+            1 => ngc::system::RoutineAccelMode::On,
+            2 => ngc::system::RoutineAccelMode::Shadow,
+            other => return fail(state, format!("routine acceleration mode must be 0 (off), 1 (on) or 2 (shadow), got {other}")),
+        };
+        match state.system.as_mut() {
+            Some(system) => {
+                system.set_routine_accel(mode);
+                0
+            }
+            None => fail(state, "no system"),
         }
-        None => fail(state, "no system"),
     })
 }
 
@@ -964,6 +967,41 @@ mod tests {
     }
 
     #[test]
+    fn the_blank_eeprom_hook_selects_the_recorded_workload_as_a_whole() {
+        // The custom pair stands in for any firmware: the hook decides the session configuration before anything runs.
+        let image = tiny_srec();
+        assert_eq!(unsafe { ngc_set_custom_firmware(0, image.as_ptr(), image.len()) }, 0);
+        assert_eq!(unsafe { ngc_set_custom_firmware(1, image.as_ptr(), image.len()) }, 0);
+        let surface = |config: &[u8]| {
+            assert_eq!(unsafe { ngc_session_create(config.as_ptr(), config.len()) }, 0);
+            ngc_session_state();
+            let state = output_json();
+            ngc_session_destroy();
+            state.get("startAtSurface").and_then(|s| s.get("enabled")).and_then(emu_core::Json::as_bool)
+        };
+        // Without the hook: the start at the surface is on.
+        assert_eq!(surface(br#"{"mode":"dual","startPaused":true}"#), Some(true));
+        // With it, as `ngc::scenario::recorded_config` pins it (even when asked for).
+        assert_eq!(surface(br#"{"mode":"dual","startPaused":true,"blankEeprom":true,"startAtSurface":true}"#), Some(false));
+        ngc_firmware_clear(0);
+        ngc_firmware_clear(1);
+    }
+
+    #[test]
+    fn the_routine_acceleration_switch_refuses_unknown_modes() {
+        // Validated before anything else: an unknown mode is refused with its text even when no benchmark system exists.
+        assert_eq!(ngc_set_routine_accel(3), 1);
+        ngc_error();
+        assert_eq!(with_state(|state| String::from_utf8(state.output.clone()).unwrap()), "routine acceleration mode must be 0 (off), 1 (on) or 2 (shadow), got 3");
+        assert_eq!(ngc_set_routine_accel(u32::MAX), 1);
+        for mode in [0, 1, 2] {
+            assert_eq!(ngc_set_routine_accel(mode), 1);
+            ngc_error();
+            assert_eq!(with_state(|state| String::from_utf8(state.output.clone()).unwrap()), "no system", "mode {mode}");
+        }
+    }
+
+    #[test]
     fn config_parsing() {
         let config = HostConfig::from_json(r#"{"mode":"handset","bootMode":"cold","adcSample":12,"startPaused":true}"#).unwrap();
         assert!(!config.dual && config.cold && config.start_paused && config.adc_sample == 12);
@@ -1010,6 +1048,11 @@ mod tests {
         // must not silently start a different fixture.
         assert_eq!(HostConfig::from_json(r#"{"eepromFactoryInit":false}"#).unwrap_err(), "unknown session option: eepromFactoryInit");
         assert_eq!(HostConfig::from_json(r#"{"decoStorageFixture":false}"#).unwrap_err(), "unknown session option: decoStorageFixture");
+        // Nor has the host's local time for a new profile (removed 2026-10-10, DESIGN.md 23): the engine reads no host clock, and a
+        // page that still sends it is refused rather than silently given the 2020-01-01 default.
+        for old in [r#"{"initialLocalTime":{"year":2026,"month":10,"day":10,"hour":14,"minute":3,"second":22}}"#, r#"{"initialLocalTime":null}"#] {
+            assert_eq!(HostConfig::from_json(old).unwrap_err(), "unknown session option: initialLocalTime", "{old}");
+        }
         // The benchmark hook keeps a new EEPROM erased; it is off by default.
         assert!(!defaults.blank_eeprom && HostConfig::from_json(r#"{"blankEeprom":true}"#).unwrap().blank_eeprom);
         for bad in [
@@ -1022,31 +1065,5 @@ mod tests {
             assert!(HostConfig::from_json(bad).is_err(), "{bad}");
         }
         assert_eq!(HostConfig::from_json(r#"{"surfacePressureMbar":99}"#).unwrap_err(), "surfacePressureMbar must be between 100 and 30000");
-    }
-
-    #[test]
-    fn the_initial_local_time_is_optional_validated_and_ignored_by_the_recorded_workload() {
-        assert!(HostConfig::from_json("{}").unwrap().initial_local_time.is_none(), "none by default");
-        assert!(HostConfig::from_json(r#"{"initialLocalTime":null}"#).unwrap().initial_local_time.is_none());
-        let config = HostConfig::from_json(r#"{"initialLocalTime":{"year":2026,"month":10,"day":10,"hour":14,"minute":3,"second":22}}"#).unwrap();
-        assert_eq!(config.initial_local_time.map(|t| t.text()).as_deref(), Some("2026-10-10T14:03:22"));
-        for bad in [
-            r#"{"initialLocalTime":"2026-10-10T14:03:22"}"#,
-            r#"{"initialLocalTime":{}}"#,
-            r#"{"initialLocalTime":{"year":2026,"month":10,"day":10,"hour":14,"minute":3}}"#,
-            r#"{"initialLocalTime":{"year":2026,"month":10,"day":10,"hour":14,"minute":3,"second":22,"extra":1}}"#,
-            r#"{"initialLocalTime":{"year":1999,"month":12,"day":31,"hour":0,"minute":0,"second":0}}"#,
-            r#"{"initialLocalTime":{"year":2100,"month":1,"day":1,"hour":0,"minute":0,"second":0}}"#,
-            r#"{"initialLocalTime":{"year":2026,"month":2,"day":29,"hour":0,"minute":0,"second":0}}"#,
-            r#"{"initialLocalTime":{"year":2026,"month":10,"day":10,"hour":24,"minute":0,"second":0}}"#,
-            r#"{"initialLocalTime":{"year":2026,"month":10,"day":10,"hour":1.5,"minute":0,"second":0}}"#,
-        ] {
-            let error = HostConfig::from_json(bad).unwrap_err();
-            assert!(error.starts_with("initialLocalTime: "), "{bad}: {error}");
-        }
-        assert_eq!(
-            HostConfig::from_json(r#"{"initialLocalTime":{"year":2026,"month":2,"day":29,"hour":0,"minute":0,"second":0}}"#).unwrap_err(),
-            "initialLocalTime: 2026-02-29 is not a real calendar date"
-        );
     }
 }

@@ -65,10 +65,32 @@ async function main() {
   let init = null;
   let mode = 'emulator'; // the view of the running session: 'emulator' or 'game'
   let startingGame = false; // a Start game boot is under way (its first frame, state and notices come before it returns)
-  const entry = new EntryView(client, {
+  let engineLost = ''; // the engine crashed or the worker was lost (what the page said): no session can be closed any more
+  const pageNotices = []; // what the page found when it loaded (browser storage): shown on the entry screen and in every session
+  // The entry screen only makes requests. A Start game whose boot fails releases the sound its click created (no idle audio context).
+  const entryClient = {
+    request(type, payload, transfer) {
+      const answer = client.request(type, payload, transfer);
+      if (type === 'boot' && startingGame) {
+        answer.catch(() => {
+          startingGame = false;
+          game.discardSound();
+        });
+      }
+      return answer;
+    },
+  };
+  const entry = new EntryView(entryClient, {
     starting: ({ game: isGame }) => {
       startingGame = isGame;
-      if (isGame) game.notices = [];
+      if (isGame) {
+        game.notices = [];
+      } else {
+        // The worker's notices of this boot (the profile lock, a profile that could not be remembered) arrive before it returns:
+        // the earlier session's messages go now, not when the session is shown.
+        game.discardSound();
+        resetPageErrors();
+      }
     },
     booted: (result, info) => (info.game ? startGame(result, info) : startEmulator(result, info)),
   });
@@ -76,11 +98,17 @@ async function main() {
   const game = new GameView(client, { quit: () => closeSession() });
   const gameActive = () => mode === 'game' || startingGame;
 
+  /** The page's error box keeps only the page's own notices that were not dismissed; a session's messages go with the session. */
+  function resetPageErrors() {
+    emulator.notices = emulator.notices.filter((notice) => pageNotices.includes(notice));
+    emulator.actionError = '';
+    emulator.showErrors();
+  }
+
   function startEmulator(result, info) {
     mode = 'emulator';
     startingGame = false;
     entry.hide();
-    emulator.notices = [];
     // The files of the mode that booted (custom builds or an original release), and the release the worker reports for them.
     emulator.show({ ...info, slots: { ...entry.activeSlots() }, release: result.release || entry.release() });
     emulator.onState({ state: result.state, host: result.hostStatus });
@@ -101,8 +129,12 @@ async function main() {
     try {
       await client.request('close-session');
     } catch (error) {
-      view.addNotice('error', error.message);
-      return;
+      // A game whose engine is gone (a crash, a lost worker) has no session left that could be closed: Quit returns to the start
+      // screen anyway (DESIGN 24), which says what happened.
+      if (!(mode === 'game' && engineLost)) {
+        view.addNotice('error', error.message);
+        return;
+      }
     }
     if (mode === 'game') {
       game.hide();
@@ -112,6 +144,8 @@ async function main() {
       emulator.host = null;
     }
     mode = 'emulator';
+    resetPageErrors(); // the closed session's errors and notices do not stay on the start screen
+    if (engineLost) emulator.addNotice('error', engineLost);
     byId('rt-badge').hidden = true;
     try {
       const info = await client.request('info');
@@ -119,7 +153,8 @@ async function main() {
     } catch (_) { /* keep the previous information */ }
     showScreen('entry');
     entry.show(init);
-    setBadge('Ready', null);
+    if (engineLost) setBadge('Stopped', 'bad');
+    else setBadge('Ready', null);
   }
 
   client.on('state', (message) => (gameActive() ? game.onState(message) : emulator.onState(message)));
@@ -129,11 +164,13 @@ async function main() {
   client.on('crash', (message) => {
     const detail = message.panic ? `\n${message.panic}` : '';
     const text = `The emulation engine stopped after an internal error (${message.message}).${detail}\nReload the page to start again; the saved profile is unchanged.`;
+    engineLost = text;
     if (mode === 'game') game.setConnectionError(text);
     else emulator.setConnectionError(text);
     setBadge('Stopped', 'bad');
   });
   client.on('failure', (message) => {
+    engineLost = `${message.message}\nReload the page to start again.`;
     if (!screens.game.hidden) game.setConnectionError(message.message);
     else if (!screens.emulator.hidden) emulator.setConnectionError(message.message);
     else fatal(message.message);
@@ -147,8 +184,10 @@ async function main() {
   }
   byId('footer-engine').textContent = init.engine;
   emulator.applyPreferences(); // speed, background policy and visibility are known before the first session starts
-  for (const problem of init.storage.problems || []) emulator.addNotice('warning', `Browser storage: ${problem}. The profile will use a fallback.`);
-  if (init.storage.kind === 'memory') emulator.addNotice('warning', 'This browser provides no persistent storage here (private browsing?). Nothing, including the profile, will be kept after the page closes.');
+  for (const problem of init.storage.problems || []) pageNotices.push({ level: 'warning', text: `Browser storage: ${problem}. The profile will use a fallback.` });
+  if (init.storage.kind === 'memory') pageNotices.push({ level: 'warning', text: 'This browser provides no persistent storage here (private browsing?). Nothing, including the profile, will be kept after the page closes.' });
+  emulator.notices.push(...pageNotices);
+  emulator.showErrors();
   showScreen('entry');
   entry.show(init);
   setBadge('Ready', null);

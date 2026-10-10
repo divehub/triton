@@ -29,7 +29,7 @@ import * as deco from './deco.js';
 import * as game from './game-logic.js';
 import { LOOP_VOLUME_LITERS, MAX_DEPTH_METERS, SURFACE_PRESSURE_BAR, getLoopReadings, pressureAtDepth } from './game-gas.js';
 import * as water from './game-water.js';
-import { Runtime, localClockFields, nonceFromWords } from './runtime.js';
+import { Runtime, nonceFromWords } from './runtime.js';
 import { MemoryStorage } from './storage.js';
 import { Element, installDom } from './fake-dom.mjs';
 
@@ -1799,60 +1799,30 @@ test('runtime (fake engine): a mixed pair that got past the page is refused at b
   await h.request('close-session');
 });
 
-test('runtime (fake engine): every session create carries the browser\'s local date and time, for original and custom builds, and a clock outside 2000-2099 sends none', async () => {
-  // The worker's wall clock is the epoch milliseconds of its Date; the engine gets the LOCAL calendar fields of it.
-  const at = new Date(2026, 9, 10, 14, 3, 22, 700); // 2026-10-10 14:03:22.7 local time
-  const expected = { year: 2026, month: 10, day: 10, hour: 14, minute: 3, second: 22 };
-  assert.deepEqual(localClockFields(at), expected, 'whole seconds, months from 1');
-  assert.deepEqual(localClockFields(new Date(2000, 0, 1, 0, 0, 0)), { year: 2000, month: 1, day: 1, hour: 0, minute: 0, second: 0 });
-  assert.deepEqual(localClockFields(new Date(2099, 11, 31, 23, 59, 59)), { year: 2099, month: 12, day: 31, hour: 23, minute: 59, second: 59 });
-  assert.equal(localClockFields(new Date(1999, 11, 31, 23, 59, 59)), null, 'before the RTC calendar');
-  assert.equal(localClockFields(new Date(2100, 0, 1)), null, 'after the RTC calendar');
-  assert.equal(localClockFields(new Date(NaN)), null);
-  assert.equal(localClockFields(null), null);
-
-  let now = at.getTime();
+test('runtime (fake engine): no session create sends a clock for the device, original or custom builds (DESIGN 23)', async () => {
+  // A new profile's RTC calendars start at the engine's default; the page sends no time. (The engine refuses the removed
+  // `initialLocalTime` key as an unknown option, so it is not one of the options retried without for an older engine either.)
+  const sent = (engine) => engine.created.map((created) => Object.keys(created.config).filter((key) => /time|clock|date/i.test(key)));
   const engine = new FakeEngine();
-  const h = new RuntimeHarness(engine, new MemoryStorage(), { wallClock: () => now });
+  const h = new RuntimeHarness(engine, new MemoryStorage(), { wallClock: () => new Date(2026, 9, 10, 14, 3, 22).getTime() });
   await h.request('init');
   await h.inspect('main', 'TRITON-5.8-65.3');
   await h.inspect('handset', 'TRITON-5.8-65.3');
   await h.request('boot', { options: { mode: 'dual', startPaused: true } });
-  assert.deepEqual(engine.created[0].config.initialLocalTime, expected, 'a boot');
-  assert.equal('initialLocalTime' in Runtime.normalizeConfig({}), false, 'it is not a start option: it is read at every create');
-  // Every other way of creating a session sends the clock of that moment: a profile import and a profile reset (a running session).
-  now = new Date(2026, 9, 10, 14, 5, 0).getTime();
   await h.request('import-profile', { files: [{ name: 'eeprom.bin', data: new Uint8Array([9]) }] });
-  assert.deepEqual(engine.created[1].config.initialLocalTime, { ...expected, minute: 5, second: 0 }, 'a profile import');
-  now = new Date(2026, 9, 10, 14, 6, 30).getTime();
   await h.request('reset-profile');
-  assert.deepEqual(engine.created[2].config.initialLocalTime, { ...expected, minute: 6, second: 30 }, 'a profile reset');
-  assert.equal(engine.created[2].profile['eeprom.bin'], undefined, 'and the new session starts from an empty profile');
   await h.request('close-session');
-
-  // A custom build: the same clock.
+  assert.equal(engine.created.length, 3, 'a boot, a profile import and a profile reset');
+  assert.deepEqual(sent(engine), [[], [], []]);
   const custom = new FakeEngine();
-  const c = new RuntimeHarness(custom, new MemoryStorage(), { wallClock: () => at.getTime() });
+  const c = new RuntimeHarness(custom, new MemoryStorage());
   await c.request('init');
   await c.request('inspect-custom', { role: 'main', name: 'main.srec', bytes: text(customSrec('a')) });
   await c.request('inspect-custom', { role: 'handset', name: 'handset.srec', bytes: text(customSrec('b')) });
   await c.request('boot', { options: { mode: 'dual', startPaused: true }, custom: true });
-  assert.deepEqual(custom.created[0].config.initialLocalTime, expected, 'a custom boot');
   await c.request('close-session');
-
-  // A misconfigured browser clock never stops a session: it just sends none and the engine keeps its default calendar.
-  const odd = new FakeEngine();
-  const o = new RuntimeHarness(odd, new MemoryStorage(), { wallClock: () => new Date(2150, 0, 1).getTime() });
-  await o.request('init');
-  await o.inspect('main', 'TRITON-5.8-65.3');
-  await o.inspect('handset', 'TRITON-5.8-65.3');
-  await o.request('boot', { options: { mode: 'dual', startPaused: true } });
-  assert.equal('initialLocalTime' in odd.created[0].config, false);
-  await o.request('close-session');
-
-  // The engine side: an older module that does not know the option is retried without it and the page can report that.
-  const engineSource = fs.readFileSync(path.join(here, 'engine.js'), 'utf8');
-  assert.match(engineSource, /OPTIONAL_OPTIONS = \[[^\]]*'initialLocalTime'[^\]]*\]/);
+  assert.deepEqual(sent(custom), [[]]);
+  assert.doesNotMatch(fs.readFileSync(path.join(here, 'engine.js'), 'utf8'), /initialLocalTime/);
 });
 
 test('runtime (fake engine): close-session can discard the session unsaved, says whether it kept a profile, and Reset all\'s three requests leave an empty profile and a fresh session', async () => {
@@ -1879,7 +1849,7 @@ test('runtime (fake engine): close-session can discard the session unsaved, says
   assert.equal((await storage.list('profile')).length, 0, 'the whole area is cleared');
   const booted = await h.request('boot', { options: { mode: 'dual', startPaused: true }, remember: false, profile: 'stored', custom: false });
   assert.equal(engine.created.length, created + 1);
-  assert.deepEqual(engine.created.at(-1).profile, {}, 'the new session starts from an empty profile (the factory image and the local clock are the engine\'s)');
+  assert.deepEqual(engine.created.at(-1).profile, {}, 'the new session starts from an empty profile (the factory image and the default calendar are the engine\'s)');
   assert.deepEqual(engine.created.at(-1).firmware, { main: 'main:TRITON-5.8-65.3', handset: 'handset:TRITON-5.8-65.3' }, 'with the same firmware');
   assert.equal(booted.release.id, 'TRITON-5.8-65.3');
   // The session that was discarded left nothing behind even when it closes later with the default: the new session saves its own profile.
@@ -2884,31 +2854,31 @@ test('page: the decompression warnings show only for a proven bad state, name th
   assert.match(info, /Fixture: EEPROM factory image \(this session created the EEPROM from it\)\. This session created the EEPROM from the factory image\./);
   assert.doesNotMatch(info, /stored decompression state repair/);
   assert.match(info, /Fixture: start at the surface \(on, surface 1013\.25 mbar\)\. Depth 0 at every start\./);
-  assert.doesNotMatch(info, /clock of a new profile/, 'an engine without the report shows no line');
-
-  // The clock of a new profile (DESIGN 23): the browser's local time that started the calendars, in Advanced → session information.
-  const rtcInit = { applied: true, localTime: '2026-10-10T14:03:22', boards: ['ngc-main', 'ngc-handset'], reason: "This session started the calendar of ngc-main and ngc-handset from the host's local time 2026-10-10T14:03:22." };
-  show({}, { rtcInit });
-  assert.match(m.document.getElementById('session-info').textContent, /Fixture: clock of a new profile \(applied, local time 2026-10-10T14:03:22, main \+ handset\)\. This session started the calendar of ngc-main and ngc-handset from the host's local time 2026-10-10T14:03:22\./);
-  show({}, { rtcInit: { applied: false, localTime: '2026-10-10T14:03:22', boards: [], reason: 'Not applied: every board already had a saved RTC checkpoint or the EEPROM date seed, and an existing calendar is never changed.' } });
-  assert.match(m.document.getElementById('session-info').textContent, /Fixture: clock of a new profile \(not applied, the browser sent 2026-10-10T14:03:22\)\. Not applied: every board already had a saved RTC checkpoint/);
-  show({}, { rtcInit: { applied: false, localTime: null, boards: [], reason: 'Not applied: the host supplied no local time.' } });
-  assert.match(m.document.getElementById('session-info').textContent, /Fixture: clock of a new profile \(not applied\)\. Not applied: the host supplied no local time\./);
-  assert.equal(deco.rtcInitLine({}), null);
-  assert.equal(deco.rtcInitLine(null), null);
 });
 
-test('page: the clock of a new profile also shows in the session information of a handset-only run', async () => {
+test('page: the session information says where each RTC calendar came from, and the removed host-time report shows nothing (DESIGN 23)', async () => {
   const m = await mount();
+  const clockLine = (rtcPersistence, extra = {}, base = initialState) => {
+    m.view.onState({ state: { ...base, rtcPersistence: { policy: 'virtual-time-only', precision: 'whole-calendar-seconds', mainBkp1WakeOverride: false, ...rtcPersistence }, ...extra }, host: { ...hostBase } });
+    m.document.getElementById('firmware-details').open = true;
+    m.view.render();
+    return m.document.getElementById('session-info').textContent;
+  };
+  // A new profile: both calendars at the engine's default.
+  const fresh = clockLine({ restoredBoards: [], sources: { 'ngc-main': { source: 'fresh-rtc' }, 'ngc-handset': { source: 'fresh-rtc' } } });
+  assert.match(fresh, /Clock \(virtual-time-only, whole-calendar-seconds\): no saved checkpoint \(fresh RTC\) \[main: fresh-rtc, handset: fresh-rtc\]\./);
+  // A profile saved by the engine builds that started a new profile from the browser's local time: restored like any other.
+  const old = { restoredBoards: ['ngc-main', 'ngc-handset'], sources: { 'ngc-main': { source: 'host-local-time' }, 'ngc-handset': { source: 'host-local-time' } } };
+  assert.match(clockLine(old), /Clock \(virtual-time-only, whole-calendar-seconds\): restored main \+ handset \[main: host-local-time, handset: host-local-time\]\./);
+  // A state of those builds that still carries the report shows no line for it, in the dual and the handset-only mode.
+  const report = { rtcInit: { applied: true, localTime: '2026-10-10T14:03:22', boards: ['ngc-main', 'ngc-handset'], reason: 'Started.' } };
+  assert.doesNotMatch(clockLine(old, report), /clock of a new profile|local time/i);
   const { inputs, ...withoutMain } = initialState;
   assert.ok(inputs, 'the dual state has sensor inputs, a handset-only one has none');
-  const rtcPersistence = { policy: 'virtual-time-only', precision: 'whole-calendar-seconds', restoredBoards: [], sources: { 'ngc-handset': { source: 'host-local-time' } }, mainBkp1WakeOverride: false };
-  const state = { ...withoutMain, rtcPersistence, rtcInit: { applied: true, localTime: '2026-10-10T14:03:22', boards: ['ngc-handset'], reason: 'Started.' } };
-  m.view.onState({ state, host: { ...hostBase } });
-  m.document.getElementById('firmware-details').open = true;
-  m.view.render();
-  assert.match(m.document.getElementById('session-info').textContent, /Clock \(virtual-time-only, whole-calendar-seconds\): no saved checkpoint \(calendar started from the browser's local time\) \[handset: host-local-time\]\./);
-  assert.match(m.document.getElementById('session-info').textContent, /Fixture: clock of a new profile \(applied, local time 2026-10-10T14:03:22, handset\)\. Started\./);
+  const alone = clockLine({ restoredBoards: [], sources: { 'ngc-handset': { source: 'fresh-rtc' } } }, report, withoutMain);
+  assert.match(alone, /Clock \(virtual-time-only, whole-calendar-seconds\): no saved checkpoint \(fresh RTC\) \[handset: fresh-rtc\]\./);
+  assert.doesNotMatch(alone, /clock of a new profile|local time/i);
+  assert.equal('rtcInitLine' in deco, false, 'the line builder is gone');
 });
 
 test('page: the cold boot hint sits at the Cold boot button and appears in the start options when a cold boot is chosen', async () => {
@@ -3983,6 +3953,50 @@ test('game (dive): depth and gas advance over the emulator\'s virtual time, the 
   near(long.diveTime, 20_000);
 });
 
+test('game (dive): a step that reaches the surface or the floor is split there, so the dive time, the profile and the gas do not depend on how the states fall', () => {
+  // 0.5 m down, then up at 18 m/min with the oxygen valve held: the surface is reached 1 + 5/3 s into the dive, whatever the states.
+  const surfacing = (splits) => {
+    const sim = new game.GameSim();
+    sim.rebase(0);
+    sim.setMotionRate(30);
+    sim.advanceTo(1, {});
+    sim.setMotionRate(-18);
+    let virtual = 1;
+    for (const dt of splits) sim.advanceTo((virtual += dt), { oxygen: true });
+    return sim;
+  };
+  const one = surfacing([3]);
+  near(one.diveTime, 1 + 5 / 3, 'the dive ends at the moment of arrival');
+  assert.deepEqual(one.profile.at(-1).map((value) => Math.round(value * 1e6) / 1e6), [2.666667, 0]);
+  near(one.elapsed, 4, 'the session time counts the rest of the step');
+  for (const splits of [Array(30).fill(0.1), [0.2, 0.07, 0.2, 0.07, 0.2, 0.07, 0.2, 0.07, 0.2, 0.07, 0.2, 0.07, 1.38]]) {
+    const many = surfacing(splits);
+    near(many.diveTime, one.diveTime, `the same dive time (${splits.length} states)`);
+    near(many.profile.at(-1)[0], one.profile.at(-1)[0], 'the same end of the profile');
+    assert.equal(many.depth, 0);
+    assert.equal(many.diving, false);
+    near(getLoopReadings(many.loop).fractions.o2, getLoopReadings(one.loop).fractions.o2, 'the same gas');
+    near(many.loop.totals.vent, one.loop.totals.vent, 'the same vented gas');
+  }
+
+  // The 110 m floor: the motion stops there and the rest of the step is spent at rest, so the gas is the same as in fine steps.
+  const floor = (splits) => {
+    const sim = new game.GameSim();
+    sim.rebase(0);
+    sim.setMotionRate(30);
+    let virtual = 0;
+    for (const dt of splits) sim.advanceTo((virtual += dt), { oxygen: true });
+    return sim;
+  };
+  const coarse = floor([221, 3]);
+  const fine = floor(Array(2240).fill(0.1));
+  assert.equal(coarse.depth, MAX_DEPTH_METERS);
+  assert.equal(coarse.direction, 0);
+  near(fine.diveTime, coarse.diveTime);
+  near(coarse.profile.find(([, depth]) => depth === MAX_DEPTH_METERS)[0], 220, 'the arrival at the floor is recorded when it happens');
+  near(getLoopReadings(fine.loop).fractions.o2, getLoopReadings(coarse.loop).fractions.o2, 'the same gas at the floor');
+});
+
 test('game (dive profile): the profile records the dive only: it starts at the descent, ends at the surface, and the next descent starts a new one', () => {
   const sim = new game.GameSim();
   sim.rebase(0);
@@ -4426,6 +4440,14 @@ test('game (reset all): confirming closes the session without saving, clears the
   assert.equal(g.actions().slice(-3).some((request) => request.action === 'up'), false, 'no handset press is sent');
   assert.equal(g.quits.length, 0, 'Quit is refused while the session is being replaced');
   assert.ok(g.view.sim.depth > 10, 'the states of the old session are not integrated into anything');
+  // The keys do nothing in the game meanwhile, and the arrow keys and Space still do not scroll the page; a field keeps its Space.
+  const actionsBefore = g.actions().length;
+  for (const code of ['ArrowUp', 'ArrowDown']) assert.equal(g.document.dispatch('keydown', { key: code, code, repeat: false }).defaultPrevented, true, `${code} does not scroll`);
+  assert.equal(g.document.dispatch('keydown', { key: ' ', code: 'Space', repeat: false }).defaultPrevented, true, 'Space does not scroll');
+  assert.equal(g.el('mav-flow').dispatch('keydown', { key: ' ', code: 'Space', repeat: false }).defaultPrevented, false);
+  await settle();
+  assert.equal(g.actions().length, actionsBefore, 'and none is sent');
+  assert.equal(g.view.clock.speed, 4, 'nor pauses');
   booting.resolve({ state: { ...g.baseState, virtualTime: 0 }, hostStatus: { ...g.host, generation: 2 }, release: g.shown.release });
   await settle();
   // The new game: the surface, a fresh Air loop at 1x, the boat, fresh cells, the clock of the new session.
@@ -4509,6 +4531,7 @@ test('game (reset all): a failure is shown in the game, and a session that is al
   assert.equal(early.view.connectionError, '');
   assert.equal(early.text('run-state'), 'Running');
   assert.equal(early.el('reset').disabled, false);
+  assert.deepEqual(early.sound.named('setAmbience').slice(-2), [['setAmbience', false], ['setAmbience', true]], 'the ambience stopped for the reset comes back with the dive');
   assert.deepEqual(early.requests.map((request) => request.type).filter((type) => type === 'reset-profile' || type === 'boot'), [], 'nothing was erased or started');
   early.feed(30, 800);
   await settle();
@@ -4549,9 +4572,9 @@ test('game (reset all): a failure is shown in the game, and a session that is al
   late.view.hide();
 });
 
-test('game (reset all): the header holds the release, the run state, the virtual time with the play speed, Reset all, Quit and the controls button; the hero heading is gone', async () => {
-  const header = html.match(/<div class="app-header">[\s\S]*?<div class="workspace">/)[0];
-  const order = ['game-release', 'game-session-chip', 'game-virtual-time', 'game-header-speed', 'game-run-state', 'game-reset', 'game-quit', 'game-help'].map((id) => header.indexOf(`id="${id}"`));
+test('game (reset all): the header holds the release, the clock chip (virtual time, play speed, run state), Reset all, Quit, the sound and the controls buttons; the hero heading is gone', async () => {
+  const header = html.match(/<div class="app-header">[\s\S]*?<div class="workspace"/)[0];
+  const order = ['game-release', 'game-session-chip', 'game-virtual-time', 'game-header-speed', 'game-run-state', 'game-reset', 'game-quit', 'game-sound', 'game-help'].map((id) => header.indexOf(`id="${id}"`));
   assert.ok(order.every((at) => at > 0) && order.every((at, index) => index === 0 || at > order[index - 1]), `in this order: ${order}`);
   assert.match(header, /class="session-chip"/, 'one clock chip holds the time, the speed and the run state');
   assert.doesNotMatch(header, /VIRTUAL TIME|tiny-label/, 'no caption: the chip stays as low as the buttons');
@@ -4650,6 +4673,161 @@ test('game (view): the handset is operated through its pins: bezel keys, the dis
   g.view.hide();
 });
 
+/** In a browser moving the focus fires `blur` on the element that had it; the fake DOM only records the focus. This adds the blur. */
+function withBlurOnFocus(body) {
+  return async () => {
+    const plain = Element.prototype.focus;
+    Element.prototype.focus = function focus(...args) {
+      const previous = this.ownerDocument().activeElement;
+      plain.apply(this, args);
+      if (previous && previous !== this && typeof previous.dispatch === 'function') previous.dispatch('blur');
+    };
+    try {
+      await body();
+    } finally {
+      Element.prototype.focus = plain;
+    }
+  };
+}
+
+test('game (keys): Escape, O / D and Space are the game\'s wherever the focus is (a MAV held with the mouse, a header button), except in a field', withBlurOnFocus(async () => {
+  const g = await mountGame();
+  g.feed(0, 0);
+  await settle();
+  const key = (type, code, target) => target.dispatch(type, { code, key: code === 'Space' ? ' ' : code.startsWith('Key') ? code.slice(3).toLowerCase() : code, repeat: false });
+  const oxygen = g.el('mav-oxygen');
+  oxygen.setPointerCapture = () => {};
+
+  // The oxygen MAV held with the mouse takes the focus; Escape still lets go of it.
+  oxygen.dispatch('pointerdown', { button: 0, pointerId: 1, isPrimary: true });
+  assert.equal(g.document.activeElement, oxygen);
+  assert.equal(g.view.clock.injecting(), true);
+  key('keydown', 'Escape', oxygen);
+  assert.equal(g.view.clock.injecting(), false, 'Escape lets go of the valve held with the mouse');
+  oxygen.dispatch('pointerup', { pointerId: 1 });
+  assert.equal(g.view.clock.injecting(), false);
+
+  // O and D hold their valves with a MAV focused.
+  key('keydown', 'KeyD', oxygen);
+  assert.equal(g.view.clock.held.diluent.has('shortcut'), true, 'D holds the diluent valve');
+  key('keyup', 'KeyD', oxygen);
+  key('keydown', 'KeyO', oxygen);
+  assert.equal(g.view.clock.held.oxygen.has('shortcut'), true, 'O holds the oxygen valve');
+  key('keyup', 'KeyO', oxygen);
+  assert.equal(g.view.clock.injecting(), false);
+
+  // Space pauses with the MAV focused, and is not also the button's key (no second hold source, no click).
+  const space = key('keydown', 'Space', oxygen);
+  assert.equal(space.defaultPrevented, true);
+  assert.equal(g.view.clock.speed, 0, 'Space pauses');
+  assert.equal(g.view.clock.injecting(), false, 'and holds no valve');
+  assert.equal(key('keyup', 'Space', oxygen).defaultPrevented, true, 'its release is no click either');
+  key('keydown', 'Space', oxygen);
+  key('keyup', 'Space', oxygen);
+  assert.equal(g.view.clock.speed, 1, 'and resumes');
+  // Enter keeps a focused MAV usable from the keyboard.
+  key('keydown', 'Enter', oxygen);
+  assert.equal(g.view.clock.held.oxygen.has('focused-key:Enter'), true, 'Enter holds the focused valve');
+  key('keyup', 'Enter', oxygen);
+  assert.equal(g.view.clock.injecting(), false);
+
+  // A header button keeps the focus after a dialog was canceled: Space pauses instead of pressing it again.
+  let asked = 0;
+  globalThis.window.confirm = () => { asked += 1; return false; };
+  g.el('reset').click();
+  await settle();
+  assert.equal(asked, 1);
+  g.el('reset').focus();
+  assert.equal(key('keydown', 'Space', g.el('reset')).defaultPrevented, true, 'Space does not click Reset all again');
+  assert.equal(key('keyup', 'Space', g.el('reset')).defaultPrevented, true);
+  assert.equal(g.view.clock.speed, 0, 'it pauses');
+  key('keydown', 'Space', g.el('quit'));
+  assert.equal(g.view.clock.speed, 1);
+  key('keydown', 'KeyO', g.el('quit'));
+  assert.equal(g.view.clock.injecting(), true, 'O works with the Quit button focused');
+  key('keydown', 'Escape', g.el('quit'));
+  assert.equal(g.view.clock.injecting(), false, 'and Escape lets go');
+  key('keyup', 'KeyO', g.el('quit'));
+
+  // A field being edited keeps its keys.
+  const flow = g.el('mav-flow');
+  assert.equal(key('keydown', 'Space', flow).defaultPrevented, false);
+  assert.equal(key('keyup', 'Space', flow).defaultPrevented, false);
+  key('keydown', 'KeyO', flow);
+  assert.equal(g.view.clock.speed, 1, 'Space in a field does not pause');
+  assert.equal(g.view.clock.injecting(), false, 'and O is a letter there');
+  assert.equal(asked, 1, 'Reset all was asked once only');
+  g.view.hide();
+}));
+
+test('game (keys): only a short press is a tap, so after a long hold the next press of W or S starts at the first speed again', async () => {
+  const g = await mountGame();
+  g.feed(0, 0);
+  let now = 1000;
+  Object.defineProperty(globalThis.performance, 'now', { value: () => now, configurable: true, writable: true });
+  try {
+    const at = (ms, type) => {
+      now = ms;
+      g.document.dispatch(type, { code: 'KeyS', key: 's', repeat: false });
+      return g.view.sim.direction * g.view.sim.rate;
+    };
+    assert.equal(at(1000, 'keydown'), 10);
+    at(6000, 'keyup'); // held five seconds
+    assert.equal(at(6250, 'keydown'), 10, 'pressed again 250 ms later: still the first speed');
+    at(6350, 'keyup'); // a tap
+    assert.equal(at(6500, 'keydown'), 20, 'a tap and hold is the second speed');
+    at(6600, 'keyup');
+    assert.equal(at(6700, 'keydown'), 30, 'two taps and hold the third');
+    at(9000, 'keyup');
+    assert.equal(at(9100, 'keydown'), 10, 'after that long hold, the first again');
+    at(9200, 'keyup');
+  } finally {
+    delete globalThis.performance.now;
+  }
+  g.view.hide();
+});
+
+test('game (keys): a handset press or a MAV pressed with the mouse does not stop a W / S swim; leaving the water ends a drag in it', withBlurOnFocus(async () => {
+  const g = await mountGame();
+  g.feed(0, 0);
+  await settle();
+  const ocean = g.el('ocean');
+  ocean.focus();
+  ocean.dispatch('keydown', { code: 'KeyS', key: 's', repeat: false });
+  assert.equal(g.view.sim.direction, 1);
+  g.feed(1, 1000);
+  ocean.dispatch('keydown', { code: 'ArrowDown', key: 'ArrowDown', repeat: false });
+  await settle();
+  assert.equal(g.document.activeElement, g.el('device'), 'the handset press moved the focus');
+  assert.equal(g.actions().some((request) => request.action === 'down'), true);
+  assert.equal(g.view.sim.direction, 1, 'S still swims');
+  g.el('handset-up').click();
+  assert.equal(g.view.sim.direction, 1, 'a bezel key too');
+  const oxygen = g.el('mav-oxygen');
+  oxygen.setPointerCapture = () => {};
+  oxygen.dispatch('pointerdown', { button: 0, pointerId: 7, isPrimary: true });
+  assert.equal(g.view.clock.injecting(), true);
+  assert.equal(g.view.sim.direction, 1, 'and the oxygen MAV pressed with the mouse');
+  oxygen.dispatch('pointerup', { pointerId: 7 });
+  g.document.dispatch('keyup', { code: 'KeyS', key: 's' });
+  assert.equal(g.view.sim.direction, 0, 'S ends on its release');
+
+  // A drag in the water ends when the water loses the focus.
+  ocean.focus();
+  ocean.setPointerCapture = () => {};
+  ocean.hasPointerCapture = () => false;
+  ocean.clientWidth = 400;
+  ocean.clientHeight = 400;
+  ocean.getBoundingClientRect = () => ({ top: 0, left: 0, width: 400, height: 400 });
+  ocean.dispatch('pointerdown', { button: 0, pointerId: 3, isPrimary: true, clientX: 100, clientY: 100 });
+  ocean.dispatch('pointermove', { pointerId: 3, clientX: 100, clientY: 300 });
+  assert.equal(g.view.sim.direction, 1, 'dragging down descends');
+  g.el('handset-down').click();
+  assert.equal(g.view.sim.direction, 0, 'the drag ends with the focus');
+  assert.equal(g.view.motionPointer, null);
+  g.view.hide();
+}));
+
 test('game (view): errors and stops stay in view, the standby has a Wake button, and Quit goes through the session close', async () => {
   const g = await mountGame();
   g.feed(0, 0);
@@ -4694,6 +4872,51 @@ test('game (view): errors and stops stay in view, the standby has a Wake button,
   await settle();
   assert.equal(g.quits.length, 1);
   g.view.hide();
+});
+
+test('game (view): the error\'s Resume resumes a paused game clock too, and a pause lifted in standby asks the engine for nothing it refuses', async () => {
+  const g = await mountGame();
+  g.feed(0, 0);
+  await settle();
+  const engine = () => g.actions().map((request) => request.action).filter((action) => action !== 'inputs');
+  g.view.chooseSpeed(4);
+  g.feed(1, 300, { running: false, error: 'Terminal handler reached at 0x08001234' });
+  g.view.chooseSpeed(0); // paused to read the message
+  await settle();
+  assert.deepEqual(engine(), ['pause']);
+  g.el('alerts').querySelectorAll('button').find((button) => button.dataset.alert === 'resume').click();
+  await settle();
+  assert.deepEqual(engine(), ['pause', 'resume'], 'one resume');
+  assert.equal(g.view.clock.speed, 4, 'the game clock runs again, at its speed before the pause');
+  assert.equal(g.speeds().at(-1), 4);
+  g.feed(2, 600, { running: true, error: null });
+  assert.equal(g.text('play-speed-label'), '4×', 'the play control agrees with the running engine');
+  assert.equal(g.text('header-speed'), '4×');
+  assert.equal(g.text('run-state'), 'Running');
+  assert.equal(g.el('mav-oxygen').disabled, false);
+  // Not paused: Resume is the engine's resume, nothing else changes.
+  g.feed(3, 900, { running: false, error: 'Terminal handler reached at 0x08001234' });
+  g.el('alerts').querySelectorAll('button').find((button) => button.dataset.alert === 'resume').click();
+  await settle();
+  assert.deepEqual(engine(), ['pause', 'resume', 'resume']);
+  assert.equal(g.view.clock.speed, 4);
+  g.view.hide();
+
+  // In standby the engine refuses `resume` (Wake system is the way back): a pause and its end send only the pause.
+  const s = await mountGame();
+  s.feed(0, 0);
+  await settle();
+  s.feed(1, 300, { running: false, standby: true });
+  s.view.togglePause();
+  s.view.togglePause();
+  await settle();
+  assert.deepEqual(s.actions().map((request) => request.action).filter((action) => action !== 'inputs'), ['pause']);
+  assert.equal(s.view.actionError, '', 'no refused action to report');
+  assert.equal(s.view.clock.speed, 1);
+  s.el('alerts').querySelectorAll('button').find((button) => button.dataset.alert === 'wake').click();
+  await settle();
+  assert.deepEqual(s.actions().map((request) => request.action).filter((action) => action !== 'inputs'), ['pause', 'wake', 'resume'], 'Wake system wakes and resumes');
+  s.view.hide();
 });
 
 /** The fake DOM has no <dialog>: this gives it one that only tracks `open` (the page's `dialog` elements are children of the body). */
@@ -4900,6 +5123,23 @@ test('game (quit): nothing is asked without a live session, a session that ends 
   plain.view.hide();
 }));
 
+test('game (quit): an engine stopped by an error cannot turn itself off, so Quit closes the session without asking', withFakeDialogs(async () => {
+  const g = await mountGame();
+  supportDialogs();
+  const asked = [];
+  globalThis.window.confirm = (text) => { asked.push(text); return false; };
+  g.feed(0, 0);
+  g.feed(1, 300, { running: false, error: 'Terminal handler reached at 0x08001234' });
+  assert.equal(g.text('run-state'), 'Stopped by an error');
+  assert.equal(g.view.deviceIsOn(), false);
+  g.el('quit').click();
+  await settle();
+  assert.equal(openDialogs(g).length, 0, 'no question');
+  assert.deepEqual(asked, []);
+  assert.equal(g.quits.length, 1, 'the page\'s session close (the profile saved as it is)');
+  g.view.hide();
+}));
+
 test('game (help): a square 36 px "?" button named Controls is the last control in the header, and the guide has four groups with key chips', async () => {
   const css = fs.readFileSync(path.join(here, 'game.css'), 'utf8');
   const g = await mountGame();
@@ -5003,14 +5243,14 @@ test('game (help): while the guide is open the arrow keys, W / S, O / D and Spac
   key('keyup', 'KeyW');
   assert.equal(g.view.sim.direction, 0);
 
-  for (const code of ['ArrowUp', 'ArrowDown']) assert.equal(key('keydown', code).defaultPrevented, true, `${code} is cancelled: no scroll either`);
+  for (const code of ['ArrowUp', 'ArrowDown']) assert.equal(key('keydown', code).defaultPrevented, true, `${code} is canceled: no scroll either`);
   key('keydown', 'KeyW');
   key('keydown', 'KeyS');
   assert.equal(g.view.sim.direction, 0, 'W and S do not swim');
   key('keydown', 'KeyO');
   key('keydown', 'KeyD');
   assert.equal(g.view.clock.injecting(), false, 'O and D hold no valve');
-  assert.equal(key('keydown', 'Space').defaultPrevented, true, 'Space is cancelled: no scroll either');
+  assert.equal(key('keydown', 'Space').defaultPrevented, true, 'Space is canceled: no scroll either');
   assert.equal(g.view.clock.speed, 1, 'Space does not pause');
   assert.equal(key('keydown', 'Space', { target: g.el('help') }).defaultPrevented, false, 'on the "?" button it stays the button\'s own key (it closes the guide)');
   assert.equal(g.view.clock.speed, 1);
@@ -5265,6 +5505,36 @@ test('game (structure): every rule of game.css is scoped to #screen-game, the pa
   // Custom properties of the game are its own (--g-*); none of the page's names is redefined.
   const defined = [...css.matchAll(/(--[\w-]+)\s*:/g)].map((match) => match[1]);
   assert.ok(defined.every((name) => name.startsWith('--g-') || name.startsWith('--signal-')), `variables: ${defined.filter((name) => !name.startsWith('--g-') && !name.startsWith('--signal-'))}`);
+});
+
+test('game (structure): text that informs is at least 10 px, the MAV buttons\' names contain their labels, and the game has a main landmark of its own', () => {
+  const css = fs.readFileSync(path.join(here, 'game.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const small = [];
+  for (const [, prelude, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const size = /font-size:\s*([\d.]+)px/.exec(body);
+    if (size && Number(size[1]) < 10) small.push(prelude.trim());
+  }
+  // Only the bezel's print is smaller: decoration, hidden from screen readers (the handset's own label names the device).
+  assert.deepEqual(small.sort(), ['#screen-game .device-bottomline', '#screen-game .device-dots', '#screen-game .device-topline span:last-child']);
+  const section = html.slice(html.indexOf('<div id="screen-game"'), html.indexOf('<script type="module" src="app.js">'));
+  assert.match(section, /<div class="device-topline" aria-hidden="true">/);
+  assert.match(section, /<div class="device-bottomline" aria-hidden="true">/);
+  // SVG text is sized in the drawing's units, and the dial and the chart are drawn at about 0.85 of their viewBox: 12 units or more.
+  const svgSizes = [...section.matchAll(/font-size="([\d.]+)"/g)].map((match) => Number(match[1]));
+  assert.ok(svgSizes.length > 0 && svgSizes.every((size) => size >= 12), `SVG font sizes: ${svgSizes}`);
+  assert.match(css, /#screen-game #game-profile-labels text \{[^}]*font-size: 12px/);
+  // WCAG 2.5.3: the accessible name of a MAV button contains the words it shows.
+  for (const [id, label] of [['game-mav-oxygen', 'Oxygen MAV'], ['game-mav-diluent', 'Diluent MAV']]) {
+    const button = section.match(new RegExp(`<button[^>]*id="${id}"[^>]*>[\\s\\S]*?</button>`))[0];
+    const name = /aria-label="([^"]*)"/.exec(button)[1];
+    assert.match(button, new RegExp(`<strong>${label}</strong>`), `${id} shows "${label}"`);
+    assert.ok(name.startsWith(label), `${id}: the name "${name}" contains "${label}"`);
+  }
+  // The game's workspace is a main landmark (the page's <main> is hidden while the game is shown: app.js showScreen); no second <main>.
+  assert.match(section, /<div class="workspace" role="main">/);
+  assert.doesNotMatch(section, /<main\b/);
+  assert.equal([...html.replace(/<!--[\s\S]*?-->/g, '').matchAll(/<main\b|\srole="main"/g)].length, 2, 'the page\'s <main> and the game\'s');
+  assert.match(fs.readFileSync(path.join(here, 'app.js'), 'utf8'), /appMain\.hidden = name === 'game';/);
 });
 
 test('game (structure): the game modules are published on purpose, the page script is the only entry, and no new dependency or external resource appears', () => {
@@ -5760,7 +6030,7 @@ test('game (water view): the reduced-motion preference is read and followed, the
   assert.ok(near < 0 && Math.abs(far / near - 0.45) < 0.01, `the far layer moves at 45% of the camera (${far} against ${near})`);
   g.view.hide();
 
-  // Animation frames: requested while the game is shown, one at a time, cancelled on hide; none left behind.
+  // Animation frames: requested while the game is shown, one at a time, canceled on hide; none left behind.
   const scheduler = fakeFrames();
   const h = await mountGame({ frames: scheduler });
   assert.equal(scheduler.pending.length, 1, 'one frame requested when the game is shown');
@@ -5839,6 +6109,87 @@ test('game (sound): Start game creates and unlocks the sound inside the click; a
   assert.deepEqual(paused.sound.named('setPaused'), [['setPaused', true]]);
   paused.view.hide();
   g.view.hide();
+});
+
+test('game (sound): a Start game whose boot fails releases the sound its click made; a running game keeps its sound', async () => {
+  const g = await mountGame();
+  g.view.discardSound();
+  assert.equal(g.sound.disposed, 0, 'a game on screen keeps its sound');
+  g.view.hide();
+  g.clock.advance(2000); // the tail of the closed session rings out and that sound is released
+  assert.equal(g.sound.disposed, 1);
+  const made = [];
+  g.view.createSound = () => { const sound = fakeSound(); made.push(sound); return sound; };
+  g.document.getElementById('start-game').click(); // the next Start game: a sound is made and unlocked in the click
+  assert.equal(made.length, 1);
+  assert.deepEqual(made[0].calls.at(-1), ['unlock']);
+  g.view.discardSound(); // ... and its boot failed
+  assert.equal(made[0].disposed, 1, 'released at once');
+  assert.equal(g.view.sound, null);
+  g.document.getElementById('start-game').click();
+  assert.equal(made.length, 2, 'the next Start game makes a new one');
+  g.view.discardSound();
+});
+
+test('game (sound): surfacing while the sound is off still lifts the muffling, so turning it on at the surface plays the air', async () => {
+  const { createGameSound } = await import('./game-sound.js');
+  const real = createGameSound({ context: fakeAudioContext(), random: seededRandom(5), autoPump: false, clipLoader: async (file) => ({ file }) });
+  const g = await mountGame({ sound: real });
+  g.feed(0, 0);
+  await settle();
+  g.view.changeMotion(30);
+  for (let step = 1; step <= 4; step++) g.feed(step, step * 200);
+  assert.equal(real.snapshot().underwater, true);
+  assert.equal(real.amb.key, 'water');
+  g.el('sound-on').checked = false;
+  g.el('sound-on').dispatch('change');
+  g.view.changeMotion(-18);
+  for (let step = 5; step <= 20 && g.view.sim.depth > 0; step++) g.feed(step, step * 200);
+  assert.equal(g.view.sim.depth, 0, 'back at the surface');
+  assert.equal(real.snapshot().underwater, false, 'out of the water, with the sound off too');
+  assert.equal(real.graph.low1.frequency.events.at(-1)[1], 18000, 'the low-pass opens');
+  g.el('sound-on').checked = true;
+  g.el('sound-on').dispatch('change');
+  assert.equal(real.amb.key, 'surface', 'the boat\'s ambience, not the water\'s');
+  assert.equal(real.stats().errors, 0);
+  g.view.hide();
+});
+
+test('game-sound (context): a context made while the sound is off is suspended at once, and turning the sound on resumes it', async () => {
+  const { createGameSound } = await import('./game-sound.js');
+  const contexts = [];
+  class FakeContext {
+    constructor() {
+      Object.assign(this, fakeAudioContext());
+      this.calls = [];
+      contexts.push(this);
+    }
+
+    resume() { this.calls.push('resume'); this.state = 'running'; return Promise.resolve(); }
+
+    suspend() { this.calls.push('suspend'); this.state = 'suspended'; return Promise.resolve(); }
+
+    close() { this.calls.push('close'); this.state = 'closed'; return Promise.resolve(); }
+  }
+  globalThis.AudioContext = FakeContext;
+  try {
+    const off = createGameSound({ random: seededRandom(2), autoPump: false, suspendWhenHidden: false, clipLoader: async (file) => ({ file }) });
+    off.setEnabled(false);
+    assert.equal(await off.unlock(), false, 'nothing plays');
+    assert.deepEqual(contexts[0].calls, ['suspend'], 'the context a gesture started is suspended at once');
+    off.setEnabled(true);
+    await settle();
+    assert.deepEqual(contexts[0].calls, ['suspend', 'resume'], 'on resumes it');
+    off.dispose();
+    assert.deepEqual(contexts[0].calls.at(-1), 'close');
+
+    const on = createGameSound({ random: seededRandom(2), autoPump: false, suspendWhenHidden: false, clipLoader: async (file) => ({ file }) });
+    assert.equal(await on.unlock(), true);
+    assert.equal(contexts[1].calls.includes('suspend'), false, 'on: it runs');
+    on.dispose();
+  } finally {
+    delete globalThis.AudioContext;
+  }
 });
 
 test('game (sound): the water follows the dive: underwater when the diver leaves the boat, a surface break on reaching 0 m from below, nothing for a descent that never left the surface', async () => {
@@ -6011,14 +6362,17 @@ test('game (sound): the vibrator buzzes once for each pulse the indicator lights
   assert.deepEqual(buzzes(), []);
   g.view.hide();
 
-  // A vibrator held on: it buzzes from the moment it lights and keeps buzzing with each state while it is on.
+  // A vibrator held on: it buzzes from the moment it lights and keeps buzzing with each state while it is on, every time with the
+  // hold length (the first state too: a 50 ms pulse would spin down before the next state, 200 ms later).
   const steady = await mountGame();
   const held = () => steady.sound.named('vibrate').map((call) => call[1]);
   steady.feed(0, 0, { hardwareOutputs: [vibratorOrLed([event(1, false), event(2, true)], 'vibrator')] });
-  assert.deepEqual(held(), [50], 'lit');
+  assert.deepEqual(held(), [250], 'lit, for the hold length');
   steady.feed(0.2, 300, { hardwareOutputs: [vibratorOrLed([event(1, false), event(2, true)], 'vibrator')] });
   steady.feed(0.4, 600, { hardwareOutputs: [vibratorOrLed([event(1, false), event(2, true)], 'vibrator')] });
-  assert.deepEqual(held(), [50, 250, 250], 'each state while it is on extends the buzz');
+  assert.deepEqual(held(), [250, 250, 250], 'each state while it is on extends the buzz');
+  steady.feed(0.6, 900, { hardwareOutputs: [vibratorOrLed([event(1, false), event(2, true), event(3, false)], 'vibrator')] });
+  assert.deepEqual(held(), [250, 250, 250], 'off: no more');
   steady.view.hide();
 });
 
@@ -6356,7 +6710,7 @@ test('game (sound): the popover has the rules of the controls guide: it lets go 
 
   // The game keys do nothing while it is open; the slider keeps its arrow keys, a button or the switch its Space.
   const presses = () => g.actions().filter((request) => ['up', 'down', 'confirm'].includes(request.action)).length;
-  assert.equal(key('keydown', 'ArrowUp').defaultPrevented, true, 'cancelled: no scroll, no handset press');
+  assert.equal(key('keydown', 'ArrowUp').defaultPrevented, true, 'canceled: no scroll, no handset press');
   assert.equal(key('keydown', 'ArrowUp', { target: g.el('sound-volume') }).defaultPrevented, false, 'the slider keeps its own arrow keys');
   key('keydown', 'KeyW');
   key('keydown', 'KeyS');
@@ -6554,6 +6908,44 @@ test('game-sound (vibrator): one measured motor spinning up to 150 Hz, at least 
   sound.dispose();
 });
 
+test('game-sound (vibrator): a vibrator held on is one continuous buzz: extended in its spin-down too, never a second motor', async () => {
+  const { createGameSound } = await import('./game-sound.js');
+  const ctx = fakeAudioContext();
+  const sound = createGameSound({ context: ctx, random: seededRandom(3), autoPump: false });
+  await sound.unlock();
+  const since = ctx.created.length;
+  const motors = () => ctx.created.slice(since).filter((node) => node.kind === 'osc');
+  // A pulse, then the next request 200 ms later, in its spin-down (it buzzed 120 ms): the same motor rises again from where it is.
+  sound.vibrate(50);
+  const envelope = motors()[0].connections[0].gain;
+  const before = envelope.events.length;
+  ctx.currentTime = 0.2;
+  sound.vibrate(250);
+  assert.equal(motors().length, 1, 'one motor');
+  const rise = envelope.events.slice(before);
+  const at = 0.2 + 0.005; // the request's time on the audio clock
+  assert.ok(rise[0][0] === 'setValueAtTime' && Math.abs(rise[0][2] - at) < 1e-9, 'held where it is');
+  assert.ok(rise[1][0] === 'linearRampToValueAtTime' && rise[1][1] === 1 && Math.abs(rise[1][2] - (at + 0.015)) < 1e-9, 'and back up over the attack time');
+  assert.ok(Math.abs(motors()[0].stopAt - (0.205 + 0.25 + 0.14 + 0.03)) < 1e-9, 'then it buzzes the new length');
+  // Held on for three seconds at five states a second: still the one motor, ending a hold length after the last request.
+  for (let t = 0.4; t <= 3.0001; t += 0.2) {
+    ctx.currentTime = t;
+    sound.vibrate(250);
+  }
+  assert.equal(motors().length, 1, 'no second motor, past 2.5 s either');
+  assert.ok(Math.abs(motors()[0].stopAt - (ctx.currentTime + 0.005 + 0.25 + 0.14 + 0.03)) < 1e-9);
+  assert.equal(sound.stats().kinds.vibrate, 1);
+  // Once it has stopped, the next buzz is a new motor (with its spin-up), and the old one is gone first: never two at a time.
+  ctx.currentTime = 4;
+  sound.vibrate(50);
+  assert.equal(motors().length, 2, 'a new buzz after the old one stopped');
+  assert.equal(sound.stats().kinds.vibrate, 1, 'the stopped motor was released, not left alongside');
+  assert.ok(Math.abs(motors()[1].frequency.events[0][1] - 135) < 1e-9, 'the new motor spins up');
+  ctx.drain();
+  assert.deepEqual([sound.stats().liveVoices, sound.stats().errors], [0, 0]);
+  sound.dispose();
+});
+
 /** The recorded MAV: the clips of a gas, as the sources a held valve made (the onset plays once, the loop loops), in the order they were made. */
 function mavSources(ctx, since = 0) {
   return ctx.created.slice(since).filter((node) => node.kind === 'noise' && node.buffer && node.buffer.file);
@@ -6736,4 +7128,163 @@ test('game-sound (continuous): the pause silences the ambience, the vent and the
   sound.surfaceBreak();
   assert.equal(sound.snapshot().underwater, false, 'the surface break opens the muffling');
   sound.dispose();
+});
+
+// ---- the page controller (app.js) on a scripted worker --------------------------------------------------------------
+
+/**
+ * app.js as the page runs it: the real module on the real index.html (fake DOM), with a scripted stand-in for the emulation worker.
+ * `answers[type](message, worker)` answers a request (a throw refuses it; the default answers are a page with remembered TRITON
+ * files and a session that boots); `worker.broadcast(message)` posts a broadcast (a notice, a crash). Each mount imports a fresh
+ * copy of app.js (its own query string), which runs its `main()` on the DOM installed for it.
+ */
+let appMounts = 0;
+async function mountApp({ answers = {}, storageKind = 'memory', audio = null } = {}) {
+  installDom(html);
+  globalThis.window.HTMLCanvasElement = function HTMLCanvasElement() {};
+  globalThis.window.localStorage.setItem('ngc-wasm.game-help-seen', '1');
+  const release = describeRelease(DEFAULT_RELEASE_ID);
+  const file = (role) => ({ role, name: `${role}.srec`, size: 1000, report: { srecSha256: 'sha', checks: [] }, release });
+  const info = () => ({
+    engine: 'scripted', storage: { kind: storageKind, problems: [] }, remembered: { main: file('main'), handset: file('handset') },
+    rememberedCustom: null, customSupported: false, profiles: {}, releases: [],
+  });
+  const defaults = {
+    init: info,
+    info,
+    'use-remembered': () => ({ accepted: [file('main'), file('handset')], problems: [] }),
+    boot: () => ({ state: clone(initialState), hostStatus: { ...hostBase, speed: 1, keepingUp: true }, release, persist: true }),
+    'close-session': () => ({ persist: true }),
+  };
+  const workers = [];
+  const requests = [];
+  class ScriptedWorker {
+    constructor() {
+      this.onmessage = null;
+      workers.push(this);
+    }
+
+    postMessage(message) {
+      if (message.id === undefined) return; // a message without an answer (ui, preferences, recycle)
+      requests.push(message);
+      const answer = answers[message.type] || defaults[message.type] || (() => ({}));
+      Promise.resolve().then(() => answer(message, this)).then(
+        (result) => this.broadcast({ type: 'response', id: message.id, ok: true, result }),
+        (error) => this.broadcast({ type: 'response', id: message.id, ok: false, error: { message: error.message } }),
+      );
+    }
+
+    broadcast(message) {
+      if (this.onmessage) this.onmessage({ data: message });
+    }
+
+    terminate() {}
+  }
+  globalThis.Worker = ScriptedWorker;
+  if (audio) globalThis.AudioContext = audio;
+  try {
+    await import(`./app.js?mount=${++appMounts}`);
+    const { document } = globalThis;
+    await until(() => !document.getElementById('screen-entry').hidden && !document.getElementById('boot').disabled);
+    return {
+      document, requests, worker: workers[0],
+      el: (id) => document.getElementById(id),
+      errors: () => (document.getElementById('error').hidden ? '' : document.getElementById('error').textContent),
+      shown: () => Object.entries({ entry: 'screen-entry', emulator: 'screen-emulator', game: 'screen-game' }).filter(([, id]) => !document.getElementById(id).hidden).map(([name]) => name),
+    };
+  } finally {
+    delete globalThis.Worker;
+  }
+}
+
+const PRIVATE_WARNING = /no persistent storage here \(private browsing\?\)/;
+
+test('page: notices of a Boot emulator stay with its session, the page\'s own warning stays on, and a closed session leaves nothing behind on the start screen', async () => {
+  const lock = 'Another tab or window of this application is using the saved profile; this session will not save it.';
+  const app = await mountApp({
+    answers: {
+      boot: (message, worker) => {
+        worker.broadcast({ type: 'notice', level: 'warning', text: lock }); // posted while the session is created
+        return { state: clone(initialState), hostStatus: { ...hostBase }, persist: false };
+      },
+      action: () => { throw new Error('The main board has not enabled the handset supply yet'); },
+    },
+  });
+  assert.match(app.errors(), PRIVATE_WARNING, 'the private-browsing warning on the start screen');
+  app.el('boot').click();
+  await until(() => app.shown().includes('emulator'));
+  assert.match(app.errors(), PRIVATE_WARNING, 'still there in the session');
+  assert.ok(app.errors().includes(lock), 'the notice of the boot is kept');
+  app.document.querySelector('[data-action="up"]').click();
+  await until(() => app.errors().includes('handset supply'));
+  // Close session: the start screen shows the page's warning only.
+  app.el('change-firmware').click();
+  await until(() => app.shown().includes('entry'));
+  assert.match(app.errors(), PRIVATE_WARNING);
+  assert.equal(app.errors().includes(lock), false, 'the closed session\'s notice is gone');
+  assert.equal(app.errors().includes('handset supply'), false, 'and its action error');
+  // A second boot starts clean, with the page's warning.
+  app.el('boot').click();
+  await until(() => app.shown().includes('emulator'));
+  assert.match(app.errors(), PRIVATE_WARNING);
+  assert.equal(app.errors().split(lock).length - 1, 1, 'only this boot\'s notice');
+});
+
+test('page: a failed Start game releases its sound; a game whose engine is lost still quits to the start screen, which says so', async () => {
+  const contexts = [];
+  class FakeContext {
+    constructor() {
+      Object.assign(this, fakeAudioContext());
+      this.calls = [];
+      contexts.push(this);
+    }
+
+    resume() { this.calls.push('resume'); return Promise.resolve(); }
+
+    suspend() { this.calls.push('suspend'); this.state = 'suspended'; return Promise.resolve(); }
+
+    close() { this.calls.push('close'); this.state = 'closed'; return Promise.resolve(); }
+  }
+  let boots = 0;
+  let crashed = false;
+  try {
+    const app = await mountApp({
+      audio: FakeContext,
+      answers: {
+        boot: () => {
+          boots += 1;
+          if (boots === 1) throw new Error('The saved profile could not be read');
+          return { state: clone(initialState), hostStatus: { ...hostBase, speed: 1, keepingUp: true }, persist: true };
+        },
+        'close-session': () => {
+          if (crashed) throw new Error('The engine stopped after an internal error (unreachable). Reload the page.');
+          return { persist: true };
+        },
+      },
+    });
+    app.el('start-game').click();
+    await until(() => boots === 1 && !app.el('profile-problem').hidden);
+    await settle();
+    assert.deepEqual(app.shown(), ['entry']);
+    assert.equal(contexts.length, 1, 'the click made the sound');
+    assert.equal(contexts[0].calls.at(-1), 'close', 'the failed start released it');
+
+    app.el('start-game').click();
+    await until(() => app.shown().includes('game'));
+    assert.equal(app.el('app-main').hidden, true, 'one main landmark in view: the game\'s');
+    assert.equal(contexts.length, 2, 'the next Start game has a sound of its own');
+    // The engine crashes: the runtime refuses every request, close-session included.
+    crashed = true;
+    app.worker.broadcast({ type: 'crash', message: 'unreachable', panic: '' });
+    assert.equal(app.el('game-run-state').textContent, 'Disconnected');
+    app.el('game-quit').click();
+    await until(() => app.shown().includes('entry'));
+    assert.deepEqual(app.shown(), ['entry'], 'Quit left the game');
+    assert.equal(app.el('app-main').hidden, false);
+    assert.match(app.errors(), /The emulation engine stopped after an internal error \(unreachable\)\.[\s\S]*Reload the page to start again/);
+    assert.equal(app.el('status-text').textContent, 'Stopped');
+    assert.ok(app.requests.some((message) => message.type === 'close-session'), 'it tried to close the session first');
+  } finally {
+    delete globalThis.AudioContext;
+  }
 });

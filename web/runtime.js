@@ -75,19 +75,6 @@ export function nonceFromWords(words) {
   return (words[0] & 0x1fffff) * 0x100000000 + words[1];
 }
 
-/**
- * The host's local date and time as the engine's `initialLocalTime` (DESIGN 23): `{year, month, day, hour, minute, second}` from the
- * local clock of `date`, or null when the year is outside the 2000 to 2099 the engine's RTC calendar holds (a misconfigured clock must
- * never stop a session from starting: the engine then keeps its default calendar). The page sends it at every session create; the
- * engine decides whether a board takes it (only a board without a saved RTC checkpoint and without the EEPROM date seed does).
- */
-export function localClockFields(date) {
-  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
-  const year = date.getFullYear();
-  if (year < 2000 || year > 2099) return null;
-  return { year, month: date.getMonth() + 1, day: date.getDate(), hour: date.getHours(), minute: date.getMinutes(), second: date.getSeconds() };
-}
-
 function timestampName(date = new Date()) {
   const p = (n, w = 2) => String(n).padStart(w, '0');
   return `${date.getUTCFullYear()}${p(date.getUTCMonth() + 1)}${p(date.getUTCDate())}T${p(date.getUTCHours())}${p(date.getUTCMinutes())}${p(date.getUTCSeconds())}Z`;
@@ -489,19 +476,14 @@ export class Runtime {
   }
 
   /**
-   * Creates the engine session and gives it what only the host has: the UTC time and some entropy. Every session
-   * (a boot, a profile import, a profile reset) gets a fresh random `historyNonce`, so the output-history epochs of
-   * two launches never coincide, and the browser's local date and time (`initialLocalTime`, DESIGN 23): a board of a new profile
-   * (no saved RTC checkpoint, no EEPROM date seed) starts its calendar from it; the engine never changes an existing checkpoint.
+   * Creates the engine session and gives it what only the host has: the UTC time (for capture names; the device's RTC
+   * calendars never see it, DESIGN 23) and some entropy. Every session (a boot, a profile import, a profile reset) gets a
+   * fresh random `historyNonce`, so the output-history epochs of two launches never coincide.
    */
   newEngineSession(config, profile) {
     const nonce = nonceFromWords(this.randomWords());
-    const wall = this.wallClock();
-    const options = { ...config, historyNonce: nonce };
-    const local = localClockFields(new Date(wall));
-    if (local) options.initialLocalTime = local;
-    this.engine.createSession(options, profile);
-    this.engine.setClock(wall * 1000);
+    this.engine.createSession({ ...config, historyNonce: nonce }, profile);
+    this.engine.setClock(this.wallClock() * 1000);
     const words = this.randomWords();
     this.engine.setSeed(words[0], words[1]);
   }

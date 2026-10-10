@@ -3,20 +3,22 @@
 use crate::args::Args;
 use crate::common;
 use emu_core::Json;
-use ngc::firmware::Firmware;
+use ngc::firmware::{Firmware, Release};
 use ngc::scenario::dive::{self, Depth, DiveConfig, DiveReport, DEPTH_20M, DEPTH_30M};
 use ngc::scenario::ScenarioEnv;
-use ngc::system::{BuildOptions, RoutineAccelMode};
+use ngc::system::{BuildOptions, Mode, RoutineAccelMode};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 
 pub const USAGE: &str = "ngc-cli bench --dive [--dive-seconds S] [--dive-depths 20,30] [--no-idle-ff] [--no-routine-accel|--shadow-routine-accel]\n  \
-    [--verify-routine-accel] [--no-i2c-idle-high] [--release ID] [--json out.json]\n  \
+    [--verify-routine-accel] [--no-i2c-idle-high] [--release ID] [--json out.json] [--dive-png PREFIX]\n  \
     The committed dive benchmark (DESIGN.md 16.3): builds a valid-tissue profile from scratch through firmware routes only\n  \
     (battery wizard, air calibration through the menu, a 150 s NaN dive that saves a decompression date, a +5 day main RTC\n  \
     checkpoint fixture, restart and recalibration), then dives at each depth (default 20 m and 30 m) for --dive-seconds\n  \
-    (default 60) after the bubble check (--dive-png PREFIX writes the last LCD frame of each dive). The sessions are driven like the browser worker (10 virtual-ms slices). Reports the\n  \
+    (default 60) after the bubble check (--dive-png PREFIX writes the last LCD frame of each dive of the first run, whatever its\n  \
+    routine-acceleration mode). The sessions are driven like the browser worker (10 virtual-ms slices). The options of the\n  \
+    boot/steady benchmark (--boot-seconds, --seconds, --steady-samples, --verify-idle-ff, --no-menu) are refused. Reports the\n  \
     average speed, the speed of the main board's compute bursts and of the quiet periods, and prints the state digests of\n  \
     the checkpoints (the end of every stage and every 10 virtual seconds of a dive). --verify-routine-accel runs the whole\n  \
     benchmark with the routine acceleration on and off and requires identical digests and retire counts at every checkpoint\n  \
@@ -87,7 +89,7 @@ fn print_report(out: &mut dyn Write, report: &DiveReport) {
     }
 }
 
-pub fn run(parsed: &Args, main: &Firmware, handset: &Firmware, routine_accel: RoutineAccelMode, out: &mut dyn Write) -> Result<i32, (bool, String)> {
+pub fn run(parsed: &Args, release: &Release, routine_accel: RoutineAccelMode, out: &mut dyn Write) -> Result<i32, (bool, String)> {
     let usage = |message: String| (true, message);
     let failed = |message: String| (false, message);
     let dive_seconds = common::parse_f64("dive-seconds", parsed.value("dive-seconds"), 60.0).map_err(usage)?;
@@ -97,14 +99,18 @@ pub fn run(parsed: &Args, main: &Firmware, handset: &Firmware, routine_accel: Ro
     let depths = depths(parsed.value("dive-depths")).map_err(usage)?;
     let verify = parsed.flag("verify-routine-accel");
     let idle_ff = !parsed.flag("no-idle-ff");
-    let env = ScenarioEnv { main, handset, options: BuildOptions { main_i2c_idle_high: !parsed.flag("no-i2c-idle-high") }, routine_accel: true };
+    let (main, handset) = common::load_images_in(parsed.value("main"), parsed.value("handset"), Mode::Dual, release).map_err(failed)?;
+    let main: Firmware = main.expect("dual");
+    let env = ScenarioEnv { main: &main, handset: &handset, options: BuildOptions { main_i2c_idle_high: !parsed.flag("no-i2c-idle-high") }, routine_accel: true };
     let modes: Vec<RoutineAccelMode> = if verify { vec![RoutineAccelMode::On, RoutineAccelMode::Off] } else { vec![routine_accel] };
     let mut reports = Vec::new();
-    for mode in modes {
-        let config = DiveConfig { routine_accel: mode, idle_fast_forward: idle_ff, depths: depths.clone(), dive_seconds, keep_images: parsed.value("dive-png").is_some() };
+    for (index, mode) in modes.into_iter().enumerate() {
+        // The PNGs are the last frames of the first run, whatever its mode (the frames are identical in every mode).
+        let png_prefix = parsed.value("dive-png").filter(|_| index == 0);
+        let config = DiveConfig { routine_accel: mode, idle_fast_forward: idle_ff, depths: depths.clone(), dive_seconds, keep_images: png_prefix.is_some() };
         let report = execute(&env, &config).map_err(failed)?;
         print_report(out, &report);
-        if let (Some(prefix), RoutineAccelMode::On | RoutineAccelMode::Shadow) = (parsed.value("dive-png"), mode) {
+        if let Some(prefix) = png_prefix {
             for d in &report.dives {
                 let path = format!("{prefix}-{}.png", d.depth.name.replace(' ', ""));
                 std::fs::write(&path, &d.final_png).map_err(|e| failed(format!("cannot write {path}: {e}")))?;

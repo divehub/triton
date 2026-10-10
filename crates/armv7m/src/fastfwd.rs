@@ -9,6 +9,12 @@
 //! plain memory or raise an event before the end of the current run budget, so
 //! whole iterations are skipped by advancing the retire count (and with it
 //! virtual time). The result is bit-identical to executing the instructions.
+//!
+//! The translation state (predecode cache, its VFP and page tables, the cut-block history) also stays exactly what
+//! interpretation leaves (`Cpu::exactness_digest`): the classification reads the loop body without translating it
+//! (`ff_peek_op`), the verification translates an instruction only when it executes it, after the block-start
+//! bookkeeping (`step_insn`'s order), and the skipped iterations repeat the verified one, whose instructions are
+//! translated already.
 
 use crate::cpu::{Cpu, FastForwardStats};
 use crate::op::*;
@@ -244,13 +250,44 @@ impl Cpu {
         }
     }
 
-    /// Static classification of the loop `head..=tail`; returns the instruction count.
+    /// The instruction at `a` for the classification, **without any effect on the translation state**: a predecoded slot
+    /// is read as it is (through its page-end or cut-block wrapper), an instruction that was never translated is decoded
+    /// from the code bytes and left untranslated. Translating ahead of execution would change what interpretation sees
+    /// later: an instruction that is not `Undecoded` at its first block start does not record the block cut of a chunk
+    /// that ends inside that block (`Cpu::visit_tb_start`), and the predecode cache and its VFP and page tables are part of
+    /// the exactness digest. Only the kind of the result is used (VFP encodings stay `Coproc`, which is not pure).
+    fn ff_peek_op<B: CpuBus>(&self, bus: &mut B, a: u32) -> Op {
+        let off = a.wrapping_sub(self.cache_base);
+        if off < self.cache_span {
+            let op = self.cache[(off >> 1) as usize];
+            match op.kind {
+                Kind::Undecoded => {}
+                Kind::PageEnd => return self.page_ops[op.imm as usize],
+                Kind::CutHead => return self.cut_entries[op.raw as usize].inner,
+                _ => return op,
+            }
+        }
+        // (`fill_slot` and `fetch_op_slow` read the same halfwords: the code region's bytes, else the side-effect-free
+        // `fetch16`.)
+        let in_region = bus.code_region(a).map(|(base, bytes)| {
+            let off = a.wrapping_sub(base) as usize;
+            let rd16 = |o: usize| (o + 1 < bytes.len()).then(|| u16::from_le_bytes([bytes[o], bytes[o + 1]]));
+            (rd16(off), rd16(off + 2))
+        });
+        let (hw1, hw2) = in_region.unwrap_or((None, None));
+        let hw1 = hw1.unwrap_or_else(|| bus.fetch16(a));
+        let hw2 = if crate::decode::is_32bit(hw1) { hw2.unwrap_or_else(|| bus.fetch16(a.wrapping_add(2))) } else { 0 };
+        crate::decode::decode(a, hw1, hw2)
+    }
+
+    /// Static classification of the loop `head..=tail`; returns the instruction count. Reads the instructions with
+    /// [`Cpu::ff_peek_op`], so it leaves the translation state exactly as it was.
     fn ff_classify<B: CpuBus>(&mut self, bus: &mut B, head: u32, tail: u32) -> Option<u32> {
         let mut a = head;
         let mut n = 0u32;
         let mut hit_tail = false;
         while a <= tail {
-            let op = self.fetch_op(bus, a);
+            let op = self.ff_peek_op(bus, a);
             if !pure_kind(op.kind) {
                 return None;
             }
@@ -289,8 +326,8 @@ impl Cpu {
         if !(self.ff.table[idx].valid && self.ff.table[idx].tail == tail) {
             self.ff.table[idx] = Entry { tail, fails: 0, valid: true, classified: false };
         }
-        // The static classification only reads the (immutable) predecoded loop body: once a loop passed it,
-        // later entries skip it.
+        // The static classification only reads the (immutable) loop body, without translating it: once a loop passed
+        // it, later entries skip it.
         if !self.ff.table[idx].classified {
             match self.ff_classify(bus, head, tail) {
                 None => {
@@ -360,6 +397,11 @@ impl Cpu {
             self.ff_abort(false);
             return at_boundary;
         }
+        // `step_insn`'s order: the block-start bookkeeping looks at the slot before the instruction is translated (an
+        // `Undecoded` slot at a block start is a first translation, whose block a chunk end keeps cut). An instruction whose
+        // load is refused below is executed next by the run loop at the same retire count, which finds the same block start
+        // (`visit_tb_start` is idempotent) and the slot translated as this fetch leaves it.
+        self.visit_tb_start(bus, pc, self.icount);
         let op = self.fetch_op(bus, pc);
         if let Some(addr) = self.ff_load_addr(&op) {
             if addr >> 20 == 0xE00 || !bus.is_plain_memory(addr) {

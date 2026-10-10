@@ -31,9 +31,7 @@
 //!   never touches an existing one; it has no user option ([`SessionConfig::eeprom_factory_init`] is internal). The start at the
 //!   surface ([`crate::surface_start`]; **on by default and switchable**, [`SessionConfig::start_at_surface`]) acts at every board
 //!   creation, and a new session also resets the oxygen cells. The state names them (`eepromFactoryInit`, `startAtSurface`) next to
-//!   the read-only `decoHealth`; DESIGN.md sections 17 and 18. A third, the clock of a new profile ([`crate::rtc_init`],
-//!   [`SessionConfig::initial_local_time`], `rtcInit` of the state; DESIGN.md section 23), starts the calendar of a board that has
-//!   neither a saved checkpoint nor the EEPROM date seed from the date and time the host supplies; it is off unless the host supplies one.
+//!   the read-only `decoHealth`; DESIGN.md sections 17 and 18.
 
 use crate::actions::{self, Request};
 use crate::eeprom_init::{self, FactoryInit};
@@ -45,7 +43,6 @@ use crate::persistence::{
     inputs_file_text, parse_inputs_file, plan_restore, LedColors, Provenance, RtcState, BOARD_HANDSET, BOARD_MAIN, EEPROM_FILE, NOR_FILE, RTC_STATE_FILE,
 };
 use crate::png;
-use crate::rtc_init::{self, LocalTime, RtcInit};
 use crate::state::{self, FirmwareDescriptor, RtcInfo, StateView};
 use crate::surface_start::{self, SurfaceStart};
 pub use crate::system::BuildOptions;
@@ -107,12 +104,6 @@ pub struct SessionConfig {
     /// [`crate::scenario::recorded_config`] switches it, through this internal field, so that the Renode-recorded scenarios and the dive
     /// benchmark keep their recorded start-up.
     pub button_pull_up: bool,
-    /// The host's local date and time (`initialLocalTime` of the session-create JSON, `--initial-local-time` of the CLI; **none by
-    /// default**, DESIGN.md section 23, [`crate::rtc_init`]). A board whose RTC has no saved checkpoint and no EEPROM date seed
-    /// starts its calendar from it (24-hour format, correct weekday, provenance `host-local-time`); an existing checkpoint is never
-    /// changed. The engine never reads a clock itself. The state names the outcome (`rtcInit`). [`crate::scenario::recorded_config`]
-    /// pins it to none.
-    pub initial_local_time: Option<LocalTime>,
 }
 
 impl Default for SessionConfig {
@@ -132,7 +123,6 @@ impl Default for SessionConfig {
             start_at_surface: true,
             surface_pressure_mbar: surface_start::DEFAULT_SURFACE_MBAR,
             button_pull_up: true,
-            initial_local_time: None,
         }
     }
 }
@@ -229,8 +219,6 @@ struct Launched {
     eeprom_factory: FactoryInit,
     /// What the start-at-the-surface fixture did for this board creation.
     surface_start: SurfaceStart,
-    /// What the host's local time did for this board creation.
-    rtc_init: RtcInit,
 }
 
 /// The session: system, controls, state, persistence.
@@ -253,9 +241,6 @@ pub struct Session {
     eeprom_factory: FactoryInit,
     /// The start-at-the-surface fixture of the last board creation (`startAtSurface` of the state).
     surface_start: SurfaceStart,
-    /// Whether this session started a calendar from the host's local time (`rtcInit` of the state). Set by the first board creation
-    /// and kept across Restart, Cold, Wake and serial changes, which find the checkpoint the first launch saved and never apply it again.
-    rtc_init: RtcInit,
     /// `storage_state_ready`: EEPROM and NOR may be saved from the live system.
     storage_ready: bool,
     /// A Restart/cold/wake failed half way: nothing runs until the next successful launch.
@@ -346,7 +331,6 @@ impl Session {
             rtc: RtcBook { saved, ready: true, provenance: launched.provenance, info: launched.info },
             eeprom_factory: launched.eeprom_factory,
             surface_start: launched.surface_start,
-            rtc_init: launched.rtc_init,
             storage_ready: dual,
             failed: false,
             last_capture: None,
@@ -475,7 +459,6 @@ impl Session {
             output_history_epoch: &epoch,
             eeprom_factory: &self.eeprom_factory,
             surface_start: &self.surface_start,
-            rtc_init: &self.rtc_init,
         })
     }
 
@@ -564,12 +547,18 @@ impl Session {
         self.full_profile()
     }
 
+    /// The whole profile. A handset-only session has no sensors and never reads or changes `inputs.json` (like the runner without
+    /// `--dual`), so it hands the loaded file back unchanged, as it does with the EEPROM and the NOR image it does not use: a host that
+    /// replaces its stored profile with this one keeps the dual inputs of the profile.
     fn full_profile(&self) -> Profile {
         Profile {
             eeprom: self.stored.eeprom.clone(),
             nor: self.stored.nor.clone(),
             rtc_state: self.stored.rtc_state.clone(),
-            inputs: (self.config.mode == Mode::Dual).then(|| inputs_file_text(self.system.inputs())),
+            inputs: match self.config.mode {
+                Mode::Dual => Some(inputs_file_text(self.system.inputs())),
+                Mode::HandsetOnly => self.stored.inputs.clone(),
+            },
             led_colors: self.led_colors_persisted.then(|| self.led_colors.file_text()),
         }
     }
@@ -660,10 +649,6 @@ impl Session {
         // would erase the fact that this session created it.
         if launched.eeprom_factory.applied {
             self.eeprom_factory = launched.eeprom_factory;
-        }
-        // Likewise only a launch that started a calendar from the host's time replaces the report (the first launch saved the checkpoint).
-        if launched.rtc_init.applied {
-            self.rtc_init = launched.rtc_init;
         }
         self.surface_start = launched.surface_start;
         self.rtc.ready = true;
@@ -831,10 +816,11 @@ impl Session {
 
     /// The optional `surfacePressureMbar` of the actions that recreate the boards (`reset`, `cold`, `wake`, `serial`): the
     /// page's surface-pressure setting, which the start-at-the-surface fixture uses from this board creation on. Validated
-    /// before anything is shut down.
+    /// before anything is shut down. A JSON number only, as at session creation (not a string such as `"900"` or a boolean,
+    /// which the runner's `float()` of the sensor inputs would take).
     fn take_surface_pressure(&mut self, payload: &Json) -> Result<(), String> {
         let Some(value) = payload.get("surfacePressureMbar") else { return Ok(()) };
-        let mbar = python_float(value).map_err(|_| surface_start::SURFACE_RANGE_MESSAGE.to_string())?;
+        let mbar = value.as_f64().ok_or_else(|| surface_start::SURFACE_RANGE_MESSAGE.to_string())?;
         self.config.surface_pressure_mbar = surface_start::validate_surface(mbar)?;
         Ok(())
     }
@@ -943,30 +929,13 @@ fn launch_system(
         let qspi = main_board.board.get_mut::<NgcQuadSpi>(qspi_id).ok_or("the main QSPI is missing")?;
         qspi.load_backing(&labels.nor(), stored.nor.as_deref()).map_err(|e| e.to_string())?;
     }
-    // restore_rtc_state(client, rtc_state, rtc_boards, allow_eeprom_seed=dual)
+    // restore_rtc_state(client, rtc_state, rtc_boards, allow_eeprom_seed=dual). The legacy seed reads the original application's
+    // EEPROM calendar record, which is an original firmware address: never for a custom build (DESIGN.md 20.1).
     let names: Vec<&str> = if dual { vec![BOARD_MAIN, BOARD_HANDSET] } else { vec![BOARD_HANDSET] };
     let live_main = system.rtc_checkpoint(Which::Main);
     let eeprom_image = system.main.as_ref().map(|m| m.eeprom.image());
-    let mut plans = plan_restore(rtc_saved, &names, dual, eeprom_image.as_ref().map(|i| &i[..]), live_main.as_ref());
-    // The clock of a new profile (DESIGN.md 23): the boards that have neither a saved checkpoint nor the EEPROM date seed start from the
-    // host's local time, in the order of `names`. A planned board (saved or seeded from the EEPROM) is never changed.
-    let rtc_init = match &config.initial_local_time {
-        None => RtcInit::not_supplied(),
-        Some(local) => {
-            let (mut seeded, mut kept) = (Vec::new(), Vec::new());
-            for name in &names {
-                if plans.iter().any(|(planned, _)| planned == name) {
-                    kept.push(*name);
-                    continue;
-                }
-                let which = if *name == BOARD_MAIN { Which::Main } else { Which::Handset };
-                let live = system.rtc_checkpoint(which).ok_or_else(|| format!("the {name} RTC is missing"))?;
-                plans.push((name.to_string(), rtc_init::seed(local, &live)?));
-                seeded.push(*name);
-            }
-            RtcInit::outcome(local, &seeded, &kept)
-        }
-    };
+    let allow_eeprom_seed = dual && !system.release().is_custom();
+    let plans = plan_restore(rtc_saved, &names, allow_eeprom_seed, eeprom_image.as_ref().map(|i| &i[..]), live_main.as_ref());
     let mut provenance = Vec::new();
     for (name, board) in &plans {
         let which = if name == BOARD_MAIN { Which::Main } else { Which::Handset };
@@ -984,7 +953,7 @@ fn launch_system(
         main_bkp1_wake_override: dual && boot_mode == BootMode::HandsetWake && !system.release().is_custom(),
     };
     system.apply_boot_fixtures()?;
-    Ok(Launched { system, provenance, info, eeprom_factory, surface_start, rtc_init })
+    Ok(Launched { system, provenance, info, eeprom_factory, surface_start })
 }
 
 /// `%Y%m%dT%H%M%S%fZ` of a UTC time in microseconds since the Unix epoch.

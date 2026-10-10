@@ -45,11 +45,13 @@ function browserFrames() {
 }
 const INDICATOR_NAMES = { vibrator: 'Handset vibrator', red: 'Red HUD LED (HUD 3)', white: 'White HUD LED (HUD 2)' };
 // W / S swimming: the speed tiers in m/min (hold, double tap and hold, triple tap and hold), up to the gesture maxima of
-// 18 m/min ascending and 30 m/min descending; taps count when the next press follows the last release within the gap.
+// 18 m/min ascending and 30 m/min descending; a press counts as a tap when it was shorter than the tap hold and the next press
+// follows its release within the gap.
 const SWIM_KEYS = { KeyW: 'up', KeyS: 'down' };
 const SWIM_RATES = { up: [6, 12, 18], down: [10, 20, 30] };
 const SWIM_TIERS = 3;
 const SWIM_TAP_GAP_MS = 300;
+const SWIM_TAP_HOLD_MS = 300;
 // Reset all (DESIGN 23): the confirmation says what is erased.
 const RESET_ALL_TITLE = 'Reset all?';
 const RESET_ALL_MESSAGE = "This erases the dive computer's memory: settings, calibration, logbook and clock. Both boards restart as new, and the diver returns to the boat.";
@@ -65,7 +67,7 @@ const SOUND_VOLUME_KEY = 'game-sound-volume';
 const SOUND_DEFAULT_VOLUME = 60;
 const SOUND_TAIL_MS = 1500; // a closed session lets its last sound (the power-down tone) ring out before the sound is disposed
 const VIBRATE_PULSE_MS = 50; // one firmware pulse; the sound makes at least 120 ms of it
-const VIBRATE_HOLD_MS = 250; // a vibrator held on keeps its buzz going (each state extends it)
+const VIBRATE_HOLD_MS = 250; // a vibrator held on keeps its buzz going: each state (every 200 ms) asks for this much from now
 const SWIM_SOUND_STEP = 0.5; // m/min: the swim sound hears the speed in steps this big
 const VENT_SOUND_STEP = 0.05; // SL/s: and the vent rate in steps this big (anything under half a step is silence)
 const VENT_SOUND_MIN_DEPTH_M = 0.15; // the water scene's own limit: shallower than this its bubbles vanish, and the vent is not heard
@@ -191,6 +193,7 @@ export class GameView {
     this.swimHeld = new Map(); // W / S held: the speed tier (1 to 3) of each
     this.swimTaps = { KeyW: 0, KeyS: 0 };
     this.swimReleased = { KeyW: -Infinity, KeyS: -Infinity };
+    this.swimPressed = { KeyW: -Infinity, KeyS: -Infinity };
     this.previousPaint = '';
     this.alertsKey = '';
     // The worker sends the first LCD frame while it creates the session, so it can reach `onFrame` before `show` runs: frames
@@ -328,7 +331,8 @@ export class GameView {
    * Quit: the session closes (the profile is saved) and the page returns to the start screen. The dive computer is a black box
    * here: when the engine reports it in standby, Quit goes ahead at once; while it is on, the player is asked to turn it off on
    * the device first or to force the shutdown. A device that turns itself off while the question is open ends it (Quit goes on).
-   * With no live session to switch off (no state yet, or a lost engine) there is nothing to ask either.
+   * With nothing that could still power down by itself there is nothing to ask either: no state yet, an engine stopped by an error,
+   * or a lost engine (then the page leaves even though the session cannot be closed).
    */
   async quit() {
     if (this.closing || this.resetting || this.modalOpen) return;
@@ -340,9 +344,12 @@ export class GameView {
     await this.leave();
   }
 
-  /** The device counts as on unless the engine reports it in standby. */
+  /**
+   * The device counts as on unless the engine reports it in standby. An engine stopped by an error (DESIGN 24) does not count: the
+   * device can no longer turn itself off, so Quit closes the session (the profile saved as it is) without asking.
+   */
   deviceIsOn() {
-    return !!this.state && !this.state.standby && !this.connectionError;
+    return !!this.state && !this.state.standby && !this.state.error && !this.connectionError;
   }
 
   /** Asks whether to force the shutdown; resolves true to quit (forced, or the device turned itself off), false to stay in the dive. */
@@ -487,7 +494,8 @@ export class GameView {
       return;
     }
     const state = this.state;
-    const resume = previous === 0 || (previous === null && !!state && !state.running && !state.standby && !state.error);
+    // In standby the engine refuses `resume` (only Wake system brings the boards back, and resumes them): the pause is lifted, nothing more.
+    const resume = !(state && state.standby) && (previous === 0 || (previous === null && !!state && !state.running && !state.error));
     const token = ++this.paceToken;
     const confirmed = this.client.request('speed', { speed: effective === 'uncapped' ? null : effective });
     Promise.resolve(confirmed).then(() => {
@@ -551,10 +559,12 @@ export class GameView {
       if (this.clock.speed === 0 || this.motionPointer !== null) return;
       const taps = now - this.swimReleased[code] <= SWIM_TAP_GAP_MS ? Math.min(SWIM_TIERS, this.swimTaps[code] + 1) : 1;
       this.swimTaps[code] = taps;
+      this.swimPressed[code] = now;
       this.swimHeld.set(code, taps);
     } else {
       if (!this.swimHeld.delete(code)) return;
-      this.swimReleased[code] = now;
+      // Only a short press is a tap: after a longer hold the next press starts at the first speed again.
+      this.swimReleased[code] = now - this.swimPressed[code] < SWIM_TAP_HOLD_MS ? now : -Infinity;
     }
     const up = this.swimHeld.get('KeyW');
     const descend = this.swimHeld.get('KeyS');
@@ -625,8 +635,13 @@ export class GameView {
     if (this.clock.speed !== 0) void this.queue.send('resume');
   }
 
+  /**
+   * The error alert's Resume. With the game clock paused it resumes the clock as well (at the speed before the pause), so the
+   * engine never runs behind a paused header and play control: the pacing then sends the engine's resume itself.
+   */
   resumeEngine() {
-    void this.queue.send('resume');
+    if (this.clock.speed === 0) this.chooseSpeed(this.clock.previousSpeed);
+    else void this.queue.send('resume');
   }
 
   // ---- reset -----------------------------------------------------------------------------------------------------
@@ -635,8 +650,8 @@ export class GameView {
    * Reset all (DESIGN 23): after a confirmation, the dive computer is made new. The session is closed without saving, the whole
    * profile area of the release is cleared (EEPROM, log flash, RTC checkpoint, inputs, LED colors, and the game's oxygen-cell
    * deviations) through the same worker request as the start screen's "Reset the saved profile", and a new game session starts on
-   * the same firmware with the same start options: the EEPROM factory image is written again, the clock starts from the browser's
-   * local time, the diver is on the boat with a fresh Air loop at 1x.
+   * the same firmware with the same start options: the EEPROM factory image is written again, both clocks start at the engine's
+   * default calendar, the diver is on the boat with a fresh Air loop at 1x.
    */
   async resetAll() {
     if (!this.active || this.resetting || this.closing || this.modalOpen) return;
@@ -699,6 +714,10 @@ export class GameView {
     const message = (error && error.message) || 'The emulator could not be reset.';
     if (!closed) {
       this.actionError = `Reset all failed: ${message}`;
+      // The dive goes on, and so does its sound: the ambience comes back, and the memo says what `soundResetting` told the module
+      // (nothing swimming, venting or held), so the next render and water frame tell it again whatever plays now.
+      Object.assign(this.soundMemo, { swim: 0, vent: 0, mav: null });
+      this.sfx('setAmbience', true);
       this.render();
       return;
     }
@@ -919,6 +938,19 @@ export class GameView {
     } catch (_) { /* silent */ }
   }
 
+  /**
+   * A Start game whose boot failed (or a session started in the emulator view instead): the sound that the click created is released
+   * at once, so no audio context is left behind without a game. The next Start game creates a new one.
+   */
+  discardSound() {
+    if (this.active) return;
+    const sound = this.sound;
+    this.sound = null;
+    try {
+      if (sound && typeof sound.dispose === 'function') sound.dispose();
+    } catch (_) { /* silent */ }
+  }
+
   /** One call to the sound, or nothing. */
   sfx(name, ...args) {
     const sound = this.sound;
@@ -1035,14 +1067,17 @@ export class GameView {
     this.syncSound();
   }
 
-  /** The vibrator indicator lit: one buzz per lit pulse (the replay's flashes are the pulses), and a held-on vibrator keeps buzzing. */
+  /**
+   * The vibrator indicator lit: one buzz per lit pulse (the replay's flashes are the pulses), and a vibrator held on is one buzz for
+   * as long as it is on: from the first state that shows it on, each state asks for the hold length again, which the sound extends.
+   */
   buzzFrom(view) {
     const memo = this.soundMemo;
     const lit = !!view.lit;
     const rising = lit && !memo.buzzing;
     memo.buzzing = lit;
-    if (rising) this.sfx('vibrate', VIBRATE_PULSE_MS);
-    else if (lit && view.state === 'on') this.sfx('vibrate', VIBRATE_HOLD_MS);
+    if (lit && view.state === 'on') this.sfx('vibrate', VIBRATE_HOLD_MS);
+    else if (rising) this.sfx('vibrate', VIBRATE_PULSE_MS);
   }
 
   // ---- wiring ----------------------------------------------------------------------------------------------------
@@ -1140,8 +1175,11 @@ export class GameView {
         if (event.pointerId === this.motionPointer) this.stopMotion();
       });
     }
-    // Ascent and descent are touch and drag only; the arrow keys belong to the handset.
-    ocean.addEventListener('blur', () => this.stopMotion());
+    // The focus leaving the water ends a drag in it. It does not stop a W / S swim: those keys work wherever the focus is (a handset
+    // press or a MAV press moves the focus) and end on their release or when the window loses the focus.
+    ocean.addEventListener('blur', () => {
+      if (this.motionPointer !== null) this.stopMotion();
+    });
 
     // The play control.
     $('play-speed').addEventListener('click', () => {
@@ -1157,7 +1195,7 @@ export class GameView {
       if (this.active && !(event.target && event.target.closest && event.target.closest('.play-control'))) this.closeMenu();
     });
 
-    // The valves: hold a MAV button (pointer, or Space / Enter while it has the focus) or the O / D keys.
+    // The valves: hold a MAV button (pointer, or Enter while it has the focus) or the O / D keys.
     for (const gas of ['oxygen', 'diluent']) {
       const button = $(`mav-${gas}`);
       button.addEventListener('pointerdown', (event) => {
@@ -1171,23 +1209,21 @@ export class GameView {
       button.addEventListener('pointerup', release);
       button.addEventListener('pointercancel', release);
       button.addEventListener('lostpointercapture', release);
-      // Space / Enter keep a focused valve usable without a pointer.
+      // Enter keeps a focused valve usable without a pointer (Space stays the game's pause, wherever the focus is; O and D hold
+      // the valves from anywhere).
       button.addEventListener('keydown', (event) => {
-        if ((event.code === 'Space' || event.code === 'Enter') && this.clock.speed !== 0 && !this.popoverOpen()) {
+        if (event.code === 'Enter' && this.clock.speed !== 0 && !this.popoverOpen()) {
           event.preventDefault();
-          this.holdValve(gas, `focused-key:${event.code}`, true);
+          this.holdValve(gas, 'focused-key:Enter', true);
         }
       });
       button.addEventListener('keyup', (event) => {
-        if (event.code === 'Space' || event.code === 'Enter') {
+        if (event.code === 'Enter') {
           event.preventDefault();
-          this.holdValve(gas, `focused-key:${event.code}`, false);
+          this.holdValve(gas, 'focused-key:Enter', false);
         }
       });
-      button.addEventListener('blur', () => {
-        this.holdValve(gas, 'focused-key:Space', false);
-        this.holdValve(gas, 'focused-key:Enter', false);
-      });
+      button.addEventListener('blur', () => this.holdValve(gas, 'focused-key:Enter', false));
     }
 
     $('diluent-select').addEventListener('change', (event) => {
@@ -1214,10 +1250,18 @@ export class GameView {
     });
 
     // Keyboard: the arrow keys belong to the handset only (Up and Down wherever the focus is; never a scroll or a field),
-    // W and S swim up and down, O and D hold the valves, Space pauses and resumes, Escape lets everything go.
+    // W and S swim up and down, O and D hold the valves, Space pauses and resumes, Escape lets everything go. The game's keys work
+    // whatever has the focus (a MAV held with the mouse, a header button after a dialog closed), except in a field being edited.
+    const closest = (target, selector) => !!(target && typeof target.closest === 'function' && target.closest(selector));
+    const editing = (target) => closest(target, 'input,select,textarea,[contenteditable]');
     document.addEventListener('keydown', (event) => {
       const target = event.target;
-      if (!this.active || this.modalOpen || this.resetting) return; // the Reset all confirmation has the keyboard
+      if (!this.active || this.modalOpen) return; // the Reset all and Quit confirmations have the keyboard
+      if (this.resetting) {
+        // Reset all is under way: no key reaches the discarded session, and the arrow keys and Space still do not scroll the page.
+        if (isHandsetArrow(event) || (event.code === 'Space' && !editing(target))) event.preventDefault();
+        return;
+      }
       if (this.helpOpen) {
         this.helpKeydown(event); // so does the controls guide
         return;
@@ -1232,24 +1276,20 @@ export class GameView {
         if (action) this.pressHandset(action);
         return;
       }
-      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
-      const closest = (selector) => !!(target && typeof target.closest === 'function' && target.closest(selector));
-      if (event.code in SWIM_KEYS && !closest('input,select,textarea,[contenteditable]')) {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || editing(target)) return;
+      if (event.code in SWIM_KEYS) {
         event.preventDefault();
         if (!event.repeat) this.swimKey(event.code, true);
         return;
       }
-      if (closest('input,select,textarea,button,summary')) return;
       const gas = event.code === 'KeyO' ? 'oxygen' : event.code === 'KeyD' ? 'diluent' : null;
-      if (gas && this.clock.speed !== 0) {
+      if (gas) {
         event.preventDefault();
-        this.holdValve(gas, 'shortcut', true);
-      }
-      if (event.code === 'Space' && !event.repeat) {
-        event.preventDefault();
-        this.togglePause();
-      }
-      if (event.code === 'Escape') {
+        if (this.clock.speed !== 0) this.holdValve(gas, 'shortcut', true);
+      } else if (event.code === 'Space') {
+        event.preventDefault(); // the game's pause, never also a click of the focused button or a page scroll
+        if (!event.repeat) this.togglePause();
+      } else if (event.code === 'Escape') {
         this.stopMotion();
         this.releaseValves();
         this.closeMenu();
@@ -1261,6 +1301,8 @@ export class GameView {
       if (event.code in SWIM_KEYS) this.swimKey(event.code, false);
       const gas = event.code === 'KeyO' ? 'oxygen' : event.code === 'KeyD' ? 'diluent' : null;
       if (gas) this.holdValve(gas, 'shortcut', false);
+      // Space was the pause: a focused button must not take its release as a click (the browsers click a button on Space's keyup).
+      if (event.code === 'Space' && !this.modalOpen && !this.popoverOpen() && !editing(event.target)) event.preventDefault();
     });
     window.addEventListener('blur', () => {
       if (!this.active) return;

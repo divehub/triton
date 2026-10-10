@@ -87,19 +87,14 @@ pub struct HostConfig {
     pub history_nonce: u64,
     /// Benchmark and test hook (`blankEeprom`, default off; the page never sends it and there is no CLI flag): a new EEPROM stays
     /// erased instead of becoming the factory image, which the Renode-recorded workload of `web/bench-node.mjs --dive` needs to match
-    /// the native dive benchmark (`ngc::scenario::recorded_config`). It selects that recorded workload as a whole: it also keeps the
-    /// handset buttons as the Renode model of the recordings (`SessionConfig::button_pull_up` false). It is not the user option the
-    /// factory image does not have.
+    /// the native dive benchmark. It selects that recorded workload as a whole by applying `ngc::scenario::recorded_config`: it also
+    /// keeps the handset buttons as the Renode model of the recordings (`SessionConfig::button_pull_up` false) and switches the start
+    /// at the surface off whatever `startAtSurface` says. It is not the user option the factory image does not have.
     pub blank_eeprom: bool,
     /// The start-at-the-surface fixture (`startAtSurface`, default on; `--no-start-at-surface` of the CLI).
     pub start_at_surface: bool,
     /// The surface pressure in mbar of that fixture (`surfacePressureMbar`, 100 to 30000, default 1013.25).
     pub surface_pressure_mbar: f64,
-    /// The host's local date and time (`initialLocalTime`: `{year, month, day, hour, minute, second}`, the year 2000 to 2099 and a real
-    /// calendar date; `null` or absent: none; `--initial-local-time` of the CLI). A board whose RTC has no saved checkpoint and no
-    /// EEPROM date seed starts its calendar from it; an existing checkpoint is never changed (DESIGN.md section 23, `rtcInit` of the
-    /// state). The page sends the browser's clock at every session create. `blankEeprom` (the recorded workload) ignores it.
-    pub initial_local_time: Option<ngc::rtc_init::LocalTime>,
 }
 
 impl Default for HostConfig {
@@ -118,7 +113,6 @@ impl Default for HostConfig {
             blank_eeprom: false,
             start_at_surface: true,
             surface_pressure_mbar: ngc::surface_start::DEFAULT_SURFACE_MBAR,
-            initial_local_time: None,
         }
     }
 }
@@ -156,12 +150,6 @@ impl HostConfig {
                 "surfacePressureMbar" => {
                     let mbar = value.as_f64().ok_or(ngc::surface_start::SURFACE_RANGE_MESSAGE)?;
                     config.surface_pressure_mbar = ngc::surface_start::validate_surface(mbar)?;
-                }
-                "initialLocalTime" => {
-                    config.initial_local_time = match value {
-                        Json::Null => None,
-                        object => Some(ngc::rtc_init::LocalTime::from_json(object).map_err(|e| format!("initialLocalTime: {e}"))?),
-                    };
                 }
                 "historyNonce" => {
                     config.history_nonce = value.as_u64().ok_or("historyNonce must be a non-negative integer below 2^64")?;

@@ -49,9 +49,9 @@ suite refuses other releases.
 
 ### How the TRITON decompression entries were established
 
-The five RAM entries come from Renode hooks on the unchanged TRITON main image (start-up initializer `0x08008308`, the NDL routine around `0x08008550`/`0x0800857e`): every tissue word, the breathing-mode byte and the ppO2 were read at those points, including the NaN case; the cell-flag cache `0x200023f4..=0x200023f6` was read on this engine (`0x01` x3 on a fresh profile, `0x09` x3 after the firmware's air calibration, `0x01` x3 after a cold boot). The two EEPROM entries were checked against the original record table of the main image: it holds one entry (offset u16, size u16) per record ID at `0x080306f2 + 4 * ID`, and IDs `0x6a..=0x89` are 32 words at physical `0x0ff..=0x17e`, ID `0x8a` is 4 bytes at `0x17f` (the fixture reads only these two ranges). They are consumed by `crates/ngc/src/deco.rs` and reported in the state as `firmware.addresses`.
+The five RAM entries come from Renode hooks on the unchanged TRITON main image (start-up initializer `0x08008308`, the NDL routine around `0x08008550`/`0x0800857e`): every tissue word, the breathing-mode byte and the ppO2 were read at those points, including the NaN case; the cell-flag cache `0x200023f4..=0x200023f6` was read on this engine (`0x01` x3 on a fresh profile, `0x09` x3 after the firmware's air calibration, `0x01` x3 after a cold boot). The two EEPROM entries were checked against the original record table of the main image: it holds one entry (offset u16, size u16) per record ID at `0x080306f2 + 4 * ID`, and IDs `0x6a..=0x89` are 32 words at physical `0x0ff..=0x17e`, ID `0x8a` is 4 bytes at `0x17f` (`decoHealth` reads only these two ranges). They are consumed by `crates/ngc/src/deco.rs` and reported in the state as `firmware.addresses`.
 
-NEPTUN: **unavailable**. The decompression code of its main image is part of the different, frame-pointer build that has no instruction-identical counterpart (the reason of `NEPTUN_MAIN_BUILD`), so `decoHealth` reports `unknown` with that reason and the EEPROM consistency fixture is skipped with it. A proof would need `testdata/tools/release_match.py` windows around the initializer, which was not attempted.
+NEPTUN: **unavailable**. The decompression code of its main image is part of the different, frame-pointer build that has no instruction-identical counterpart (the reason of `NEPTUN_MAIN_BUILD`), so `decoHealth` reports `unknown` with that reason. A proof would need `testdata/tools/release_match.py` windows around the initializer, which was not attempted.
 
 ### The EEPROM record table (both releases)
 
@@ -75,8 +75,8 @@ offsets, `bl` targets, branch displacements) and searches the NEPTUN disassembly
 * `mainCurrentTcb`: the PendSV handler (vector 14) is the same 27 instructions at TRITON `0x08028a40` and NEPTUN `0x080470d0`;
   its first literal is `pxCurrentTCB`: `0x20005708` becomes `0x200053a8`.
 * Everything else in the main image (the battery module: initializer `0x0801af2c`, getter `0x0801ae4c`) has no
-  instruction-identical counterpart, so those fields are reported unavailable. `crates/ngc/tests/session_parity.rs`
-  (`the_neptun_address_table_is_proven_against_the_images`) re-checks the proven entries against the local images.
+  instruction-identical counterpart, so those fields are reported unavailable. The proven entries were re-checked against
+  the local images by a test while NEPTUN had tests; NEPTUN is optional and has none now.
 
 ## Custom (native) builds
 

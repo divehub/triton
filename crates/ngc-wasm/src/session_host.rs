@@ -38,6 +38,7 @@ impl SessionHost {
             inputs: text(INPUTS_FILE, staged.inputs)?,
             led_colors: text(LED_COLORS_FILE, staged.led_colors)?,
         };
+        let blank_eeprom = config.blank_eeprom;
         let config = SessionConfig {
             mode: if config.dual { Mode::Dual } else { Mode::HandsetOnly },
             boot_mode: if config.cold { BootMode::Cold } else { BootMode::HandsetWake },
@@ -49,17 +50,17 @@ impl SessionHost {
             start_paused: config.start_paused,
             i2c_idle_high: config.i2c_idle_high,
             history_nonce: config.history_nonce,
-            // The EEPROM factory image has no user option: a session applies it to a new EEPROM, unless a benchmark or test asks for
-            // the recorded workload's blank one (`blankEeprom`).
-            eeprom_factory_init: !config.blank_eeprom,
+            // The EEPROM factory image has no user option: a session applies it to a new EEPROM (DESIGN.md 18). The button pins rest
+            // high from reset for every firmware (DESIGN.md 20.3).
+            eeprom_factory_init: true,
             start_at_surface: config.start_at_surface,
             surface_pressure_mbar: config.surface_pressure_mbar,
-            // The button pins rest high from reset for every firmware (DESIGN.md 20.3). The benchmark hook `blankEeprom` selects the
-            // Renode-recorded workload as a whole (`ngc::scenario::recorded_config`), which includes the Renode button model.
-            button_pull_up: !config.blank_eeprom,
-            // The same recorded workload keeps the fresh RTC calendar of the recordings (DESIGN.md 23).
-            initial_local_time: if config.blank_eeprom { None } else { config.initial_local_time },
+            button_pull_up: true,
         };
+        // The benchmark and test hook `blankEeprom` selects the Renode-recorded workload as a whole, exactly as the native dive
+        // benchmark and the scenarios build it (`ngc::scenario::recorded_config`): a new EEPROM stays erased, the Renode button model
+        // and no start at the surface.
+        let config = if blank_eeprom { ngc::scenario::recorded_config(config) } else { config };
         Ok(Box::new(SessionHost { session: Session::new(config, main, handset, profile)? }))
     }
 }

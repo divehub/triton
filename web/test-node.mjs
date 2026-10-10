@@ -602,6 +602,26 @@ test('runtime: handset-only mode, remembered firmware and forgetting it', async 
   assert.equal((await storage.list('firmware')).length, 0);
 });
 
+test('runtime: a handset-only session keeps the saved inputs of the profile (it neither reads nor deletes inputs.json)', async () => {
+  const storage = new MemoryStorage();
+  const h = new Harness({ storage });
+  await h.ready();
+  await h.request('boot', { options: { mode: 'dual', startPaused: true } });
+  await h.action({ action: 'inputs', inputs: { temperature1C: 27.5 } });
+  await h.close();
+  const saved = new TextDecoder().decode(await storage.read('profile', 'inputs.json'));
+  assert.match(saved, /"temperature1C": 27\.5/);
+  // A handset-only session on the same profile closes with the profile saved (replace: files it does not return are removed); the
+  // engine hands the file back unchanged, so the dual inputs survive.
+  await h.request('boot', { options: { mode: 'handset', startPaused: true } });
+  await h.action({ action: 'advance', seconds: 0.5 });
+  await h.close();
+  assert.equal(new TextDecoder().decode(await storage.read('profile', 'inputs.json')), saved, 'inputs.json is kept byte for byte');
+  const again = await h.request('boot', { options: { mode: 'dual', startPaused: true } });
+  assert.equal(again.state.inputs.temperature1C, 27.5, 'the next dual session finds its inputs');
+  await h.close();
+});
+
 test('runtime: pacing publishes frames and state, honors pause, speed and background policy', async () => {
   const h = new Harness();
   await h.ready();
@@ -829,64 +849,58 @@ test('runtime: the start at the surface is a start option of the real engine and
   await altitude.close();
 });
 
-test('runtime: a new profile starts both calendars from the browser\'s local time, a saved profile keeps its own checkpoint, and the Reset all requests make a new profile that starts from the local time again', async () => {
+test('runtime: a new profile starts both calendars at the engine\'s default whatever the browser clock says, Reset all does it again, an old host-local-time checkpoint still loads, and the removed key is refused', async () => {
   const storage = new MemoryStorage();
-  let wall = new Date(2026, 9, 10, 14, 3, 22).getTime(); // 2026-10-10 14:03:22 local time, a Saturday
+  let wall = new Date(2026, 9, 10, 14, 3, 22).getTime(); // the browser's clock: never the device's (DESIGN 23)
   const h = new Harness({ storage, wallClock: () => wall });
   await h.ready();
   const checkpoint = (files, board) => JSON.parse(new TextDecoder().decode(files.find((file) => file.name === 'rtc-state.json').data)).boards[board];
-  const registers = { time: 0x14_0322, date: 0x26_0000 | 6 << 13 | 0x1000 | 0x10 };
+  const DEFAULT = { time: 0, date: 0x20_0000 | 1 << 13 | 0x0100 | 0x01 }; // 2020-01-01 00:00:00, the RTC's own default
+  const fromDefault = (result) => {
+    assert.equal('rtcInit' in result.state, false, 'no host-time report');
+    assert.deepEqual(Object.values(result.state.rtcPersistence.sources).map((source) => source.source), ['fresh-rtc', 'fresh-rtc']);
+    const exported = h.runtime.engine.exportProfile();
+    for (const board of ['ngc-main', 'ngc-handset']) {
+      const saved = checkpoint(exported, board);
+      assert.deepEqual([saved.timeRegister, saved.dateRegister], [DEFAULT.time, DEFAULT.date], board);
+    }
+  };
 
-  // A new profile: the engine used the local time for both boards, before any guest ran (paused at virtual time 0).
-  const booted = await h.request('boot', { options: { mode: 'dual', startPaused: true } });
-  const report = booted.state.rtcInit;
-  assert.deepEqual(Object.keys(report).sort(), ['applied', 'boards', 'localTime', 'reason']);
-  assert.equal(report.applied, true, JSON.stringify(report));
-  assert.equal(report.localTime, '2026-10-10T14:03:22');
-  assert.deepEqual(report.boards, ['ngc-main', 'ngc-handset']);
-  assert.deepEqual(Object.values(booted.state.rtcPersistence.sources).map((source) => source.source), ['host-local-time', 'host-local-time']);
-  const exported = h.runtime.engine.exportProfile();
-  for (const board of ['ngc-main', 'ngc-handset']) {
-    const saved = checkpoint(exported, board);
-    assert.deepEqual([saved.timeRegister, saved.dateRegister, saved.format12Hour, saved.provenance], [registers.time, registers.date, false, { source: 'host-local-time' }], board);
-  }
-  assert.equal(booted.state.eepromFactoryInit.applied, true, 'the EEPROM factory image is created in the same start');
-
-  // Closing saves it; reopening finds the checkpoint: a different local time changes nothing, and the report says why.
-  await h.request('close-session');
-  wall = new Date(2030, 0, 2, 3, 4, 5).getTime();
-  const reopened = await h.request('boot', { options: { mode: 'dual', startPaused: true } });
-  assert.equal(reopened.state.rtcInit.applied, false);
-  assert.equal(reopened.state.rtcInit.localTime, '2030-01-02T03:04:05', 'the value the page sent is still reported');
-  assert.match(reopened.state.rtcInit.reason, /^Not applied: every board already had a saved RTC checkpoint/);
-  assert.deepEqual(reopened.state.rtcPersistence.restoredBoards, ['ngc-main', 'ngc-handset']);
-  assert.equal(reopened.state.eepromFactoryInit.applied, false, 'and the saved EEPROM is not new either');
-  const kept = checkpoint(h.runtime.engine.exportProfile(), 'ngc-main');
-  assert.equal(kept.dateRegister, registers.date, 'the 2026 date stays');
-  assert.deepEqual(kept.provenance, { source: 'host-local-time' }, 'the provenance round-trips through rtc-state.json');
-
-  // Reset all, as the game drives it: close unsaved, clear the area, boot again: a new profile, the clock of that moment.
+  // A new profile, paused at virtual time 0: the default calendar on both boards.
+  fromDefault(await h.request('boot', { options: { mode: 'dual', startPaused: true } }));
+  // Reset all, as the game drives it: close unsaved, clear the area, boot again: a new profile, the default calendar again.
   wall = new Date(2031, 11, 31, 23, 59, 58).getTime();
   assert.deepEqual(await h.request('close-session', { save: false }), { persist: true });
-  assert.equal((await storage.list('profile')).length > 0, true, 'the unsaved close left the saved profile alone');
   await h.request('reset-profile', { release: 'TRITON-5.8-65.3' });
   assert.equal((await storage.list('profile')).length, 0);
   const fresh = await h.request('boot', { options: { mode: 'dual', startPaused: true }, remember: false, profile: 'stored', custom: false });
-  assert.equal(fresh.state.rtcInit.applied, true);
-  assert.equal(fresh.state.rtcInit.localTime, '2031-12-31T23:59:58');
+  fromDefault(fresh);
   assert.equal(fresh.state.eepromFactoryInit.applied, true, 'the factory image is written again');
-  assert.equal(fresh.state.serialNumber, 1);
-  const again = checkpoint(h.runtime.engine.exportProfile(), 'ngc-main');
-  assert.deepEqual([again.timeRegister, again.dateRegister], [0x23_5958, 0x31_0000 | 3 << 13 | 0x1200 | 0x31], '2031-12-31 23:59:58 is a Wednesday');
+
+  // The engine refuses the removed session-create key, as it does every removed one; nothing changes for the running session.
+  const time = { year: 2026, month: 10, day: 10, hour: 14, minute: 3, second: 22 };
+  assert.throws(() => h.runtime.engine.createSession({ mode: 'dual', initialLocalTime: time }, {}), /unknown session option: initialLocalTime/);
   await h.close();
 
-  // A handset-only run starts only the handset's calendar.
-  wall = new Date(2026, 9, 10, 14, 3, 22).getTime();
-  const alone = new Harness({ wallClock: () => wall });
-  await alone.ready({ main: false });
-  const handsetOnly = await alone.request('boot', { options: { mode: 'handset', startPaused: true } });
-  assert.deepEqual(handsetOnly.state.rtcInit.boards, ['ngc-handset']);
-  await alone.close();
+  // A profile saved by the engine builds of 2026-10-10, whose new profiles started from the browser's local time: the checkpoint
+  // with the provenance `host-local-time` is restored like any other and keeps its provenance.
+  const saturday = { time: 0x14_0322, date: 0x26_0000 | 6 << 13 | 0x1000 | 0x10 };
+  const board = (time, bkp1) => ({
+    timeRegister: time, dateRegister: saturday.date, prescalerRegister: 0x007f00ff, format12Hour: false,
+    backupRegisters: Array.from({ length: 20 }, (_, index) => (index === 1 ? bkp1 : 0)), provenance: { source: 'host-local-time' },
+  });
+  const old = { version: 1, clockPolicy: 'virtual-time-only', precision: 'whole-calendar-seconds', boards: { 'ngc-main': board(saturday.time, 0x32f0), 'ngc-handset': board(0x14_0324, 0) } };
+  const oldStorage = new MemoryStorage();
+  await oldStorage.write('profile', 'rtc-state.json', new TextEncoder().encode(`${JSON.stringify(old, null, 2)}\n`));
+  const reopened = new Harness({ storage: oldStorage });
+  await reopened.ready();
+  const restored = await reopened.request('boot', { options: { mode: 'dual', startPaused: true } });
+  assert.equal(restored.state.error, null);
+  assert.deepEqual(restored.state.rtcPersistence.restoredBoards, ['ngc-main', 'ngc-handset']);
+  assert.deepEqual(Object.values(restored.state.rtcPersistence.sources).map((source) => source.source), ['host-local-time', 'host-local-time']);
+  const kept = checkpoint(reopened.runtime.engine.exportProfile(), 'ngc-main');
+  assert.deepEqual([kept.timeRegister, kept.dateRegister, kept.provenance], [saturday.time, saturday.date, { source: 'host-local-time' }]);
+  await reopened.close();
 });
 
 test('runtime: output histories follow the DESIGN 15.3a contract and feed the replay cursor without gaps', async (t) => {

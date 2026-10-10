@@ -1452,8 +1452,9 @@ impl Cpu {
     /// Called before the instruction at `pc` (retire count `ic`) executes. When it starts a
     /// translation block and the predecode slot is `Undecoded` (the first time anything is
     /// translated there) or a `CutHead`, remembers it in `cut_ctx`, and for a `CutHead` ends the
-    /// block at the largest known cut that fits the remaining chunk budget (tlib's lookup).
-    fn visit_tb_start<B: CpuBus>(&mut self, bus: &mut B, pc: u32, ic: u64) {
+    /// block at the largest known cut that fits the remaining chunk budget (tlib's lookup). Calling it again for the same
+    /// `pc` and `ic` changes nothing more.
+    pub(crate) fn visit_tb_start<B: CpuBus>(&mut self, bus: &mut B, pc: u32, ic: u64) {
         if ic != self.tb_icount {
             return;
         }
@@ -1527,9 +1528,9 @@ impl Cpu {
     }
 
     /// [`Cpu::step_insn`] for an instruction the caller fetched already (the idle-loop verification looks at the
-    /// decoded instruction before it runs): the same sequence, without fetching it a second time.
+    /// decoded instruction before it runs): the same sequence, without fetching it a second time. The caller has run
+    /// [`Cpu::visit_tb_start`] for `pc` **before** fetching it, as `step_insn` does.
     pub(crate) fn step_fetched<B: CpuBus>(&mut self, bus: &mut B, pc: u32, op: Op) -> bool {
-        self.visit_tb_start(bus, pc, self.icount);
         self.step_op::<B, false>(bus, pc, op)
     }
 

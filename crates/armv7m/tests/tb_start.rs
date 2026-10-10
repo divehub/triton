@@ -218,3 +218,69 @@ fn cuts_change_block_boundaries_but_never_the_instruction_stream() {
         assert_eq!(got, whole, "chunks {chunks:?}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// The idle fast-forward leaves the translation state as interpretation does
+
+/// `movs r3,#0 ; head: adds r3,#1 ; cmp r3,#3 ; bne skip ; X: nop ; nop ; ldr r1,[r0] ; nop ; skip: cmp r3,#5 ;
+/// bne head ; movs r3,#2 ; b head`. The backward branch at `bne head` closes a loop whose body is pure by its kinds, so the
+/// fast-forward looks at it after the first iteration; the path through X is taken for the first time in the third
+/// iteration, and its load (MMIO) then ends every verification.
+const LATE_PATH_LOOP: &[u16] = &[0x2300, 0x3301, 0x2B03, 0xD103, 0xBF00, 0xBF00, 0x6801, 0xBF00, 0x2B05, 0xD1F6, 0x2302, 0xE7F4];
+
+/// `head: ldr r1,[r2] ; cmp r1,#1 ; bne skip ; X: nop ; nop ; skip: cmp r1,#0 ; beq head ; b .`: a polling loop on plain
+/// RAM (r2 points to a zero word) that the fast-forward proves to be a fixed point and skips; the two instructions at X are
+/// part of the loop body but never execute.
+const SKIPPED_POLL_LOOP: &[u16] = &[0x6811, 0x2901, 0xD101, 0xBF00, 0xBF00, 0x2900, 0xD0F8, 0xE7FE];
+
+/// Per chunk: the MMIO accesses (with the block-start retire count they report), the retire count and the exactness digest.
+type ChunkPoint = (Vec<(u32, bool, u64)>, u64, u64);
+
+/// Runs `code` with the fast-forward on or off: a first chunk of `first` instructions, then the `later` chunks. Returns a
+/// [`ChunkPoint`] per chunk (the exactness digest covers the registers, the retire counts, the predecode cache and the
+/// cut-block history) and the number of instructions the fast-forward skipped.
+fn chunks_with_fast_forward(code: &[u16], fast_forward: bool, first: u64, later: &[u64]) -> (Vec<ChunkPoint>, u64) {
+    let mut h = harness(code);
+    h.set(2, SRAM1_BASE + 0x100);
+    h.cpu.set_idle_fast_forward(fast_forward);
+    let mut points = Vec::new();
+    for &n in std::iter::once(&first).chain(later) {
+        h.bus.mmio_log.clear();
+        h.step(n);
+        points.push((bus_icounts(&h), h.cpu.instructions(), h.cpu.exactness_digest()));
+    }
+    (points, h.cpu.fast_forward_stats().skipped_instructions)
+}
+
+#[test]
+fn the_fast_forward_does_not_translate_a_loop_body_ahead_of_execution() {
+    // Every first chunk from one instruction to past the third iteration (X starts a block at instruction 14 and the load
+    // is the 17th instruction): whether the chunk ends inside the block that starts at X (the first time X is translated,
+    // which tlib keeps cut) must not depend on the fast-forward having looked at the loop. Later chunks of several sizes then
+    // see the same block starts for the load. (A first chunk of 15 is the reviewed case: with the loop translated ahead,
+    // later loads reported the block start one instruction earlier than interpretation.)
+    for first in 1..=22 {
+        for later in [&[200u64, 200, 200][..], &[7, 13, 300, 5, 150]] {
+            let (on, _) = chunks_with_fast_forward(LATE_PATH_LOOP, true, first, later);
+            let (off, skipped) = chunks_with_fast_forward(LATE_PATH_LOOP, false, first, later);
+            assert_eq!(skipped, 0);
+            for (index, (a, b)) in on.iter().zip(&off).enumerate() {
+                assert_eq!(a.0, b.0, "first chunk {first}, later {later:?}: block starts of the loads in chunk {index}");
+                assert_eq!(a.1, b.1, "first chunk {first}, later {later:?}: retire count after chunk {index}");
+                assert_eq!(a.2, b.2, "first chunk {first}, later {later:?}: exactness digest after chunk {index}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_skipped_polling_loop_leaves_its_untaken_path_untranslated() {
+    // The loop is a fixed point and the fast-forward skips most of it; the predecode cache must still hold only what was
+    // executed (the two instructions at X stay untranslated), so the digests agree at every chunk boundary.
+    for first in [1, 3, 6, 50, 500] {
+        let (on, skipped) = chunks_with_fast_forward(SKIPPED_POLL_LOOP, true, first, &[1000, 5000, 37, 20_000]);
+        let (off, none) = chunks_with_fast_forward(SKIPPED_POLL_LOOP, false, first, &[1000, 5000, 37, 20_000]);
+        assert!(skipped > 0 && none == 0, "the fast-forward must skip iterations ({skipped})");
+        assert_eq!(on, off, "first chunk {first}");
+    }
+}

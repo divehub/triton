@@ -55,6 +55,9 @@ jobs:
       - name: Page tests
         run: node web/test-ui.mjs
 
+      - name: Dive game gas model tests
+        run: node --test web/game-gas.test.mjs
+
       - name: Firmware proxy tests
         run: node deploy/test-proxy.mjs
 

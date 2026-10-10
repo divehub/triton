@@ -2,7 +2,9 @@
 //! architectural state (registers, flags, IT state, FPSCR and the VFP registers, control, exclusive monitor,
 //! retire counts) and the translation state that can change later block partitioning (the predecode cache,
 //! its VFP and page tables, the cut-block history). Two cores that executed the same program, one with
-//! routine acceleration and one without, must have equal digests at every chunk boundary.
+//! routine acceleration and one without, must have equal digests at every chunk boundary; so must two cores with
+//! the idle fast-forward on and off (it reads a candidate loop without translating it and translates an instruction
+//! only when it executes it, as interpretation does; `tests/tb_start.rs`, `ngc-cli bench --verify-idle-ff`).
 //!
 //! Not included, because they are host-speed state and never influence the guest: the idle fast-forward's
 //! tables and its `FL_NOFF` cache marks, the acceleration's own memo tables, and the transient cut context.

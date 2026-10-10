@@ -68,21 +68,6 @@ export function healthLine(state) {
   return `Decompression state (read-only report): ${parts.join(', ')}.${reasons.length ? ` ${reasons.join(' ')}` : ''}`;
 }
 
-/**
- * The line for the session information about the clock of a new profile (`rtcInit`, DESIGN 23): whether the browser's local date and
- * time started a board's calendar in this session, and which time that was. Null for an engine without the report. The page sends its
- * local clock at every session create; the engine uses it only for a board with no saved RTC checkpoint and no EEPROM date seed.
- */
-export function rtcInitLine(state) {
-  const init = state && state.rtcInit;
-  if (!init || typeof init !== 'object') return null;
-  const boards = Array.isArray(init.boards) ? init.boards.map((name) => String(name).replace(/^ngc-/, '')) : [];
-  const status = init.applied
-    ? `applied${init.localTime ? `, local time ${init.localTime}` : ''}${boards.length ? `, ${boards.join(' + ')}` : ''}`
-    : `not applied${init.localTime ? `, the browser sent ${init.localTime}` : ''}`;
-  return `Fixture: clock of a new profile (${status}). ${init.reason || ''}`.trim();
-}
-
 /** Lines for the session information about the two labeled emulator fixtures (empty for an engine without them). */
 export function fixtureLines(state) {
   const lines = [];

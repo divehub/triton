@@ -2,7 +2,8 @@
 //!
 //! * **synthetic images** (a few Thumb instructions built by the test, no firmware needed): standby detected from the hardware state (a
 //!   sleeping core with `SCB.SCR.SLEEPDEEP` and a PWR standby/shutdown mode), the wake fixture without the original application's backup
-//!   marker, the per-board fault registers and the lockup, custom images surviving a machine reset;
+//!   marker, the per-board fault registers and the lockup, custom images surviving a machine reset, no original EEPROM date seed
+//!   for a custom build; and (for any firmware) a handset-only session handing back the saved `inputs.json` it never reads;
 //! * **the TRITON pair through the custom path** (skipped without the gitignored SREC files): structurally valid, loaded without release
 //!   identification, booted to the B1 battery prompt where Up, Down and Confirm still navigate through the pins, with every original
 //!   diagnostic unavailable and the EEPROM left blank; Restart, Cold, Wake and a machine reset keep the images; a custom image never
@@ -198,6 +199,52 @@ fn a_machine_reset_keeps_the_custom_image_and_the_state_keeps_naming_it() {
     assert_eq!(state.get("firmware").and_then(|f| f.get("release")).and_then(|r| r.get("id")).and_then(Json::as_str), Some("CUSTOM"));
     let pc = session.system().pc(Which::Main).unwrap();
     assert!((0x0800_4100..0x0800_410A).contains(&pc), "{pc:#x}");
+}
+
+fn rtc_source(state: &Json, board: &str) -> String {
+    state.get("rtcPersistence").and_then(|r| r.get("sources")).and_then(|s| s.get(board)).and_then(|s| s.get("source")).and_then(Json::as_str).unwrap_or_default().to_string()
+}
+
+#[test]
+fn a_custom_build_never_takes_the_original_eeprom_date_seed() {
+    // An EEPROM in the ORIGINAL application's layout (the validity marker and a packed calendar, 2024-02-29 13:45:59, in the record
+    // the legacy seed reads). For a custom build that record is not an address of its firmware (DESIGN.md 20.1): never read.
+    let mut eeprom = vec![0xFF; 2048];
+    eeprom[254] = 0xA3;
+    let packed: u32 = 24 | (2 << 6) | (29 << 10) | (13 << 15) | (45 << 20) | (59 << 26);
+    eeprom[0x2D..0x31].copy_from_slice(&packed.to_le_bytes());
+    let profile = Profile { eeprom: Some(eeprom), ..Profile::default() };
+    let (main, handset) = custom_pair(&idle_handset(), &idle_handset());
+    let session = Session::new(SessionConfig::default(), Some(&main), &handset, profile).expect("session");
+    let state = session.state();
+    // The main RTC keeps the RTC's own default calendar (2020-01-01), exactly as with no EEPROM at all.
+    assert_eq!(rtc_source(&state, "ngc-main"), "fresh-rtc", "not the original EEPROM calendar");
+    let fresh = Session::new(SessionConfig::default(), Some(&main), &handset, Profile::default()).expect("session");
+    let date = |s: &Session| s.system().rtc_checkpoint(Which::Main).expect("RTC").date_register;
+    assert_eq!(date(&session), date(&fresh));
+    assert_eq!(date(&session) >> 16 & 0xFF, 0x20, "the year 2020, not 2024");
+    // A custom build's backup words are its own: the original application's RTC.BKP1R marker is not written.
+    assert_eq!(session.system().board(Which::Main).unwrap().peek(0x4000_2854, Width::Word), Some(0), "RTC.BKP1R");
+}
+
+#[test]
+fn a_handset_only_session_hands_back_the_saved_inputs_it_never_reads() {
+    // A handset-only run has no sensors: it neither reads nor changes inputs.json (like the runner without --dual), and a host that
+    // replaces its stored profile with the one the session returns must keep the dual inputs. (The synthetic handset stands in for
+    // any handset firmware: nothing here depends on it.)
+    let (_, handset) = custom_pair(&idle_handset(), &idle_handset());
+    let saved = ngc::persistence::inputs_file_text(&ngc::fixtures::Inputs { pressure_mbar: [3013.25, 3014.25], oxygen_mv: [12.5, 12.0, 12.25], ..ngc::fixtures::Inputs::defaults() });
+    let config = SessionConfig { mode: Mode::HandsetOnly, ..SessionConfig::default() };
+    let profile = Profile { inputs: Some(saved.clone()), ..Profile::default() };
+    let mut session = Session::new(config.clone(), None, &handset, profile).expect("handset session");
+    session.run_for(0.05);
+    assert!(session.take_profile_changes().is_none_or(|changes| changes.inputs.is_none()), "nothing to save");
+    assert_eq!(session.export_profile().inputs.as_deref(), Some(saved.as_str()), "the export hands the file back unchanged");
+    assert!(session.action("{\"action\":\"inputs\",\"inputs\":{\"pressure1Mbar\":1013.25}}").is_err(), "the sensor controls need --dual");
+    assert_eq!(session.shutdown().inputs.as_deref(), Some(saved.as_str()), "and so does the close");
+    // A profile without inputs.json stays without one.
+    let empty = Session::new(config, None, &handset, Profile::default()).expect("handset session");
+    assert!(empty.shutdown().inputs.is_none());
 }
 
 // ---- the TRITON pair through the custom path --------------------------------------------------------------------------

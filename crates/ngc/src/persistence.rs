@@ -17,8 +17,10 @@
 //! the same error texts, the same restore planning (a saved checkpoint wins; otherwise the main board may be
 //! seeded from the legacy EEPROM calendar `0x2d` when the validity marker `0xA3` is present and the packed date
 //! is a real date) and the same save semantics (boards that were not captured keep their saved state; the
-//! provenance of a restored board is kept). One engine extension: the provenance `host-local-time` of a calendar that was started
-//! from the date and time the host supplied for a new profile ([`crate::rtc_init`]); the Renode runner's own loader would refuse it.
+//! provenance of a restored board is kept). One engine extension, read only: the provenance `host-local-time` of a calendar that
+//! engine builds of 2026-10-10 started from the host's local time for a new profile (removed the same day, DESIGN.md section 23).
+//! Such a checkpoint is restored like any other and keeps its provenance; the engine never assigns it to a new board. The Renode
+//! runner's own loader would refuse it.
 //!
 //! Nothing here runs guest code. `session.rs` decides when to call the functions (the runner calls them at
 //! launch, Restart/Cold/Wake/serial and close).
@@ -280,8 +282,10 @@ pub enum Provenance {
     FreshRtc,
     /// `{"source": "eeprom-packed-date", "packedBackup": n}`: migrated from the main EEPROM calendar checkpoint.
     EepromPackedDate(u32),
-    /// `{"source": "host-local-time"}`: started from the date and time the host supplied for a new profile (an engine extension
-    /// of the runner's format, see `crate::rtc_init`; DESIGN.md section 23).
+    /// `{"source": "host-local-time"}`: started from the host's local time for a new profile by the engine builds of 2026-10-10
+    /// (an engine extension of the runner's format, since removed; DESIGN.md section 23). Accepted when read so that those
+    /// profiles still load, restored like any other checkpoint and kept on save like every restored provenance; the engine never
+    /// assigns it to a new board.
     HostLocalTime,
 }
 
@@ -366,7 +370,7 @@ fn bcd(value: u32, label: &str) -> Result<u32, String> {
     }
 }
 
-pub(crate) fn encode_bcd(value: u32) -> u32 {
+fn encode_bcd(value: u32) -> u32 {
     (value / 10) << 4 | value % 10
 }
 
@@ -432,7 +436,7 @@ fn calendar_datetime(checkpoint: &RtcCheckpoint) -> Result<DateTime, String> {
 }
 
 /// `_validate_board` for an already typed checkpoint (prescaler reserved bits included).
-pub(crate) fn validate_checkpoint(checkpoint: &RtcCheckpoint, name: &str) -> Result<(), String> {
+fn validate_checkpoint(checkpoint: &RtcCheckpoint, name: &str) -> Result<(), String> {
     calendar_datetime(checkpoint)?;
     if checkpoint.prescaler_register & !RtcCheckpoint::PRESCALER_MASK != 0 {
         return Err(format!("Invalid RTC prescaler reserved bits for {name}"));
@@ -807,6 +811,29 @@ mod tests {
         let mut broken = checkpoint(3);
         broken.date_register = 0x238229;
         assert!(RtcState::empty().capture(&[(BOARD_MAIN, broken)], &[]).is_err());
+    }
+
+    #[test]
+    fn the_host_local_time_provenance_of_older_profiles_is_still_read_and_kept() {
+        // The engine builds of 2026-10-10 saved new profiles with this provenance (DESIGN.md 23; the feature is removed). Such a file
+        // parses strictly like any other, round-trips byte for byte, and a capture keeps the provenance of the restored board.
+        let mut state = RtcState::parse(&state_text(), "x").unwrap();
+        for (_, board) in &mut state.boards {
+            board.provenance = Provenance::HostLocalTime;
+        }
+        let text = state.to_file_text();
+        assert!(text.contains("      \"provenance\": {\n        \"source\": \"host-local-time\"\n      }"), "{text}");
+        let parsed = RtcState::parse(&text, "rtc-state.json").unwrap();
+        assert_eq!(parsed.board(BOARD_MAIN).unwrap().provenance, Provenance::HostLocalTime);
+        assert_eq!(parsed.board(BOARD_HANDSET).unwrap().provenance, Provenance::HostLocalTime);
+        assert_eq!(parsed.to_file_text(), text);
+        let saved_again = parsed.capture(&[(BOARD_MAIN, checkpoint(0x3333))], &[]).unwrap();
+        assert_eq!(saved_again.board(BOARD_MAIN).unwrap().provenance, Provenance::HostLocalTime);
+        // It carries nothing else, like the other plain sources, and an invalid calendar under it is refused as always.
+        let extra = text.replacen("\"source\": \"host-local-time\"", "\"source\": \"host-local-time\", \"packedBackup\": 1", 1);
+        assert_eq!(RtcState::parse(&extra, "rtc-state.json").unwrap_err(), "Cannot load RTC checkpoint rtc-state.json: Invalid RTC migration provenance for ngc-main");
+        let bad_date = RtcState::parse(&text.replacen(&format!("\"dateRegister\": {}", 0x24_8229), &format!("\"dateRegister\": {}", 0x23_8229), 1), "rtc-state.json");
+        assert!(bad_date.is_err(), "{bad_date:?}");
     }
 
     fn eeprom_with_date(packed: u32, marker: u8) -> Vec<u8> {

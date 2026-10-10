@@ -198,12 +198,17 @@ fn every_board_creation_starts_at_the_surface_and_a_new_session_resets_the_oxyge
     let altitude = act(&mut session, "{\"action\":\"reset\",\"surfacePressureMbar\":900}");
     assert_eq!((input(&altitude, "pressure1Mbar"), input(&altitude, "pressure2Mbar")), (899.0, 901.0));
     assert_eq!(altitude.get("startAtSurface").and_then(|r| r.get("surfacePressureMbar")).and_then(Json::as_f64), Some(900.0));
-    let before = session.virtual_ns();
-    for bad in ["99", "30001", "\"x\""] {
+    // A refused value shuts nothing down: the boards keep their virtual time (a Restart would start it at 0 again) and the history
+    // epoch (every board creation advances it). Numbers only, as at session creation: no numeric string, no boolean.
+    advance(&mut session, 0.5);
+    let (before, epoch) = (session.virtual_ns(), session.output_history_epoch());
+    assert!(before > 0);
+    for bad in ["99", "30001", "\"x\"", "\"900\"", "true", "null"] {
         let error = session.action(&format!("{{\"action\":\"reset\",\"surfacePressureMbar\":{bad}}}")).unwrap_err();
         assert_eq!(error, "surfacePressureMbar must be between 100 and 30000", "{bad}");
     }
-    assert_eq!(session.virtual_ns(), before, "a refused value shuts nothing down");
+    assert_eq!((session.virtual_ns(), session.output_history_epoch()), (before, epoch), "a refused value shuts nothing down");
+    assert_eq!(state(&session).get("startAtSurface").and_then(|r| r.get("surfacePressureMbar")).and_then(Json::as_f64), Some(900.0), "and keeps the setting");
     // The next plain Restart keeps the last valid surface pressure of the session.
     set_pressure(&mut session, 3000.0);
     let again = act(&mut session, "{\"action\":\"reset\"}");

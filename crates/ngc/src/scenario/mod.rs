@@ -308,10 +308,10 @@ pub(crate) fn recorded_inputs(mut profile: Profile) -> Profile {
 /// the recordings (`button_pull_up: false`): pins low until TIM3 is configured for capture, then high; the default pull-up (pins high
 /// from reset, DESIGN.md 20.3) leaves out two zero-width capture interrupts after the original firmware's initialization, which moves
 /// the handset's instruction phase and with it informational comparisons with the Renode recordings (for example the PC at 0.5 s).
-/// It also pins the clock of a new profile (`initial_local_time`, DESIGN.md 23) to none: a fresh RTC keeps the 2020-01-01 calendar of
-/// the recordings (the clock-storage scenario compares the register values), whatever a caller put in the configuration.
-pub(crate) fn recorded_config(config: SessionConfig) -> SessionConfig {
-    SessionConfig { eeprom_factory_init: false, start_at_surface: false, button_pull_up: false, initial_local_time: None, ..config }
+/// The web dive benchmark selects the same workload through the session-create hook `blankEeprom` (`ngc-wasm`), which applies this
+/// function.
+pub fn recorded_config(config: SessionConfig) -> SessionConfig {
+    SessionConfig { eeprom_factory_init: false, start_at_surface: false, button_pull_up: false, ..config }
 }
 
 /// A [`Session`] plus the helpers every scenario uses: actions as JSON, side-effect-free RAM readbacks, evidence.
@@ -481,9 +481,5 @@ mod tests {
         let pinned = recorded_config(SessionConfig { idle_fast_forward: false, adc_sample: 1234, ..defaults });
         assert!(!pinned.eeprom_factory_init && !pinned.start_at_surface && !pinned.button_pull_up);
         assert!(!pinned.idle_fast_forward && pinned.adc_sample == 1234, "everything else is the caller's");
-        // The clock of a new profile is none by default and stays none even when a caller supplied one.
-        assert!(defaults.initial_local_time.is_none());
-        let with_time = SessionConfig { initial_local_time: Some(crate::rtc_init::LocalTime::new(2026, 10, 10, 14, 3, 22).unwrap()), ..SessionConfig::default() };
-        assert!(recorded_config(with_time).initial_local_time.is_none(), "the recorded workload keeps the 2020-01-01 fresh calendar");
     }
 }

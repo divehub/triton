@@ -5,7 +5,8 @@
      the game: inside the game every element starts from the browser's defaults, the situation the game's rules were written for.
      It has the weight of a single id, so any game rule (an id plus a class or element) wins over it, and any page rule (no ids)
      loses to it. SVG parts are left alone: their presentation attributes are author styles that a revert would drop.
-   - Desktop only: the layout is designed for windows of about 1000 px and wider. */
+   - Desktop only: the layout is designed for windows of about 1000 px and wider.
+   - Text that informs is at least 10 px; only the bezel's decorative print (aria-hidden in the markup) is smaller. test-ui.mjs checks this. */
 #screen-game :where(:not(svg, svg *)) { all: revert; }
 #screen-game { color-scheme: dark; min-height: 100vh; --g-bg: #0b151c; --g-panel: #101e27; --g-border: #263a43; --g-text: #e5eeed; --g-muted: #849ba3; --g-teal: #73e5d0; --g-gold: #e2ca83; --g-blue: #80bdd0; --g-ease: cubic-bezier(.2,.8,.2,1); font-family: Inter,"Avenir Next",Avenir,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size: 14px; }
 #screen-game * { box-sizing: border-box; }
@@ -50,7 +51,7 @@
 #screen-game .panel { background: var(--g-panel); border: 1px solid var(--g-border); border-radius: 15px; overflow: hidden; box-shadow: 0 12px 25px #0000000a; }
 #screen-game .panel-heading { height: 55px; padding: 0 20px; display: flex; align-items: center; justify-content: space-between; }
 #screen-game .panel-heading>div, #screen-game .loop-title { display: flex; align-items: center; gap: 10px; }
-#screen-game .section-index { font-variant-numeric: tabular-nums; font-size: 9px; letter-spacing: .04em; font-weight: 700; color: #5c7d87; background: #1b2e36; border: 1px solid #2d464d; padding: 3px 5px; border-radius: 4px; }
+#screen-game .section-index { font-variant-numeric: tabular-nums; font-size: 10px; letter-spacing: .04em; font-weight: 700; color: #5c7d87; background: #1b2e36; border: 1px solid #2d464d; padding: 3px 5px; border-radius: 4px; }
 #screen-game h2 { font-size: 14px; font-weight: 550; letter-spacing: -.015em; margin: 0; }
 #screen-game h3 { font-size: 12px; font-weight: 550; margin: 0; }
 #screen-game .subtle-status { display: flex; align-items: center; gap: 7px; color: #91a8ae; font-size: 10px; }
@@ -82,8 +83,8 @@
 #screen-game .depth-grid { position: absolute; inset: 0; }
 #screen-game .depth-grid-line { position: absolute; left: 50px; right: 14px; top: calc(var(--g-ppm) * (var(--g-d) + 6)); border-top: 1px solid #b0e3e214; }
 #screen-game .depth-grid-line.major { border-top-color: #b0e3e22e; }
-#screen-game .depth-grid-line span { position: absolute; top: -8px; left: 0; font-size: 9px; color: #bbdedfb3; background: #0a3a4a40; padding: 0 6px 0 0; line-height: 16px; font-variant-numeric: tabular-nums; }
-#screen-game .surface-caption { position: absolute; left: 50px; top: calc(var(--g-ppm) * 6 + 8px); color: #d4f2e8b3; letter-spacing: .13em; font-weight: 600; font-size: 8px; display: flex; gap: 6px; align-items: center; }
+#screen-game .depth-grid-line span { position: absolute; top: -8px; left: 0; font-size: 10px; color: #bbdedfb3; background: #0a3a4a40; padding: 0 6px 0 0; line-height: 16px; font-variant-numeric: tabular-nums; }
+#screen-game .surface-caption { position: absolute; left: 50px; top: calc(var(--g-ppm) * 6 + 8px); color: #d4f2e8b3; letter-spacing: .13em; font-weight: 600; font-size: 10px; display: flex; gap: 6px; align-items: center; }
 #screen-game .surface-dot { width: 4px; height: 4px; border-radius: 50%; background: #b6e6c5; }
 #screen-game .world-boat { position: absolute; left: var(--g-boat-x, 260px); width: var(--g-boat-w, 300px); height: calc(var(--g-boat-w, 300px) * .40625); top: calc(var(--g-ppm) * 6 - var(--g-boat-w, 300px) * .2875); display: block; overflow: visible; transform-origin: 50% 70.77%; will-change: transform; filter: drop-shadow(0 4px 4px #04182233); }
 #screen-game .world-waves { position: absolute; left: 0; width: 100%; top: calc(var(--g-ppm) * 6 - 11px); height: 24px; overflow: hidden; }
@@ -109,7 +110,7 @@
 #screen-game .gauge-fill { position: absolute; inset: 0; border-radius: 5px; filter: brightness(1.55) saturate(1.15); }
 #screen-game .gauge-ticks { position: absolute; inset: 0; }
 #screen-game .gauge-tick { position: absolute; left: 100%; width: 4px; top: calc(var(--g-d) / 110 * 100%); border-top: 1px solid #d4f2e88c; }
-#screen-game .gauge-tick span { position: absolute; left: 7px; top: -6px; font-size: 8px; line-height: 12px; color: #c9e6e6b3; font-variant-numeric: tabular-nums; }
+#screen-game .gauge-tick span { position: absolute; left: 7px; top: -6px; font-size: 10px; line-height: 12px; color: #c9e6e6b3; font-variant-numeric: tabular-nums; }
 #screen-game .gauge-window { position: absolute; left: -2px; right: -2px; top: 0; height: 40px; border: 1px solid #e8fbf5b3; border-radius: 3px; background: #ffffff1f; will-change: transform; }
 #screen-game .gauge-max { position: absolute; left: -4px; right: -4px; top: -1px; height: 2px; background: var(--g-gold); box-shadow: 0 0 6px #e2ca8399; will-change: transform; }
 #screen-game .gauge-diver { position: absolute; left: 50%; top: 0; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: var(--g-teal); border: 2px solid #0b2430; box-shadow: 0 0 8px #73e5d099; will-change: transform; }
@@ -132,19 +133,19 @@
     transform: translateY(-4px) rotate(1deg)
   }
 }
-#screen-game .speedometer { position: absolute; right: 15px; bottom: 15px; width: 112px; z-index: 5; pointer-events: none; background: #0a293878; backdrop-filter: blur(14px); border: 1px solid #8fc8c23d; border-radius: 13px; padding: 12px 8px 11px; box-shadow: 0 4px 10px #0b2b3433; text-align: center; color: #bdd9d5; }
-#screen-game .meter-title { font-size: 7px; letter-spacing: .13em; color: #bad9da; font-weight: 650; }
+#screen-game .speedometer { position: absolute; right: 15px; bottom: 15px; width: 128px; z-index: 5; pointer-events: none; background: #0a293878; backdrop-filter: blur(14px); border: 1px solid #8fc8c23d; border-radius: 13px; padding: 12px 8px 11px; box-shadow: 0 4px 10px #0b2b3433; text-align: center; color: #bdd9d5; }
+#screen-game .meter-title { font-size: 10px; letter-spacing: .08em; color: #bad9da; font-weight: 650; }
 #screen-game .meter-dial { display: block; width: 100%; height: 66px; overflow: visible; margin-top: 6px; pointer-events: none; }
 #screen-game .meter-dial .ascent-arc, #screen-game .meter-dial .descent-arc { fill: none; stroke-width: 4; stroke-linecap: round; }
 #screen-game .meter-dial .ascent-arc { stroke: #8ae5d1; }
 #screen-game .meter-dial .descent-arc { stroke: #d9bf80; }
 #screen-game .meter-dial .meter-tick { stroke: #b0d0cf80; stroke-width: 1; }
-#screen-game .meter-dial .meter-label { fill: #a0bfc1; font-size: 7px; font-family: inherit; }
+#screen-game .meter-dial .meter-label { fill: #a0bfc1; font-size: 12px; font-family: inherit; }
 #screen-game #game-speed-needle { fill: #cce8dc; stroke: #cce8dc; stroke-width: 2; stroke-linecap: round; }
-#screen-game .speed-reading { display: flex; align-items: baseline; justify-content: center; gap: 4px; margin-top: -7px; }
+#screen-game .speed-reading { display: flex; align-items: baseline; justify-content: center; gap: 4px; margin-top: 3px; }
 #screen-game .speed-reading strong { font-size: 25px; line-height: 1.15; font-weight: 550; font-variant-numeric: tabular-nums; }
-#screen-game .speed-reading span { font-size: 8px; color: #98b7b9; }
-#screen-game .speed-direction { margin-top: 5px; font-size: 7px; font-weight: 650; letter-spacing: .14em; }
+#screen-game .speed-reading span { font-size: 10px; color: #98b7b9; }
+#screen-game .speed-direction { margin-top: 5px; font-size: 10px; font-weight: 650; letter-spacing: .1em; }
 #screen-game .speedometer.ascending { color: #a6f0dc; }
 #screen-game .speedometer.descending { color: #eed291; }
 /* From 40 m (the torch's depth) the dial glows softly, like a luminous dial in the dark. */
@@ -168,14 +169,14 @@
 #screen-game #game-play-speed strong { font-size: 13px; font-weight: 550; min-width: 26px; }
 #screen-game #game-play-speed>.small { color: #8cb7ba; }
 #screen-game .speed-menu { position: absolute; top: 50%; right: calc(100% + 10px); transform: translateY(-50%); z-index: 20; background: #102b36; border: 1px solid #466974; box-shadow: 0 15px 30px #04131db3; border-radius: 10px; width: 156px; padding: 8px; }
-#screen-game .menu-label { display: block; color: #769ea5; font-size: 8px; letter-spacing: .13em; padding: 5px 6px 8px; }
+#screen-game .menu-label { display: block; color: #769ea5; font-size: 10px; letter-spacing: .13em; padding: 5px 6px 8px; }
 #screen-game .speed-menu button { display: flex; justify-content: space-between; align-items: center; width: 100%; border: 0; border-radius: 6px; background: transparent; padding: 9px 8px; font-size: 12px; text-align: left; }
-#screen-game .speed-menu button span { font-size: 9px; color: #8eb1b7; }
+#screen-game .speed-menu button span { font-size: 10px; color: #8eb1b7; }
 #screen-game .speed-menu button:hover { background: #234853; }
 #screen-game .speed-menu button.selected { background: #31594f; color: #a8ecd8; }
-#screen-game .ocean-footer { position: absolute; bottom: 13px; left: 56px; right: 143px; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #98c5c7; font-size: 9px; }
-#screen-game .ocean-footer>span { max-width: 190px; line-height: 1.5; }
-#screen-game .scene-meta { display: flex; justify-content: space-between; gap: 10px; color: #79959f; font-size: 9px; padding: 14px 18px; }
+#screen-game .ocean-footer { position: absolute; bottom: 13px; left: 56px; right: 155px; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #98c5c7; font-size: 10px; }
+#screen-game .ocean-footer>span { max-width: 220px; line-height: 1.5; }
+#screen-game .scene-meta { display: flex; justify-content: space-between; gap: 10px; color: #79959f; font-size: 10px; padding: 14px 18px; }
 #screen-game .signal-dock { margin: 0 20px 14px; }
 #screen-game .signal-tray { display: flex; justify-content: center; width: fit-content; max-width: 100%; margin: 0 auto; gap: 12px; padding: 5px; border: 1px solid #2c454d; border-radius: 32px; background: linear-gradient(120deg,#10232b,#0d1d25); box-shadow: inset 0 1px #678c8c13,0 3px 10px #040e1426; }
 #screen-game .signal { display: flex; align-items: center; justify-content: center; width: 48px; min-width: 48px; min-height: 48px; padding: 7px; border: 1px solid transparent; border-radius: 50%; background: transparent; --signal-color: #ffffff; --signal-glow: #d9ecff; }
@@ -209,34 +210,35 @@
 #screen-game .device-key:hover, #screen-game .device-key.pressed { background: #477168; }
 #screen-game .device-key-left { left: -8px; }
 #screen-game .device-key-right { right: -8px; }
-#screen-game .lcd-caption { position: absolute; bottom: 10px; color: #80969b; font-size: 9px; text-align: center; }
+#screen-game .lcd-caption { position: absolute; bottom: 10px; color: #80969b; font-size: 10px; text-align: center; }
 #screen-game .profile-section { border-top: 1px solid #243b43; padding: 15px 20px 9px; }
 #screen-game .profile-heading { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 7px; }
-#screen-game .profile-heading>div>span { font-size: 9px; color: #75919b; display: block; margin-top: 4px; }
-#screen-game .profile-key { display: flex; align-items: center; gap: 6px; font-size: 9px; color: #94b8b8; font-variant-numeric: tabular-nums; }
+#screen-game .profile-heading>div>span { font-size: 10px; color: #75919b; display: block; margin-top: 4px; }
+#screen-game .profile-key { display: flex; align-items: center; gap: 6px; font-size: 10px; color: #94b8b8; font-variant-numeric: tabular-nums; }
 #screen-game .profile-key i { display: block; width: 14px; height: 2px; background: #73e5d0; }
 #screen-game #game-profile { display: block; width: 100%; height: 151px; overflow: visible; font-family: inherit; }
 #screen-game #game-profile-grid line { stroke: #29424b; stroke-width: 1; opacity: .65; }
-#screen-game #game-profile-labels text { fill: #77949f; font-size: 10px; }
-#screen-game #game-profile-empty { fill: #8facb0; font-size: 11px; }
+/* The chart's text is in SVG units: at 1280 px the chart is drawn at about 0.86 of its viewBox, so 12 units are about 10 px. */
+#screen-game #game-profile-labels text { fill: #77949f; font-size: 12px; }
+#screen-game #game-profile-empty { fill: #8facb0; font-size: 12px; }
 #screen-game .instrument-card { display: flex; flex-direction: column; }
 #screen-game .instrument-stage { flex: 1; }
 #screen-game .loop-panel { display: grid; grid-template-columns: 1fr 1fr 1fr; margin-top: 20px; padding: 22px 25px; gap: 25px; }
 #screen-game .loop-controls { padding-right: 25px; border-right: 1px solid #263e45; }
 #screen-game .loop-title { margin-bottom: 18px; }
 #screen-game .gas-selector { display: flex; align-items: center; gap: 18px; margin-bottom: 13px; }
-#screen-game .gas-selector>label { color: #78989e; font-size: 8px; font-weight: 650; letter-spacing: .14em; }
+#screen-game .gas-selector>label { color: #78989e; font-size: 10px; font-weight: 650; letter-spacing: .14em; }
 #screen-game .select-wrap { position: relative; flex: 1; }
 #screen-game .select-wrap select { appearance: none; width: 100%; background: #182e36; border: 1px solid #36505a; border-radius: 7px; padding: 9px 34px 9px 11px; font-size: 11px; cursor: pointer; }
 #screen-game .select-wrap>.icon { position: absolute; right: 11px; top: 9px; width: 16px; height: 16px; color: #9abbbc; pointer-events: none; }
 #screen-game .mav-buttons { display: flex; gap: 10px; }
-#screen-game .mav-status { margin: 10px 0 0; color: #85a6ad; font-size: 9px; line-height: 1.5; }
+#screen-game .mav-status { margin: 10px 0 0; color: #85a6ad; font-size: 10px; line-height: 1.5; }
 #screen-game .mav-status.active { color: #eddaa2; }
-#screen-game .mav { display: flex; align-items: center; gap: 9px; border-radius: 8px; padding: 12px 10px; border: 1px solid #395762; background: #19323e; flex: 1; text-align: left; touch-action: none; user-select: none; transition: background .12s,transform .12s,box-shadow .12s; min-width: 0; }
+#screen-game .mav { display: flex; align-items: center; gap: 8px; border-radius: 8px; padding: 12px 9px; border: 1px solid #395762; background: #19323e; flex: 1; text-align: left; touch-action: none; user-select: none; transition: background .12s,transform .12s,box-shadow .12s; min-width: 0; }
 #screen-game .mav>.icon { width: 20px; height: 25px; color: #94c6d3; }
 #screen-game .mav strong { font-size: 10px; font-weight: 600; display: block; white-space: nowrap; }
-#screen-game .mav small { display: block; color: #85a6ad; font-size: 8px; margin-top: 4px; }
-#screen-game .mav .key-hint { margin-left: auto; border: 1px solid #67838b66; padding: 2px 3px; border-radius: 3px; font-size: 7px; color: #9dbbc0; align-self: flex-start; }
+#screen-game .mav small { display: block; color: #85a6ad; font-size: 10px; margin-top: 4px; }
+#screen-game .mav .key-hint { margin-left: auto; border: 1px solid #67838b66; padding: 1px 3px; border-radius: 3px; font-size: 10px; color: #9dbbc0; align-self: flex-start; }
 #screen-game .mav:hover { background: #234b58; }
 #screen-game .mav.active { background: #366e78; border-color: #8ae0d1; transform: translateY(1px); box-shadow: 0 0 19px #8ae0d122; }
 #screen-game .oxygen-mav { border-color: #786c4b; background: #3b382a; color: #f1e2b7; }
@@ -248,7 +250,7 @@
 #screen-game .mav:disabled.active { box-shadow: none; }
 #screen-game .lung-section { padding-right: 25px; border-right: 1px solid #263e45; }
 #screen-game .lung-heading, #screen-game .sensor-heading { display: flex; align-items: center; justify-content: space-between; }
-#screen-game .lung-heading>span { font-size: 9px; color: #829da3; }
+#screen-game .lung-heading>span { font-size: 10px; color: #829da3; }
 #screen-game .lung-heading>span strong { font-size: 11px; font-weight: 550; color: #c3dbd5; }
 #screen-game .lung-visual { height: 113px; display: flex; align-items: center; justify-content: center; gap: 7px; position: relative; }
 #screen-game .lung-bag { height: 78px; width: 65px; border: 1px solid #88b3ac; border-radius: 18px 18px 23px 23px; position: relative; overflow: hidden; background: #254952; box-shadow: inset 0 2px 8px #081e2240,0 0 15px #274d4633; }
@@ -256,11 +258,11 @@
 #screen-game .lung-right { transform: rotate(5deg); }
 #screen-game .gas-fill { position: absolute; inset: 0; background: linear-gradient(to top,#c2b16c 0% 21%,#427888 21% 100%); opacity: .9; transition: background .1s; }
 #screen-game .lung-ribs { position: absolute; inset: 4px; background: repeating-linear-gradient(0deg,transparent 0 10px,#d2ead21d 10px 11px); border-radius: 14px; border: 1px solid #ddf0d228; }
-#screen-game .lung-bag>span { position: absolute; bottom: 8px; left: 0; right: 0; text-align: center; color: #d8e4cc; font-size: 8px; }
+#screen-game .lung-bag>span { position: absolute; bottom: 8px; left: 0; right: 0; text-align: center; color: #d8e4cc; font-size: 10px; }
 #screen-game .lung-bridge { align-self: flex-start; margin-top: 12px; position: relative; width: 60px; height: 92px; }
 #screen-game .lung-bridge>svg { position: absolute; width: 74px; height: 72px; top: 0; left: -7px; }
 #screen-game .lung-bridge>span { position: absolute; top: 39px; left: -6px; width: 72px; text-align: center; color: #ead9a8; white-space: nowrap; font-size: 24px; font-weight: 450; font-variant-numeric: tabular-nums; letter-spacing: -.04em; }
-#screen-game .lung-bridge small { display: block; font-size: 7px; color: #a6a991; letter-spacing: .04em; margin-top: 2px; }
+#screen-game .lung-bridge small { display: block; font-size: 10px; color: #a6a991; letter-spacing: .04em; margin-top: 2px; }
 #screen-game .flow-arrow { font-size: 19px; color: #47747e; opacity: .45; }
 #screen-game .flow-arrow.active { color: #e4d29c; opacity: 1; animation: game-flow .8s infinite; }
 @keyframes game-flow {
@@ -273,33 +275,33 @@
     opacity: 1
   }
 }
-#screen-game .gas-legend { display: flex; gap: 14px; justify-content: center; font-size: 9px; color: #89a1a7; margin-top: 0; }
+#screen-game .gas-legend { display: flex; gap: 14px; justify-content: center; font-size: 10px; color: #89a1a7; margin-top: 0; }
 #screen-game .gas-legend b { color: #b9cac8; font-weight: 500; margin-left: 4px; font-variant-numeric: tabular-nums; }
 #screen-game .gas-legend .legend-dot { margin-right: 4px; width: 5px; height: 5px; }
 #screen-game .loop-status { display: flex; gap: 8px; align-items: center; justify-content: center; margin-top: 13px; flex-wrap: wrap; }
-#screen-game .state-pill { border: 1px solid #2e484e; background: #162c31; border-radius: 4px; padding: 4px 6px; font-size: 7px; color: #85a4a8; display: flex; align-items: center; gap: 4px; }
+#screen-game .state-pill { border: 1px solid #2e484e; background: #162c31; border-radius: 4px; padding: 3px 6px; font-size: 10px; color: #85a4a8; display: flex; align-items: center; gap: 4px; }
 #screen-game .state-pill i { width: 4px; height: 4px; border-radius: 50%; background: #4b6a70; }
 #screen-game .state-pill.active { border-color: #669891; background: #254c47; color: #b8ecd1; }
 #screen-game .state-pill.active i { background: #b8ecd1; }
-#screen-game .cmf-label { color: #7f9a91; font-size: 7px; white-space: nowrap; }
-#screen-game .sensor-heading>span { font-size: 8px; color: #6f959c; }
+#screen-game .cmf-label { color: #7f9a91; font-size: 10px; white-space: nowrap; }
+#screen-game .sensor-heading>span { font-size: 10px; color: #6f959c; }
 #screen-game .cell-readings { display: flex; gap: 12px; justify-content: space-between; margin: 19px 0 10px; }
 #screen-game .cell-readings>div { flex: 1; min-width: 0; }
-#screen-game .cell-readings>div>span { display: block; font-size: 7px; color: #74969c; letter-spacing: .1em; }
+#screen-game .cell-readings>div>span { display: block; font-size: 10px; color: #74969c; letter-spacing: .1em; }
 #screen-game .cell-readings strong { display: block; font-size: 27px; font-weight: 450; letter-spacing: -.055em; font-variant-numeric: tabular-nums; color: #9cddcd; line-height: 1.5; }
-#screen-game .cell-readings small { font-size: 8px; color: #8facb0; font-variant-numeric: tabular-nums; }
-#screen-game .sensor-note { font-size: 8px; color: #7b979e; }
+#screen-game .cell-readings small { font-size: 10px; color: #8facb0; font-variant-numeric: tabular-nums; }
+#screen-game .sensor-note { font-size: 10px; line-height: 1.45; color: #7b979e; }
 #screen-game .game-settings { margin-top: 12px; border-top: 1px solid #263e45; padding-top: 10px; }
-#screen-game .game-settings summary { font-size: 8px; cursor: pointer; color: #93abb0; display: flex; align-items: center; justify-content: space-between; list-style: none; }
+#screen-game .game-settings summary { font-size: 10px; cursor: pointer; color: #93abb0; display: flex; align-items: center; justify-content: space-between; list-style: none; }
 #screen-game .game-settings summary::-webkit-details-marker { display: none; }
 #screen-game .game-settings summary .icon { height: 12px; width: 12px; }
 #screen-game .game-settings[open] summary .icon { transform: rotate(180deg); }
 #screen-game .settings-content { padding-top: 10px; }
 #screen-game .settings-content label { display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: #94b4b8; }
 #screen-game .settings-content input { width: 51px; color: #d6e7dc; background: #192f37; border: 1px solid #40565c; border-radius: 4px; padding: 3px 4px; font-size: 10px; }
-#screen-game .settings-content p { font-size: 9px; line-height: 1.6; color: #86a1a7; margin: 9px 0 0; }
-#screen-game .workspace-footer { display: flex; justify-content: space-between; align-items: center; color: #5c7a85; font-size: 8px; margin-top: 17px; gap: 15px; }
-#screen-game .workspace-footer kbd { background: #18303a; border: 1px solid #29434e; border-radius: 3px; padding: 1px 3px; font-family: inherit; font-size: 7px; margin: 0 2px; }
+#screen-game .settings-content p { font-size: 10px; line-height: 1.6; color: #86a1a7; margin: 9px 0 0; }
+#screen-game .workspace-footer { display: flex; justify-content: space-between; align-items: center; color: #5c7a85; font-size: 10px; line-height: 1.6; margin-top: 17px; gap: 15px; }
+#screen-game .workspace-footer kbd { background: #18303a; border: 1px solid #29434e; border-radius: 3px; padding: 0 3px; font-family: inherit; font-size: 10px; margin: 0 2px; }
 @media (min-width:1500px) {
   #screen-game .ocean { min-height: 565px; }
   #screen-game .instrument-stage { min-height: 407px; }
@@ -307,7 +309,7 @@
   #screen-game .profile-section { padding-top: 18px; }
   #screen-game #game-profile { height: 158px; }
   #screen-game .mav strong { font-size: 12px; }
-  #screen-game .mav small { font-size: 9px; }
+  #screen-game .mav small { font-size: 10px; }
   #screen-game .gas-selector select { font-size: 12px; }
   #screen-game .loop-panel { padding: 25px 28px; }
   #screen-game .lung-visual { height: 119px; }
@@ -326,11 +328,10 @@
   #screen-game .loop-title h2 { font-size: 12px; }
   #screen-game .gas-selector { gap: 10px; }
   #screen-game .lung-bag { width: 50px; }
-  #screen-game .gas-legend { gap: 8px; font-size: 8px; }
+  #screen-game .gas-legend { gap: 8px; }
   #screen-game .ccr-device { width: 340px; padding: 15px 18px 11px; }
   #screen-game .ocean { min-height: 465px; }
   #screen-game .instrument-stage { min-height: 317px; }
-  #screen-game .scene-meta { font-size: 8px; }
   #screen-game .depth-readout strong { font-size: 43px; }
   #screen-game .profile-section { padding: 14px 16px 8px; }
   #screen-game #game-profile { height: 151px; }
@@ -342,7 +343,8 @@
 
 /* ---- connected to the emulator: what replaced the prototype's mock parts ---- */
 
-/* The header: the release, the run state, the virtual time and play speed, Reset all and Quit. It stays in view while the page scrolls. */
+/* The header: the release, the clock chip (the virtual time, the play speed and the run state), Reset all, Quit, the sound button and
+   the controls button. It stays in view while the page scrolls. */
 #screen-game .app-header { position: sticky; top: 0; z-index: 30; backdrop-filter: blur(12px); }
 #screen-game .release-label { font-size: 12px; color: #9fb8bd; white-space: nowrap; }
 #screen-game .reset-button { white-space: nowrap; }
@@ -357,7 +359,7 @@
 #screen-game .help-panel { position: absolute; top: calc(100% + 10px); right: 0; z-index: 40; width: 352px; max-width: calc(100vw - 76px); max-height: calc(100vh - 110px); overflow-y: auto; padding: 14px 16px 6px; background: #102b36; border: 1px solid #466974; border-radius: 10px; box-shadow: 0 15px 30px #04131db3; font-size: 12px; line-height: 1.5; color: var(--g-text); }
 #screen-game .help-panel:focus { outline: none; }
 #screen-game .help-group { margin: 0 0 12px; }
-#screen-game .help-group h3 { margin: 0 0 6px; font-size: 9px; font-weight: 650; letter-spacing: .13em; text-transform: uppercase; color: #769ea5; }
+#screen-game .help-group h3 { margin: 0 0 6px; font-size: 10px; font-weight: 650; letter-spacing: .13em; text-transform: uppercase; color: #769ea5; }
 #screen-game .help-group ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
 #screen-game .help-group li { margin: 0; padding: 0; color: #c9dcdc; }
 #screen-game .help-panel kbd { display: inline-block; min-width: 20px; padding: 0 6px; border: 1px solid #4a6a75; border-bottom-width: 2px; border-radius: 5px; background: #1b3540; font-family: inherit; font-size: 11px; font-weight: 600; line-height: 17px; text-align: center; color: #e5eeed; }
@@ -403,10 +405,10 @@
 
 /* The cell panel: voltages sent to the firmware, and the simulated truth. */
 #screen-game .truth-row { display: flex; align-items: baseline; gap: 8px; padding: 8px 0; margin-bottom: 8px; border-top: 1px solid #263e45; border-bottom: 1px solid #263e45; }
-#screen-game .truth-label { font-size: 8px; letter-spacing: .1em; color: #74969c; text-transform: uppercase; }
+#screen-game .truth-label { font-size: 10px; letter-spacing: .1em; color: #74969c; text-transform: uppercase; }
 #screen-game .truth-row strong { font-size: 22px; font-weight: 450; color: #ead9a8; font-variant-numeric: tabular-nums; }
-#screen-game .truth-row small { font-size: 8px; color: #8facb0; }
+#screen-game .truth-row small { font-size: 10px; color: #8facb0; }
 #screen-game .cell-readings small { display: block; }
 #screen-game .diluent-note { color: #6f8c93; }
-#screen-game .fixture-list { margin-top: 9px; font-size: 9px; line-height: 1.6; color: #86a1a7; font-variant-numeric: tabular-nums; }
+#screen-game .fixture-list { margin-top: 9px; font-size: 10px; line-height: 1.6; color: #86a1a7; font-variant-numeric: tabular-nums; }
 #screen-game .fixture-note { color: #6f8c93; }

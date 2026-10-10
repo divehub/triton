@@ -27,11 +27,11 @@ impl Machine {
 
 pub const USAGE: &str = "ngc-cli run [--main <srec>] [--handset <srec>] [--mode dual|handset] [--seconds S]\n  \
     [--boot-mode handset-wake|cold] [--simultaneous-start] [--no-idle-ff] [--no-routine-accel|--shadow-routine-accel] [--no-i2c-idle-high] [--release ID]\n  \
-    [--no-start-at-surface] [--custom] [--uart-text]\n  \
+    [--custom] [--uart-text]\n  \
     [--ppm out.ppm] [--can-trace out.tsv]\n  \
     [--pc-trace N out.u32le [--pc-trace-after S] [--board handset|main]] [--json out.json] [--no-warnings] [--log N] [--inputs SCRIPT]\n  \
     [--dump-sram PREFIX] [--peek ADDR[,ADDR...] [--board handset|main]] [--access-trace N [--board handset|main]]\n  \
-    [--data-dir DIR [--initial-local-time YYYY-MM-DDTHH:MM:SS]]\n  \
+    [--data-dir DIR [--no-start-at-surface]]\n  \
     --dump-sram writes PREFIX-<board>-sram1.bin / -sram2.bin of each board at the end of the run.\n  \
     --data-dir keeps the runner profile in DIR (eeprom.bin, nor.ngc, rtc-state.json, inputs.json, led-colors.json, the files of\n  \
     run_emulator.py --data-dir): the ones that exist are loaded before the boot and the ones that changed are written after the\n  \
@@ -60,12 +60,10 @@ pub const USAGE: &str = "ngc-cli run [--main <srec>] [--handset <srec>] [--mode 
     entirely erased one) the EEPROM is created from the factory image once: the records the firmware's first-boot defaults never\n  \
     write (serial, oxygen-toxicity model and dose, the tissue block, the no-fly records; docs/eeprom.md) get the value their firmware\n  \
     code implies, and an existing eeprom.bin is never touched (there is no option; without --data-dir the run uses a bare system\n  \
-    with an erased EEPROM). --no-start-at-surface turns off the other fixture, which is on by default: every board creation starts\n  \
-    at the surface pressure, a new session with the oxygen cells at their defaults.\n  \
-    --initial-local-time (needs --data-dir; the year 2000 to 2099) is the host's local date and time for a new profile: a board whose\n  \
-    RTC has no saved checkpoint in rtc-state.json and no EEPROM date seed starts its calendar from it (24-hour format, correct\n  \
-    weekday, provenance host-local-time), as the page does with the browser's clock; an existing checkpoint is never changed\n  \
-    (DESIGN.md section 23). The CLI never reads the clock itself; without the flag a fresh RTC keeps its 2020-01-01 default.\n  \
+    with an erased EEPROM). --no-start-at-surface (needs --data-dir) turns off the other fixture, which is on by default: every board\n  \
+    creation starts at the surface pressure, a new session with the oxygen cells at their defaults.\n  \
+    The RTC calendars advance in virtual time only and the CLI never reads the host clock: a board with neither a saved checkpoint\n  \
+    in rtc-state.json nor (main, original release) the EEPROM date seed starts at the RTC's 2020-01-01 default (DESIGN.md section 23).\n  \
     --mode handset runs the handset alone (no CAN peer, like the viewer without --dual).\n  \
     --pc-trace records the first N executed instruction addresses of a board (default handset) as little-endian\n  \
     u32 words; that board runs without idle fast-forward until N instructions were traced. With --pc-trace-after S the\n  \
@@ -101,7 +99,7 @@ impl From<String> for RunError {
 fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<(), RunError> {
     let parsed = args::parse(
         argv,
-        &["main", "handset", "mode", "seconds", "boot-mode", "ppm", "can-trace", "pc-trace", "board", "json", "pc-trace-out", "log", "inputs", "dump-sram", "peek", "access-trace", "data-dir", "release", "pc-trace-after", "initial-local-time"],
+        &["main", "handset", "mode", "seconds", "boot-mode", "ppm", "can-trace", "pc-trace", "board", "json", "pc-trace-out", "log", "inputs", "dump-sram", "peek", "access-trace", "data-dir", "release", "pc-trace-after"],
         &["simultaneous-start", "no-idle-ff", "no-warnings", "no-i2c-idle-high", "no-routine-accel", "shadow-routine-accel", "no-start-at-surface", "custom", "uart-text"],
     )
     .map_err(RunError::Usage)?;
@@ -125,12 +123,11 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<(), RunError> {
         return Err(RunError::Usage("--board main needs --mode dual".to_string()));
     }
     let data_dir = parsed.value("data-dir").map(PathBuf::from);
-    // The clock of a new profile (DESIGN.md 23): the host-facing Session starts a calendar from it, so it needs --data-dir.
-    let initial_local_time = match parsed.value("initial-local-time") {
-        None => None,
-        Some(_) if data_dir.is_none() => return Err(RunError::Usage("--initial-local-time needs --data-dir (a bare run has no RTC checkpoint handling)".to_string())),
-        Some(text) => Some(ngc::rtc_init::LocalTime::parse(text).map_err(|e| RunError::Usage(format!("--initial-local-time: {e}")))?),
-    };
+    // The start at the surface is a fixture of the host-facing Session too: a bare run never applies it, so switching it off there
+    // would do nothing.
+    if parsed.flag("no-start-at-surface") && data_dir.is_none() {
+        return Err(RunError::Usage("--no-start-at-surface needs --data-dir (a bare run does not apply the start at the surface)".to_string()));
+    }
 
     let (main, handset) = if parsed.flag("custom") {
         if parsed.value("release").is_some() {
@@ -160,7 +157,6 @@ fn run_inner(argv: &[String], out: &mut dyn Write) -> Result<(), RunError> {
                 routine_accel_shadow: routine_accel == RoutineAccelMode::Shadow,
                 i2c_idle_high,
                 start_at_surface: !parsed.flag("no-start-at-surface"),
-                initial_local_time,
                 ..SessionConfig::default()
             };
             let label = format!("{}/", dir.display());

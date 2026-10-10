@@ -1,6 +1,6 @@
 //! Engine contract of the main-viewer parity (DESIGN 15.3) with the real firmware images, skipped when the gitignored SREC
 //! files are not available: output activity histories in a session (a vibrator and a HUD pulse appear, the epoch changes
-//! when the histories start over, fast-forward on and off agree), the HUD color defaults, the I2C idle-high fixture, the
+//! when the histories start over, fast-forward on and off agree, translation state included), the HUD color defaults, the I2C idle-high fixture, the
 //! nine-digit serial and the release identification (TRITON; a mixed pair is refused). NEPTUN has no tests here: its code paths and
 //! release table stay, its firmware-based tests were dropped (optional release).
 
@@ -184,12 +184,14 @@ fn fast_forward_on_and_off_give_identical_histories_and_digests() {
         write(&mut s, Which::Main, 0x4000_0834, 700);
         write(&mut s, Which::Handset, 0x4800_0418, 0x8000);
         let state = act(&mut s, "{\"action\":\"advance\",\"seconds\":0.5}");
-        (state.get("hardwareOutputs").cloned().unwrap(), s.system().fingerprint(), s.system().guest_fingerprint())
+        let exact = [Which::Main, Which::Handset].map(|which| s.system().exactness_digest(which));
+        (state.get("hardwareOutputs").cloned().unwrap(), s.system().fingerprint(), s.system().guest_fingerprint(), exact)
     };
     let (on, off) = (run(true), run(false));
     assert_eq!(on.0, off.0, "hardwareOutputs including the activity histories");
     assert_eq!(on.1, off.1, "the system fingerprint, which includes the histories");
     assert_eq!(on.2, off.2, "the guest fingerprint");
+    assert_eq!(on.3, off.3, "the exactness digests of both cores (the predecode cache and the cut-block history included)");
     assert!(field_u64(&output(&Json::object().with("hardwareOutputs", on.0), "main-hud-1"), &["activity", "eventCount"]).is_some_and(|n| n >= 2));
 }
 

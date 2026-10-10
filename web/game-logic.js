@@ -369,25 +369,44 @@ export class GameSim {
     }
   }
 
+  /**
+   * One integration step. A step in which the diver reaches the surface or the 110 m floor is split at the moment of arrival: the
+   * motion up to it, then the rest of the step at rest there. So where the steps happen to fall (one state bringing 3 s, or thirty
+   * bringing 0.1 s) never changes the dive time, the profile or the gas.
+   */
   step(dt, valves) {
-    // A depth within a nanometer of the surface is the surface (rounding of the 0.25 s steps must not keep a dive open for one more step).
-    const moved = this.depth + this.direction * this.rate * dt / 60;
+    const speed = this.direction * this.rate / 60; // m/s, negative ascends
+    const boundary = speed < 0 ? 0 : speed > 0 ? MAX_DEPTH_METERS : null;
+    const arrival = boundary === null ? Infinity : Math.max(0, (boundary - this.depth) / speed); // seconds until the boundary
+    const moving = Math.min(dt, arrival);
+    // A depth within a nanometer of the surface is the surface (rounding must not keep a dive open for one more step).
+    const moved = moving < dt ? boundary : this.depth + speed * moving;
     const newDepth = moved < SURFACE_EPSILON_M ? 0 : Math.min(MAX_DEPTH_METERS, moved);
     if (!this.diving && newDepth > 0) this.beginDive(); // the dive starts at the beginning of the step that leaves the surface
-    advanceLoop(this.loop, { depth: newDepth, dt, oxygen: !!valves.oxygen, diluent: !!valves.diluent, flow: this.flow });
-    this.elapsed += dt;
-    if (this.diving) this.diveTime += dt;
-    this.depth = newDepth;
-    this.maxDepth = Math.max(this.maxDepth, newDepth);
-    if (this.loop.last.adv > 1e-12) this.lastActivity.adv = this.elapsed;
-    if (this.loop.last.vent > 1e-12) this.lastActivity.vent = this.elapsed;
-    this.pendingVent += this.loop.last.vent;
-    if ((this.direction < 0 && newDepth === 0) || (this.direction > 0 && newDepth === MAX_DEPTH_METERS)) {
-      this.stopMotion();
+    this.integrate(moving, newDepth, valves);
+    if (boundary !== null && newDepth === boundary) {
+      this.stopMotion(); // records the point of arrival
       this.onBoundary();
     }
     this.recordProfile();
     if (this.diving && newDepth === 0) this.endDive(); // back at the surface: this dive is over
+    if (dt - moving > 0) {
+      this.integrate(dt - moving, this.depth, valves); // the rest of the step, at rest at the boundary
+      this.recordProfile();
+    }
+  }
+
+  /** `dt` seconds of the loop, the session time and the dive time, the depth moving linearly to `depth`. */
+  integrate(dt, depth, valves) {
+    if (!(dt > 0)) return; // arriving at once (already at the boundary): nothing to integrate before the rest at rest
+    advanceLoop(this.loop, { depth, dt, oxygen: !!valves.oxygen, diluent: !!valves.diluent, flow: this.flow });
+    this.elapsed += dt;
+    if (this.diving) this.diveTime += dt;
+    this.depth = depth;
+    this.maxDepth = Math.max(this.maxDepth, depth);
+    if (this.loop.last.adv > 1e-12) this.lastActivity.adv = this.elapsed;
+    if (this.loop.last.vent > 1e-12) this.lastActivity.vent = this.elapsed;
+    this.pendingVent += this.loop.last.vent;
   }
 
   /**

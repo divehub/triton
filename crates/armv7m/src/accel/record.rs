@@ -339,10 +339,9 @@ impl Cpu {
     /// A memo hit in shadow mode: replays the entry, remembers the result, restores the state, interprets the call and
     /// compares. The interpreted state is kept.
     pub(super) fn shadow_call<B: CpuBus>(&mut self, bus: &mut B, st: &mut State, ri: usize, memo: &Memo, ret: u32) -> Enter {
-        const BELOW: u32 = 256;
         const ABOVE: u32 = 64;
         let sp = self.r[13];
-        let below = if self.frame_usable(bus, sp, -(BELOW as i32)) { BELOW } else { (-memo.min_off) as u32 };
+        let below = shadow_below(memo.min_off, |off| self.frame_usable(bus, sp, off));
         let above = if bus.is_plain_memory(sp.wrapping_add(ABOVE - 4)) { ABOVE } else { 0 };
         let base = sp.wrapping_sub(below);
         let len = below + above;
@@ -377,6 +376,21 @@ impl Cpu {
                 Enter::Done { ends }
             }
         }
+    }
+}
+
+/// The bytes below SP that the shadow check snapshots, compares and restores: the usual 256, and never less than the memo's own
+/// frame (`-min_off`, down to [`MAX_FRAME`]), so that every replayed store is compared and undone (a store below the window would
+/// be neither). `usable(off)` says whether `[sp + off, sp)` is plain RAM; when the wider window is not, only the memo's frame is
+/// covered (it is plain RAM, or the call would not have been replayed).
+fn shadow_below(min_off: i32, usable: impl Fn(i32) -> bool) -> u32 {
+    const BELOW: u32 = 256;
+    let frame = min_off.unsigned_abs();
+    let want = BELOW.max(frame);
+    if usable(-(want as i32)) {
+        want
+    } else {
+        frame
     }
 }
 
@@ -432,4 +446,26 @@ fn compare(predicted: &Snap, actual: &Snap) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_shadow_window_covers_every_store_a_memo_may_replay() {
+        let anywhere = |_: i32| true;
+        // A shallow frame: the usual 256 bytes.
+        assert_eq!(shadow_below(0, anywhere), 256);
+        assert_eq!(shadow_below(-12, anywhere), 256);
+        assert_eq!(shadow_below(-256, anywhere), 256);
+        // A deep frame (a memo may store down to -MAX_FRAME): the window reaches its lowest store.
+        assert_eq!(shadow_below(-260, anywhere), 260);
+        assert_eq!(shadow_below(-MAX_FRAME, anywhere), MAX_FRAME as u32);
+        // The wider window is not plain RAM: the memo's own frame, which is (or the call would not have been replayed).
+        let only_frame = |min_off: i32| move |off: i32| off >= min_off;
+        assert_eq!(shadow_below(-12, only_frame(-12)), 12);
+        assert_eq!(shadow_below(-MAX_FRAME, only_frame(-MAX_FRAME)), MAX_FRAME as u32);
+        assert_eq!(shadow_below(-300, only_frame(-300)), 300);
+    }
 }

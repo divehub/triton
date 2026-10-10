@@ -3,8 +3,9 @@
 //! The same viewer-action script (boot to the B1 prompt, navigation and confirmation, CAN disconnect and restore, cold boot
 //! to the observed standby, Wake) runs on two sessions, one with `idle_fast_forward` on and one with it off. After every
 //! step the SHA-256 `fingerprint` of the architectural state (registers, retire counts, both SRAMs of each board, the LCD
-//! GRAM, the CAN trace and the UART tails) and the whole state document (except the fast-forward statistics themselves)
-//! have to be identical. This is an engine-internal proof (DESIGN.md section 10); Renode has no such option, so there is
+//! GRAM, the CAN trace and the UART tails), the exactness digest of each core (registers, retire counts, the predecode cache
+//! and the cut-block history, which decide later translation-block partitions) and the whole state document (except the
+//! fast-forward statistics themselves) have to be identical. This is an engine-internal proof (DESIGN.md section 10); Renode has no such option, so there is
 //! nothing to compare with except the Renode-equal outputs of the other scenarios, which run with the fast-forward on.
 
 use super::*;
@@ -17,6 +18,17 @@ struct Point {
     label: String,
     state: Json,
     fingerprint: String,
+    /// `Cpu::exactness_digest` of the main and handset cores: registers, retire counts, the predecode cache and the cut-block
+    /// history (the translation state that decides later block partitions).
+    exact: [u64; 2],
+}
+
+fn exact_digests(rig: &Rig) -> [u64; 2] {
+    [Which::Main, Which::Handset].map(|which| rig.session.system().exactness_digest(which).unwrap_or(0))
+}
+
+fn exact_hex(exact: [u64; 2]) -> String {
+    format!("{:016x}/{:016x}", exact[0], exact[1])
 }
 
 fn differing_keys(a: &Json, b: &Json) -> Vec<String> {
@@ -35,7 +47,7 @@ fn differing_keys(a: &Json, b: &Json) -> Vec<String> {
 }
 
 fn point(rig: &Rig, label: &str, points: &mut Vec<Point>) {
-    points.push(Point { label: label.to_string(), state: rig.state(), fingerprint: rig.session.system().fingerprint() });
+    points.push(Point { label: label.to_string(), state: rig.state(), fingerprint: rig.session.system().fingerprint(), exact: exact_digests(rig) });
 }
 
 /// The action script; returns the checkpoints and the finished rig.
@@ -76,9 +88,18 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
     let mut all_equal = true;
     for (a, b) in on_points.iter().zip(&off_points) {
         let keys = differing_keys(&a.state, &b.state);
-        let equal = a.fingerprint == b.fingerprint && keys.is_empty();
+        let equal = a.fingerprint == b.fingerprint && a.exact == b.exact && keys.is_empty();
         all_equal &= equal;
-        rec.check(&format!("{}: fingerprint and state document identical", a.label), equal, Json::object().with("on", a.fingerprint.as_str()).with("off", b.fingerprint.as_str()).with("differingStateKeys", Json::from_items(keys.iter().map(String::as_str))));
+        rec.check(
+            &format!("{}: fingerprint, exactness digests and state document identical", a.label),
+            equal,
+            Json::object()
+                .with("on", a.fingerprint.as_str())
+                .with("off", b.fingerprint.as_str())
+                .with("exactOn", exact_hex(a.exact))
+                .with("exactOff", exact_hex(b.exact))
+                .with("differingStateKeys", Json::from_items(keys.iter().map(String::as_str))),
+        );
     }
     rec.check("every checkpoint identical (the fast-forward is exact)", all_equal, all_equal);
 
@@ -111,7 +132,11 @@ pub(super) fn run(env: &ScenarioEnv<'_>) -> Result<ScenarioReport, String> {
     toggled.advance(2.5)?;
     let mut reference = Rig::new(env, SessionConfig::default(), Profile::default())?;
     reference.advance(5.5)?;
-    rec.check("toggling the fast-forward on a live session during a 5.5 s boot changes nothing", toggled.session.system().fingerprint() == reference.session.system().fingerprint(), toggled.session.system().fingerprint());
+    rec.check(
+        "toggling the fast-forward on a live session during a 5.5 s boot changes nothing",
+        toggled.session.system().fingerprint() == reference.session.system().fingerprint() && exact_digests(&toggled) == exact_digests(&reference),
+        Json::object().with("fingerprint", toggled.session.system().fingerprint()).with("exact", exact_hex(exact_digests(&toggled))),
+    );
     rec.step("final state of the fast-forward-on run", &on.state(), Json::object());
     let (png_on, png_off) = (on.png(), off.png());
     rec.check("the final LCD frame is identical with and without the fast-forward", png_on == png_off, png_on.len() as u64);

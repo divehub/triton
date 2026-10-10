@@ -8,7 +8,9 @@
 //! `startAtSurface`): at every board creation (session start, Restart, Cold, Wake, serial change) both pressure inputs are
 //! set to the configured surface pressure plus each sensor's offset, so the depth is 0. The offset of a sensor is its
 //! reading minus the mean of the two readings, which is what the basic view of the page derives as the sensor offset as
-//! long as the depth is not negative. A **new session** (a boot or a profile replacement, [`Session::new`]) also resets the
+//! long as the depth is not negative. Offsets too large for the surface pressure (one sensor would leave the 100 to 30000 mbar
+//! range) are reduced to the largest that fits, so the mean of the two inputs is always the surface pressure; the state says
+//! so (`offsetsLimited`). A **new session** (a boot or a profile replacement, [`Session::new`]) also resets the
 //! three oxygen-cell inputs to their defaults, so the cells and the depth start from the same known state. Restart, Cold and
 //! Wake keep the oxygen inputs, because a calibration made with them stays meaningful.
 //!
@@ -50,18 +52,23 @@ pub struct SurfaceStart {
     pub oxygen_reset: bool,
     /// The inputs the last board creation changed (names of the `inputs` object).
     pub changed: Vec<&'static str>,
+    /// The sensors' offsets were too large for the surface pressure (one sensor would have left the pressure range) and were
+    /// reduced to the largest that fits, keeping the mean at the surface (`offsetsLimited`).
+    pub offset_limited: bool,
 }
 
 impl SurfaceStart {
     /// Before any board exists.
     pub fn idle(enabled: bool, surface_pressure_mbar: f64) -> Self {
-        Self { enabled, surface_pressure_mbar, applied: false, oxygen_reset: false, changed: Vec::new() }
+        Self { enabled, surface_pressure_mbar, applied: false, oxygen_reset: false, changed: Vec::new(), offset_limited: false }
     }
 
-    /// `{"enabled", "surfacePressureMbar", "applied", "oxygenReset", "changedInputs", "note"}`.
+    /// `{"enabled", "surfacePressureMbar", "applied", "oxygenReset", "changedInputs", "offsetsLimited", "note"}`.
     pub fn to_json(&self) -> Json {
         let note = if !self.enabled {
             "Switched off (startAtSurface: false, or --no-start-at-surface): the saved sensor inputs are used as they are."
+        } else if self.offset_limited {
+            "Emulator fixture: at every board creation both pressure inputs are set to the surface pressure plus each sensor's offset (depth 0); a new session also resets the oxygen cells to their defaults. The sensors' offsets were reduced so that both inputs stay within 100 to 30000 mbar around the surface pressure."
         } else {
             "Emulator fixture: at every board creation both pressure inputs are set to the surface pressure plus each sensor's offset (depth 0); a new session also resets the oxygen cells to their defaults."
         };
@@ -71,6 +78,7 @@ impl SurfaceStart {
             .with("applied", self.applied)
             .with("oxygenReset", self.oxygen_reset)
             .with("changedInputs", Json::from_items(self.changed.iter().copied()))
+            .with("offsetsLimited", self.offset_limited)
             .with("note", note)
     }
 }
@@ -85,9 +93,18 @@ pub fn apply(enabled: bool, dual: bool, surface_pressure_mbar: f64, new_session:
     }
     let mut next = inputs.clone();
     let mean = (inputs.pressure_mbar[0] + inputs.pressure_mbar[1]) / 2.0;
+    // The two offsets (each sensor's reading minus the mean) are opposite. Both are bounded by the same room, the distance from
+    // the surface pressure to the nearer end of the pressure range, so that neither sensor leaves the range: the mean of the two
+    // inputs stays the surface pressure, the depth reads 0, and the offsets keep their signs. (Clamping each sensor on its own
+    // moved the mean: 100 and 4000 mbar restarted at 1013.25 gave 100 and 2963.25, a mean of about 1532 mbar.) An offset within
+    // the room is used as it is.
+    let room = (surface_pressure_mbar - PRESSURE_RANGE.0).min(PRESSURE_RANGE.1 - surface_pressure_mbar).max(0.0);
     for sensor in 0..2 {
         let offset = inputs.pressure_mbar[sensor] - mean;
-        next.pressure_mbar[sensor] = (surface_pressure_mbar + offset).clamp(PRESSURE_RANGE.0, PRESSURE_RANGE.1);
+        if offset.abs() > room {
+            report.offset_limited = true;
+        }
+        next.pressure_mbar[sensor] = surface_pressure_mbar + offset.clamp(-room, room);
     }
     if new_session {
         next.oxygen_mv = Inputs::defaults().oxygen_mv;
@@ -149,10 +166,29 @@ mod tests {
     }
 
     #[test]
-    fn an_offset_that_would_leave_the_pressure_range_is_clamped_and_the_surface_is_validated() {
+    fn offsets_that_would_leave_the_pressure_range_are_reduced_so_the_mean_stays_the_surface() {
+        // The reviewed case: sensors at 100 and 4000 mbar (mean 2050, offsets -1950 and +1950), a Restart at 1013.25 mbar. The
+        // lower sensor can go down only 913.25 mbar, so both offsets become 913.25: 100 and 1926.5, a mean of 1013.25 (depth 0).
+        let apart = Inputs { pressure_mbar: [100.0, 4000.0], ..Inputs::defaults() };
+        let (next, report) = apply(true, true, 1013.25, false, &apart);
+        assert_eq!(next.pressure_mbar, [100.0, 1926.5]);
+        assert_eq!((next.pressure_mbar[0] + next.pressure_mbar[1]) / 2.0, 1013.25, "the mean is the surface pressure");
+        assert!(report.offset_limited && report.changed == ["pressure2Mbar"], "the first sensor is at 100 mbar already: {report:?}");
+        let json = report.to_json();
+        assert_eq!(json.get("offsetsLimited"), Some(&Json::Bool(true)));
+        assert!(json.get("note").and_then(Json::as_str).unwrap().contains("offsets were reduced"));
+        // The signs are kept (the first sensor reads higher here), and the upper end of the range bounds them the same way.
+        let (swapped, _) = apply(true, true, 29_500.0, false, &Inputs { pressure_mbar: [4000.0, 100.0], ..Inputs::defaults() });
+        assert_eq!(swapped.pressure_mbar, [30_000.0, 29_000.0]);
+        // At an end of the range there is no room at all: both sensors read the surface.
         let wide = Inputs { pressure_mbar: [100.0, 300.0], ..Inputs::defaults() };
-        let (next, _) = apply(true, true, 100.0, false, &wide);
-        assert_eq!(next.pressure_mbar, [100.0, 200.0], "mean 200, offsets -100 and +100 around 100 mbar: the lower one is clamped to 100");
+        let (next, report) = apply(true, true, 100.0, false, &wide);
+        assert_eq!(next.pressure_mbar, [100.0, 100.0]);
+        assert!(report.offset_limited);
+        // Offsets that fit are used exactly as before and the report says nothing was limited.
+        let (fits, report) = apply(true, true, 1013.25, false, &Inputs { pressure_mbar: [3013.5, 3015.5], ..Inputs::defaults() });
+        assert_eq!(fits.pressure_mbar, [1012.25, 1014.25]);
+        assert!(!report.offset_limited && report.to_json().get("offsetsLimited") == Some(&Json::Bool(false)));
         assert_eq!(validate_surface(1013.25), Ok(1013.25));
         for bad in [99.9, 30000.1, f64::NAN, f64::INFINITY] {
             assert_eq!(validate_surface(bad), Err(SURFACE_RANGE_MESSAGE.to_string()), "{bad}");
