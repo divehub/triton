@@ -73,7 +73,7 @@ export class WaterScene {
     this.reset();
   }
 
-  /** The start of a session and Reset dive: the diver is on the boat at the surface, the camera at the top, no torch, no bubbles. */
+  /** The start of a session (and so of Reset all): the diver is on the boat at the surface, the camera at the top, no torch, no bubbles. */
   reset() {
     this.camera.snap(0);
     this.entry.reset();

@@ -37,7 +37,7 @@
 //!                                      kind 0 eeprom.bin, 1 nor.ngc, 2 rtc-state.json, 3 inputs.json, 4 led-colors.json
 //! ngc_session_create(cfg_ptr, cfg_len) JSON {mode, bootMode, simultaneousStart, idleFastForward, routineAccel,
 //!                                      routineAccelShadow, adcSample, startPaused, i2cIdleHigh, historyNonce,
-//!                                      startAtSurface, surfacePressureMbar}, every key
+//!                                      startAtSurface, surfacePressureMbar, initialLocalTime}, every key
 //!                                      optional: `routineAccel` (default true) is the exact acceleration of the runtime-library
 //!                                      routines (memoized soft-float calls; results identical either way), `routineAccelShadow`
 //!                                      (default false) its slow verification mode;
@@ -54,6 +54,12 @@
 //!                                      profile has no `eeprom.bin` (or an entirely erased one) the session creates the
 //!                                      EEPROM from it once (releases with a proven record table: TRITON, NEPTUN), an existing
 //!                                      EEPROM is never touched, and the state says which happened (`eepromFactoryInit`).
+//!                                      `initialLocalTime` (`{year, month, day, hour, minute, second}`, the year 2000 to 2099
+//!                                      and a real calendar date and time of day, or null; default none) is the host's local
+//!                                      clock: a board whose RTC has no saved checkpoint and no EEPROM date seed starts its
+//!                                      calendar from it (24-hour format, the correct weekday), an existing checkpoint is never
+//!                                      changed, and the state says what happened (`rtcInit`, DESIGN.md section 23). The page
+//!                                      sends the browser's local clock at every session create.
 //!                                      `blankEeprom` (default false) is a benchmark and test hook that the page never sends:
 //!                                      a new EEPROM stays erased, as the Renode-recorded workload of the dive benchmark needs (it
 //!                                      also keeps the Renode model of the handset buttons, pins low until TIM3 is configured; the
@@ -1016,5 +1022,31 @@ mod tests {
             assert!(HostConfig::from_json(bad).is_err(), "{bad}");
         }
         assert_eq!(HostConfig::from_json(r#"{"surfacePressureMbar":99}"#).unwrap_err(), "surfacePressureMbar must be between 100 and 30000");
+    }
+
+    #[test]
+    fn the_initial_local_time_is_optional_validated_and_ignored_by_the_recorded_workload() {
+        assert!(HostConfig::from_json("{}").unwrap().initial_local_time.is_none(), "none by default");
+        assert!(HostConfig::from_json(r#"{"initialLocalTime":null}"#).unwrap().initial_local_time.is_none());
+        let config = HostConfig::from_json(r#"{"initialLocalTime":{"year":2026,"month":10,"day":10,"hour":14,"minute":3,"second":22}}"#).unwrap();
+        assert_eq!(config.initial_local_time.map(|t| t.text()).as_deref(), Some("2026-10-10T14:03:22"));
+        for bad in [
+            r#"{"initialLocalTime":"2026-10-10T14:03:22"}"#,
+            r#"{"initialLocalTime":{}}"#,
+            r#"{"initialLocalTime":{"year":2026,"month":10,"day":10,"hour":14,"minute":3}}"#,
+            r#"{"initialLocalTime":{"year":2026,"month":10,"day":10,"hour":14,"minute":3,"second":22,"extra":1}}"#,
+            r#"{"initialLocalTime":{"year":1999,"month":12,"day":31,"hour":0,"minute":0,"second":0}}"#,
+            r#"{"initialLocalTime":{"year":2100,"month":1,"day":1,"hour":0,"minute":0,"second":0}}"#,
+            r#"{"initialLocalTime":{"year":2026,"month":2,"day":29,"hour":0,"minute":0,"second":0}}"#,
+            r#"{"initialLocalTime":{"year":2026,"month":10,"day":10,"hour":24,"minute":0,"second":0}}"#,
+            r#"{"initialLocalTime":{"year":2026,"month":10,"day":10,"hour":1.5,"minute":0,"second":0}}"#,
+        ] {
+            let error = HostConfig::from_json(bad).unwrap_err();
+            assert!(error.starts_with("initialLocalTime: "), "{bad}: {error}");
+        }
+        assert_eq!(
+            HostConfig::from_json(r#"{"initialLocalTime":{"year":2026,"month":2,"day":29,"hour":0,"minute":0,"second":0}}"#).unwrap_err(),
+            "initialLocalTime: 2026-02-29 is not a real calendar date"
+        );
     }
 }

@@ -8,7 +8,7 @@
 
 import { byId, confirmDialog, formatBytes, formatClock, h, hex32, prefs, reportFacts, setText } from './dom.js';
 import { ActionQueue, BASIC_IDS, ConditionsController } from './conditions.js';
-import { decoWarnings, fixtureLines, healthLine, parseSurfacePressure } from './deco.js';
+import { decoWarnings, fixtureLines, healthLine, parseSurfacePressure, rtcInitLine } from './deco.js';
 import { faultDetail, faultReports, faultWarnings } from './faults.js';
 import { clearCellFixture } from './game-logic.js';
 import { handsetKeyAction, isHandsetArrow } from './keys.js';
@@ -844,10 +844,17 @@ export class EmulatorView {
       const missing = ((this.host && this.host.unsupportedOptions) || []).filter((name) => ['startAtSurface', 'surfacePressureMbar'].includes(name));
       if (missing.length) lines.push(`This engine build does not know the option${missing.length > 1 ? 's' : ''} ${missing.join(', ')}; the start-at-the-surface fixture is not available.`);
     }
+    // The clock of a new profile: the browser's local time that started the calendars (also in a handset-only run).
+    const clockInit = rtcInitLine(state);
+    if (clockInit) lines.push(clockInit);
     const rtc = state.rtcPersistence;
     if (rtc) {
       const sources = Object.entries(rtc.sources || {}).map(([name, source]) => `${board(name)}: ${source && source.source}`).join(', ');
-      const restored = (rtc.restoredBoards || []).length ? `restored ${rtc.restoredBoards.map(board).join(' + ')}` : 'no saved checkpoint (fresh RTC)';
+      // A board without a saved checkpoint starts from the browser's local time when the engine took it (rtcInit), else from the RTC's own default.
+      const fromLocal = Object.values(rtc.sources || {}).some((source) => source && source.source === 'host-local-time') && !(rtc.restoredBoards || []).length;
+      const restored = (rtc.restoredBoards || []).length
+        ? `restored ${rtc.restoredBoards.map(board).join(' + ')}`
+        : `no saved checkpoint (${fromLocal ? "calendar started from the browser's local time" : 'fresh RTC'})`;
       lines.push(`Clock (${rtc.policy}, ${rtc.precision}): ${restored}${sources ? ` [${sources}]` : ''}${rtc.mainBkp1WakeOverride ? '; main RTC.BKP1R wake override applied' : ''}.`);
     }
     if (state.instructions) {

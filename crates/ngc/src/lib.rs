@@ -26,6 +26,7 @@ pub mod main_board;
 pub mod models;
 pub mod persistence;
 pub mod png;
+pub mod rtc_init;
 pub mod scenario;
 pub mod session;
 pub mod state;

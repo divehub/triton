@@ -34,7 +34,10 @@
 //! * `decoHealth` is `{tissues: "valid"|"invalid"|"unknown", oxygen: "calibrated"|"uncalibrated"|"unknown", details}`, a
 //!   read-only report from side-effect-free peeks ([`crate::deco::health`]); `startAtSurface` is `{enabled,
 //!   surfacePressureMbar, applied, oxygenReset, changedInputs, note}` (what that emulator fixture did at the last board creation)
-//!   and `eepromFactoryInit` `{applied, reason}`: whether this session created its EEPROM from the factory image.
+//!   and `eepromFactoryInit` `{applied, reason}`: whether this session created its EEPROM from the factory image. `rtcInit` is
+//!   `{applied, reason, localTime, boards}` (DESIGN.md 23, [`crate::rtc_init`]): whether the host's local date and time started the
+//!   calendar of a board that had no saved checkpoint and no EEPROM date seed; `localTime` is `YYYY-MM-DDTHH:MM:SS` or null when the
+//!   host supplied none and `boards` names the boards started from it.
 
 use crate::firmware::Firmware;
 use crate::fixtures::{self, UART_CHANNELS};
@@ -162,6 +165,8 @@ pub struct StateView<'a> {
     pub eeprom_factory: &'a crate::eeprom_init::FactoryInit,
     /// The start-at-the-surface fixture of the last board creation (`startAtSurface`).
     pub surface_start: &'a crate::surface_start::SurfaceStart,
+    /// Whether the session started a calendar from the host's local time (`rtcInit`).
+    pub rtc_init: &'a crate::rtc_init::RtcInit,
 }
 
 /// The runner state of the viewer (`Emulator.state` after `snapshot()`), key order as in the Python dictionary.
@@ -242,6 +247,8 @@ pub fn build(view: &StateView<'_>) -> Json {
     state.insert("decoHealth", crate::deco::health(system).to_json());
     state.insert("eepromFactoryInit", view.eeprom_factory.to_json());
     state.insert("startAtSurface", view.surface_start.to_json());
+    // The clock of a new profile (DESIGN.md 23): whether the host's local time started a calendar.
+    state.insert("rtcInit", view.rtc_init.to_json());
     state
 }
 

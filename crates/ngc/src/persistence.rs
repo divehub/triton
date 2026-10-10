@@ -17,7 +17,8 @@
 //! the same error texts, the same restore planning (a saved checkpoint wins; otherwise the main board may be
 //! seeded from the legacy EEPROM calendar `0x2d` when the validity marker `0xA3` is present and the packed date
 //! is a real date) and the same save semantics (boards that were not captured keep their saved state; the
-//! provenance of a restored board is kept).
+//! provenance of a restored board is kept). One engine extension: the provenance `host-local-time` of a calendar that was started
+//! from the date and time the host supplied for a new profile ([`crate::rtc_init`]); the Renode runner's own loader would refuse it.
 //!
 //! Nothing here runs guest code. `session.rs` decides when to call the functions (the runner calls them at
 //! launch, Restart/Cold/Wake/serial and close).
@@ -279,6 +280,9 @@ pub enum Provenance {
     FreshRtc,
     /// `{"source": "eeprom-packed-date", "packedBackup": n}`: migrated from the main EEPROM calendar checkpoint.
     EepromPackedDate(u32),
+    /// `{"source": "host-local-time"}`: started from the date and time the host supplied for a new profile (an engine extension
+    /// of the runner's format, see `crate::rtc_init`; DESIGN.md section 23).
+    HostLocalTime,
 }
 
 impl Provenance {
@@ -287,6 +291,7 @@ impl Provenance {
             Provenance::RtcRegisters => "rtc-registers",
             Provenance::FreshRtc => "fresh-rtc",
             Provenance::EepromPackedDate(_) => "eeprom-packed-date",
+            Provenance::HostLocalTime => "host-local-time",
         }
     }
 
@@ -304,7 +309,7 @@ impl Provenance {
             return Err(format!("Invalid RTC provenance for {label}"));
         };
         let source = value.get("source").and_then(Json::as_str);
-        if !matches!(source, Some("rtc-registers" | "fresh-rtc" | "eeprom-packed-date")) {
+        if !matches!(source, Some("rtc-registers" | "fresh-rtc" | "eeprom-packed-date" | "host-local-time")) {
             return Err(format!("Invalid RTC provenance for {label}"));
         }
         if members.iter().any(|(k, _)| k != "source" && k != "packedBackup") {
@@ -320,7 +325,11 @@ impl Provenance {
                 if members.iter().any(|(k, _)| k == "packedBackup") {
                     return Err(format!("Invalid RTC migration provenance for {label}"));
                 }
-                Ok(if other == "fresh-rtc" { Provenance::FreshRtc } else { Provenance::RtcRegisters })
+                Ok(match other {
+                    "fresh-rtc" => Provenance::FreshRtc,
+                    "host-local-time" => Provenance::HostLocalTime,
+                    _ => Provenance::RtcRegisters,
+                })
             }
             None => unreachable!("checked above"),
         }
@@ -357,7 +366,7 @@ fn bcd(value: u32, label: &str) -> Result<u32, String> {
     }
 }
 
-fn encode_bcd(value: u32) -> u32 {
+pub(crate) fn encode_bcd(value: u32) -> u32 {
     (value / 10) << 4 | value % 10
 }
 
@@ -423,7 +432,7 @@ fn calendar_datetime(checkpoint: &RtcCheckpoint) -> Result<DateTime, String> {
 }
 
 /// `_validate_board` for an already typed checkpoint (prescaler reserved bits included).
-fn validate_checkpoint(checkpoint: &RtcCheckpoint, name: &str) -> Result<(), String> {
+pub(crate) fn validate_checkpoint(checkpoint: &RtcCheckpoint, name: &str) -> Result<(), String> {
     calendar_datetime(checkpoint)?;
     if checkpoint.prescaler_register & !RtcCheckpoint::PRESCALER_MASK != 0 {
         return Err(format!("Invalid RTC prescaler reserved bits for {name}"));

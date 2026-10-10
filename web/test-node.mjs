@@ -102,7 +102,7 @@ afterEach(async () => {
 
 /** A Runtime wired to in-memory messaging, with request/response helpers. */
 class Harness {
-  constructor({ storage = new MemoryStorage(), lock = async () => () => {}, setTimer, clearTimer, now, autoRecycle = true } = {}) {
+  constructor({ storage = new MemoryStorage(), lock = async () => () => {}, setTimer, clearTimer, now, wallClock, autoRecycle = true } = {}) {
     openHarnesses.add(this);
     this.storage = storage;
     this.autoRecycle = autoRecycle;
@@ -130,6 +130,7 @@ class Harness {
       setTimer,
       clearTimer,
       now,
+      wallClock,
     });
   }
 
@@ -826,6 +827,66 @@ test('runtime: the start at the surface is a start option of the real engine and
   const high = await altitude.request('boot', { options: { mode: 'dual', startPaused: true, surfacePressureMbar: 850 } });
   assert.deepEqual(pick(high.state).slice(0, 2), [850, 850]);
   await altitude.close();
+});
+
+test('runtime: a new profile starts both calendars from the browser\'s local time, a saved profile keeps its own checkpoint, and the Reset all requests make a new profile that starts from the local time again', async () => {
+  const storage = new MemoryStorage();
+  let wall = new Date(2026, 9, 10, 14, 3, 22).getTime(); // 2026-10-10 14:03:22 local time, a Saturday
+  const h = new Harness({ storage, wallClock: () => wall });
+  await h.ready();
+  const checkpoint = (files, board) => JSON.parse(new TextDecoder().decode(files.find((file) => file.name === 'rtc-state.json').data)).boards[board];
+  const registers = { time: 0x14_0322, date: 0x26_0000 | 6 << 13 | 0x1000 | 0x10 };
+
+  // A new profile: the engine used the local time for both boards, before any guest ran (paused at virtual time 0).
+  const booted = await h.request('boot', { options: { mode: 'dual', startPaused: true } });
+  const report = booted.state.rtcInit;
+  assert.deepEqual(Object.keys(report).sort(), ['applied', 'boards', 'localTime', 'reason']);
+  assert.equal(report.applied, true, JSON.stringify(report));
+  assert.equal(report.localTime, '2026-10-10T14:03:22');
+  assert.deepEqual(report.boards, ['ngc-main', 'ngc-handset']);
+  assert.deepEqual(Object.values(booted.state.rtcPersistence.sources).map((source) => source.source), ['host-local-time', 'host-local-time']);
+  const exported = h.runtime.engine.exportProfile();
+  for (const board of ['ngc-main', 'ngc-handset']) {
+    const saved = checkpoint(exported, board);
+    assert.deepEqual([saved.timeRegister, saved.dateRegister, saved.format12Hour, saved.provenance], [registers.time, registers.date, false, { source: 'host-local-time' }], board);
+  }
+  assert.equal(booted.state.eepromFactoryInit.applied, true, 'the EEPROM factory image is created in the same start');
+
+  // Closing saves it; reopening finds the checkpoint: a different local time changes nothing, and the report says why.
+  await h.request('close-session');
+  wall = new Date(2030, 0, 2, 3, 4, 5).getTime();
+  const reopened = await h.request('boot', { options: { mode: 'dual', startPaused: true } });
+  assert.equal(reopened.state.rtcInit.applied, false);
+  assert.equal(reopened.state.rtcInit.localTime, '2030-01-02T03:04:05', 'the value the page sent is still reported');
+  assert.match(reopened.state.rtcInit.reason, /^Not applied: every board already had a saved RTC checkpoint/);
+  assert.deepEqual(reopened.state.rtcPersistence.restoredBoards, ['ngc-main', 'ngc-handset']);
+  assert.equal(reopened.state.eepromFactoryInit.applied, false, 'and the saved EEPROM is not new either');
+  const kept = checkpoint(h.runtime.engine.exportProfile(), 'ngc-main');
+  assert.equal(kept.dateRegister, registers.date, 'the 2026 date stays');
+  assert.deepEqual(kept.provenance, { source: 'host-local-time' }, 'the provenance round-trips through rtc-state.json');
+
+  // Reset all, as the game drives it: close unsaved, clear the area, boot again: a new profile, the clock of that moment.
+  wall = new Date(2031, 11, 31, 23, 59, 58).getTime();
+  assert.deepEqual(await h.request('close-session', { save: false }), { persist: true });
+  assert.equal((await storage.list('profile')).length > 0, true, 'the unsaved close left the saved profile alone');
+  await h.request('reset-profile', { release: 'TRITON-5.8-65.3' });
+  assert.equal((await storage.list('profile')).length, 0);
+  const fresh = await h.request('boot', { options: { mode: 'dual', startPaused: true }, remember: false, profile: 'stored', custom: false });
+  assert.equal(fresh.state.rtcInit.applied, true);
+  assert.equal(fresh.state.rtcInit.localTime, '2031-12-31T23:59:58');
+  assert.equal(fresh.state.eepromFactoryInit.applied, true, 'the factory image is written again');
+  assert.equal(fresh.state.serialNumber, 1);
+  const again = checkpoint(h.runtime.engine.exportProfile(), 'ngc-main');
+  assert.deepEqual([again.timeRegister, again.dateRegister], [0x23_5958, 0x31_0000 | 3 << 13 | 0x1200 | 0x31], '2031-12-31 23:59:58 is a Wednesday');
+  await h.close();
+
+  // A handset-only run starts only the handset's calendar.
+  wall = new Date(2026, 9, 10, 14, 3, 22).getTime();
+  const alone = new Harness({ wallClock: () => wall });
+  await alone.ready({ main: false });
+  const handsetOnly = await alone.request('boot', { options: { mode: 'handset', startPaused: true } });
+  assert.deepEqual(handsetOnly.state.rtcInit.boards, ['ngc-handset']);
+  await alone.close();
 });
 
 test('runtime: output histories follow the DESIGN 15.3a contract and feed the replay cursor without gaps', async (t) => {

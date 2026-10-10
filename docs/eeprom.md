@@ -66,6 +66,12 @@ The records the firmware populates later in normal use are not erased for long a
 (`0x24`, `0x25`, wizard), the oxygen calibration (`0x2c..0x34`), the calibration age and counters (`0x39`, `0x3a`, `0x3b`), the calendar
 backup (`0x23`), the dates `0x62` and `0x8a`, the version records (`0x02..0x05`), and at power-down the tissue block and `0x8b`.
 
+The calendar backup (`0x23`, physical `0x2d`, valid with the marker `0xa3` at physical 254) is the one record related to the clock of a new
+profile (DESIGN.md section 23, `crates/ngc/src/rtc_init.rs`). The factory image leaves it erased, and the marker is not written until the
+firmware's first-boot defaults run, so at the first board creation of a new profile the legacy EEPROM date seed (`eeprom_seed`) finds nothing.
+The host's local time (`initialLocalTime`) then starts the calendar of both boards. Where an existing EEPROM does hold the marker and a
+real packed date but there is no RTC checkpoint, that seed still wins for the main board and the host time takes only the handset.
+
 ## Method
 
 1. **Layout.** The main image holds one table entry (offset u16, size u16) per logical ID at `0x080306f2 + 4 x ID`, IDs 0 to `0x8d` (568

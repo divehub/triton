@@ -29,7 +29,7 @@ import * as deco from './deco.js';
 import * as game from './game-logic.js';
 import { LOOP_VOLUME_LITERS, MAX_DEPTH_METERS, SURFACE_PRESSURE_BAR, getLoopReadings, pressureAtDepth } from './game-gas.js';
 import * as water from './game-water.js';
-import { Runtime, nonceFromWords } from './runtime.js';
+import { Runtime, localClockFields, nonceFromWords } from './runtime.js';
 import { MemoryStorage } from './storage.js';
 import { Element, installDom } from './fake-dom.mjs';
 
@@ -1692,7 +1692,7 @@ class FakeEngine {
 }
 
 class RuntimeHarness {
-  constructor(engine, storage = new MemoryStorage()) {
+  constructor(engine, storage = new MemoryStorage(), extra = {}) {
     this.engine = engine;
     this.storage = storage;
     this.messages = [];
@@ -1711,6 +1711,7 @@ class RuntimeHarness {
       loadEngine: async () => engine,
       openStorage: async () => ({ storage: this.storage, problems: [] }),
       randomWords: (() => { let counter = 0; return () => new Uint32Array([0xffffffff, ++counter]); })(),
+      ...extra,
     });
   }
 
@@ -1796,6 +1797,102 @@ test('runtime (fake engine): a mixed pair that got past the page is refused at b
   const booted = await h.request('boot', { options: { mode: 'handset', startPaused: true } });
   assert.equal(booted.release.id, 'NEPTUN-5.8-65.3');
   await h.request('close-session');
+});
+
+test('runtime (fake engine): every session create carries the browser\'s local date and time, for original and custom builds, and a clock outside 2000-2099 sends none', async () => {
+  // The worker's wall clock is the epoch milliseconds of its Date; the engine gets the LOCAL calendar fields of it.
+  const at = new Date(2026, 9, 10, 14, 3, 22, 700); // 2026-10-10 14:03:22.7 local time
+  const expected = { year: 2026, month: 10, day: 10, hour: 14, minute: 3, second: 22 };
+  assert.deepEqual(localClockFields(at), expected, 'whole seconds, months from 1');
+  assert.deepEqual(localClockFields(new Date(2000, 0, 1, 0, 0, 0)), { year: 2000, month: 1, day: 1, hour: 0, minute: 0, second: 0 });
+  assert.deepEqual(localClockFields(new Date(2099, 11, 31, 23, 59, 59)), { year: 2099, month: 12, day: 31, hour: 23, minute: 59, second: 59 });
+  assert.equal(localClockFields(new Date(1999, 11, 31, 23, 59, 59)), null, 'before the RTC calendar');
+  assert.equal(localClockFields(new Date(2100, 0, 1)), null, 'after the RTC calendar');
+  assert.equal(localClockFields(new Date(NaN)), null);
+  assert.equal(localClockFields(null), null);
+
+  let now = at.getTime();
+  const engine = new FakeEngine();
+  const h = new RuntimeHarness(engine, new MemoryStorage(), { wallClock: () => now });
+  await h.request('init');
+  await h.inspect('main', 'TRITON-5.8-65.3');
+  await h.inspect('handset', 'TRITON-5.8-65.3');
+  await h.request('boot', { options: { mode: 'dual', startPaused: true } });
+  assert.deepEqual(engine.created[0].config.initialLocalTime, expected, 'a boot');
+  assert.equal('initialLocalTime' in Runtime.normalizeConfig({}), false, 'it is not a start option: it is read at every create');
+  // Every other way of creating a session sends the clock of that moment: a profile import and a profile reset (a running session).
+  now = new Date(2026, 9, 10, 14, 5, 0).getTime();
+  await h.request('import-profile', { files: [{ name: 'eeprom.bin', data: new Uint8Array([9]) }] });
+  assert.deepEqual(engine.created[1].config.initialLocalTime, { ...expected, minute: 5, second: 0 }, 'a profile import');
+  now = new Date(2026, 9, 10, 14, 6, 30).getTime();
+  await h.request('reset-profile');
+  assert.deepEqual(engine.created[2].config.initialLocalTime, { ...expected, minute: 6, second: 30 }, 'a profile reset');
+  assert.equal(engine.created[2].profile['eeprom.bin'], undefined, 'and the new session starts from an empty profile');
+  await h.request('close-session');
+
+  // A custom build: the same clock.
+  const custom = new FakeEngine();
+  const c = new RuntimeHarness(custom, new MemoryStorage(), { wallClock: () => at.getTime() });
+  await c.request('init');
+  await c.request('inspect-custom', { role: 'main', name: 'main.srec', bytes: text(customSrec('a')) });
+  await c.request('inspect-custom', { role: 'handset', name: 'handset.srec', bytes: text(customSrec('b')) });
+  await c.request('boot', { options: { mode: 'dual', startPaused: true }, custom: true });
+  assert.deepEqual(custom.created[0].config.initialLocalTime, expected, 'a custom boot');
+  await c.request('close-session');
+
+  // A misconfigured browser clock never stops a session: it just sends none and the engine keeps its default calendar.
+  const odd = new FakeEngine();
+  const o = new RuntimeHarness(odd, new MemoryStorage(), { wallClock: () => new Date(2150, 0, 1).getTime() });
+  await o.request('init');
+  await o.inspect('main', 'TRITON-5.8-65.3');
+  await o.inspect('handset', 'TRITON-5.8-65.3');
+  await o.request('boot', { options: { mode: 'dual', startPaused: true } });
+  assert.equal('initialLocalTime' in odd.created[0].config, false);
+  await o.request('close-session');
+
+  // The engine side: an older module that does not know the option is retried without it and the page can report that.
+  const engineSource = fs.readFileSync(path.join(here, 'engine.js'), 'utf8');
+  assert.match(engineSource, /OPTIONAL_OPTIONS = \[[^\]]*'initialLocalTime'[^\]]*\]/);
+});
+
+test('runtime (fake engine): close-session can discard the session unsaved, says whether it kept a profile, and Reset all\'s three requests leave an empty profile and a fresh session', async () => {
+  const storage = new MemoryStorage();
+  const engine = new FakeEngine();
+  const h = new RuntimeHarness(engine, storage);
+  await h.request('init');
+  await h.inspect('main', 'TRITON-5.8-65.3');
+  await h.inspect('handset', 'TRITON-5.8-65.3');
+  await h.request('boot', { options: { mode: 'dual', startPaused: true } });
+  // A normal close saves (the fake engine's shutdown returns two files) and answers that the session kept a profile.
+  assert.deepEqual(await h.request('close-session'), { persist: true });
+  assert.deepEqual((await storage.list('profile')).map((file) => file.name).sort(), ['eeprom.bin', 'inputs.json']);
+  assert.deepEqual(await h.request('close-session'), { persist: false }, 'nothing to close');
+  await storage.write('profile', 'led-colors.json', new TextEncoder().encode('{"marker":1}'));
+
+  // Reset all, as the game drives it: close without saving, clear the release's profile area, boot again with the same files.
+  await h.request('boot', { options: { mode: 'dual', startPaused: true } });
+  const created = engine.created.length;
+  assert.deepEqual(await h.request('close-session', { save: false }), { persist: true });
+  const before = (await storage.list('profile')).map((file) => file.name).sort();
+  assert.deepEqual(before, ['eeprom.bin', 'inputs.json', 'led-colors.json'], 'the unsaved close wrote nothing and removed nothing');
+  await h.request('reset-profile', { release: 'TRITON-5.8-65.3' });
+  assert.equal((await storage.list('profile')).length, 0, 'the whole area is cleared');
+  const booted = await h.request('boot', { options: { mode: 'dual', startPaused: true }, remember: false, profile: 'stored', custom: false });
+  assert.equal(engine.created.length, created + 1);
+  assert.deepEqual(engine.created.at(-1).profile, {}, 'the new session starts from an empty profile (the factory image and the local clock are the engine\'s)');
+  assert.deepEqual(engine.created.at(-1).firmware, { main: 'main:TRITON-5.8-65.3', handset: 'handset:TRITON-5.8-65.3' }, 'with the same firmware');
+  assert.equal(booted.release.id, 'TRITON-5.8-65.3');
+  // The session that was discarded left nothing behind even when it closes later with the default: the new session saves its own profile.
+  await h.request('close-session');
+  assert.deepEqual((await storage.list('profile')).map((file) => file.name).sort(), ['eeprom.bin', 'inputs.json']);
+
+  // A session that kept no profile (the area is held by another tab) says so; closing it unsaved erases nothing either.
+  const locked = new RuntimeHarness(new FakeEngine(), storage, { acquireLock: async () => null });
+  await locked.request('init');
+  await locked.inspect('main', 'TRITON-5.8-65.3');
+  await locked.inspect('handset', 'TRITON-5.8-65.3');
+  await locked.request('boot', { options: { mode: 'dual', startPaused: true } });
+  assert.deepEqual(await locked.request('close-session', { save: false }), { persist: false });
 });
 
 test('runtime (fake engine): each release has its own profile; TRITON keeps the original location', async () => {
@@ -2787,6 +2884,31 @@ test('page: the decompression warnings show only for a proven bad state, name th
   assert.match(info, /Fixture: EEPROM factory image \(this session created the EEPROM from it\)\. This session created the EEPROM from the factory image\./);
   assert.doesNotMatch(info, /stored decompression state repair/);
   assert.match(info, /Fixture: start at the surface \(on, surface 1013\.25 mbar\)\. Depth 0 at every start\./);
+  assert.doesNotMatch(info, /clock of a new profile/, 'an engine without the report shows no line');
+
+  // The clock of a new profile (DESIGN 23): the browser's local time that started the calendars, in Advanced → session information.
+  const rtcInit = { applied: true, localTime: '2026-10-10T14:03:22', boards: ['ngc-main', 'ngc-handset'], reason: "This session started the calendar of ngc-main and ngc-handset from the host's local time 2026-10-10T14:03:22." };
+  show({}, { rtcInit });
+  assert.match(m.document.getElementById('session-info').textContent, /Fixture: clock of a new profile \(applied, local time 2026-10-10T14:03:22, main \+ handset\)\. This session started the calendar of ngc-main and ngc-handset from the host's local time 2026-10-10T14:03:22\./);
+  show({}, { rtcInit: { applied: false, localTime: '2026-10-10T14:03:22', boards: [], reason: 'Not applied: every board already had a saved RTC checkpoint or the EEPROM date seed, and an existing calendar is never changed.' } });
+  assert.match(m.document.getElementById('session-info').textContent, /Fixture: clock of a new profile \(not applied, the browser sent 2026-10-10T14:03:22\)\. Not applied: every board already had a saved RTC checkpoint/);
+  show({}, { rtcInit: { applied: false, localTime: null, boards: [], reason: 'Not applied: the host supplied no local time.' } });
+  assert.match(m.document.getElementById('session-info').textContent, /Fixture: clock of a new profile \(not applied\)\. Not applied: the host supplied no local time\./);
+  assert.equal(deco.rtcInitLine({}), null);
+  assert.equal(deco.rtcInitLine(null), null);
+});
+
+test('page: the clock of a new profile also shows in the session information of a handset-only run', async () => {
+  const m = await mount();
+  const { inputs, ...withoutMain } = initialState;
+  assert.ok(inputs, 'the dual state has sensor inputs, a handset-only one has none');
+  const rtcPersistence = { policy: 'virtual-time-only', precision: 'whole-calendar-seconds', restoredBoards: [], sources: { 'ngc-handset': { source: 'host-local-time' } }, mainBkp1WakeOverride: false };
+  const state = { ...withoutMain, rtcPersistence, rtcInit: { applied: true, localTime: '2026-10-10T14:03:22', boards: ['ngc-handset'], reason: 'Started.' } };
+  m.view.onState({ state, host: { ...hostBase } });
+  m.document.getElementById('firmware-details').open = true;
+  m.view.render();
+  assert.match(m.document.getElementById('session-info').textContent, /Clock \(virtual-time-only, whole-calendar-seconds\): no saved checkpoint \(calendar started from the browser's local time\) \[handset: host-local-time\]\./);
+  assert.match(m.document.getElementById('session-info').textContent, /Fixture: clock of a new profile \(applied, local time 2026-10-10T14:03:22, handset\)\. Started\./);
 });
 
 test('page: the cold boot hint sits at the Cold boot button and appears in the start options when a cold boot is chosen', async () => {
@@ -3762,7 +3884,7 @@ test('game (clock): Pause / 1x / 2x / 4x / Uncapped, with the prototype\'s valve
   assert.equal(clock.effective(), 4, 'Space resumes at the speed before the pause');
   clock.togglePause();
   assert.equal(clock.effective(), 0);
-  // Reset dive: 1x, nothing held.
+  // A new game session: 1x, nothing held.
   clock.setSpeed(2);
   clock.hold('oxygen', 'shortcut', true);
   clock.reset();
@@ -3786,7 +3908,8 @@ test('game (dive): depth and gas advance over the emulator\'s virtual time, the 
   const fine = run(Array.from({ length: 600 }, (_, index) => 10 + (index + 1) / 10), descend);
   near(coarse.depth, 30, 'a minute at 30 m/min');
   near(fine.depth, coarse.depth, 'the same in 0.1 s states');
-  near(coarse.elapsed, 60, 'the dive time is the virtual time integrated');
+  near(coarse.elapsed, 60, 'the session time is the virtual time integrated');
+  near(coarse.diveTime, 60, 'and the dive started with the first step of the descent');
   near(getLoopReadings(fine.loop).fractions.o2, getLoopReadings(coarse.loop).fractions.o2, 'the same gas');
   assert.equal(coarse.advanceTo(70, {}), 0, 'a time that stands still integrates nothing (a paused emulator)');
   assert.equal(coarse.advanceTo(65, {}), 0, 'nor one that went back (a settle went slightly past the next state)');
@@ -3837,14 +3960,150 @@ test('game (dive): depth and gas advance over the emulator\'s virtual time, the 
   assert.equal(injected.gas.name, 'Air');
   assert.equal(injected.virtual, 70, 'a reset keeps the virtual time');
   near(getLoopReadings(injected.loop).fractions.o2, 0.21);
-  assert.deepEqual(injected.profile, [[0, 0]]);
+  assert.deepEqual(injected.profile, [], 'a reset forgets the dive: no profile until the next descent');
+  assert.equal(injected.diving, false);
+  assert.equal(injected.diveTime, 0);
 
   // The profile keeps the whole time span while long dives thin their samples.
   const long = new game.GameSim();
   long.rebase(0);
+  long.setMotionRate(30);
   long.advanceTo(20_000, {});
+  assert.equal(long.diving, true, 'still in the water at the seabed');
   assert.ok(long.profile.length <= 2401, `${long.profile.length} samples`);
+  assert.ok(long.profile.length > 1000, 'thinned, not cut: the samples cover the whole dive');
+  assert.deepEqual(long.profile[0], [0, 0]);
   assert.ok(long.profile.at(-1)[0] > 19_000, 'up to the end of the dive');
+  near(long.diveTime, 20_000);
+});
+
+test('game (dive profile): the profile records the dive only: it starts at the descent, ends at the surface, and the next descent starts a new one', () => {
+  const sim = new game.GameSim();
+  sim.rebase(0);
+  // Time on the boat (or floating at the surface, holding or "descending" at 0 m) is not recorded.
+  sim.advanceTo(120, {});
+  assert.deepEqual(sim.profile, [], 'no dive yet');
+  assert.equal(sim.diving, false);
+  assert.equal(sim.diveTime, 0);
+  assert.equal(sim.maxDepth, 0);
+  near(sim.elapsed, 120, 'the session time still counts');
+  sim.setMotionRate(-18);
+  sim.advanceTo(150, {});
+  assert.deepEqual(sim.profile, [], 'ascending at the surface leaves nothing either');
+
+  // The first step that leaves the surface starts the profile at dive time 0, at depth 0.
+  sim.setMotionRate(30);
+  sim.advanceTo(150.25, {});
+  assert.equal(sim.diving, true);
+  assert.deepEqual(sim.profile[0], [0, 0], 'the surface point at the moment of the descent');
+  near(sim.diveTime, 0.25);
+  near(sim.elapsed, 150.25);
+  sim.advanceTo(210, {}); // a minute at 30 m/min
+  near(sim.depth, 30);
+  near(sim.diveTime, 60, 'the dive time starts at the descent, not at the session');
+  assert.equal(sim.profile.length > 10, true, 'a sample about every second');
+  assert.ok(sim.profile.every(([time], index) => index === 0 || time > sim.profile[index - 1][0]), 'times only grow');
+  sim.stopMotion();
+  sim.advanceTo(270, {});
+  near(sim.diveTime, 120);
+  near(sim.maxDepth, 30);
+
+  // Back at the surface: the dive ends there, the final surface point is in the profile, and nothing more is recorded.
+  sim.setMotionRate(-18);
+  sim.advanceTo(400, {}); // 30 m at 18 m/min takes 100 s: the surface at virtual 370
+  assert.equal(sim.depth, 0);
+  assert.equal(sim.diving, false);
+  near(sim.diveTime, 220, 'the dive lasted 120 s plus the 100 s ascent');
+  const finished = sim.profile.map((sample) => [...sample]);
+  assert.deepEqual(finished.at(-1).map((value, index) => (index === 0 ? Math.round(value) : value)), [220, 0], 'the final surface point is included');
+  assert.equal(sim.profile.at(-1)[1], 0);
+  sim.advanceTo(900, {}); // floating at the surface for a long time
+  assert.deepEqual(sim.profile, finished, 'nothing is recorded at the surface');
+  near(sim.diveTime, 220);
+  near(sim.maxDepth, 30, 'the maximum belongs to the last dive');
+  near(sim.elapsed, 900 - 0, 'the session time kept counting');
+
+  // The next descent starts a new profile: the earlier dive and its maximum are gone.
+  sim.setMotionRate(30);
+  sim.advanceTo(920, {}); // 20 s: 10 m
+  assert.equal(sim.diving, true);
+  assert.deepEqual(sim.profile[0], [0, 0]);
+  near(sim.diveTime, 20);
+  near(sim.maxDepth, 10, 'the deepest point of this dive only');
+  assert.ok(sim.profile.at(-1)[0] <= 20 + 1e-9 && sim.profile.length < 40, 'the earlier samples are not kept');
+  // Reaching the surface through the boundary stop (the motion stops itself there) ends it as well.
+  let stops = 0;
+  const bounded = new game.GameSim({ onBoundary: () => { stops += 1; } });
+  bounded.rebase(0);
+  bounded.setMotionRate(30);
+  bounded.advanceTo(10, {}); // 5 m
+  bounded.setMotionRate(-18);
+  bounded.advanceTo(30, {});
+  assert.equal(bounded.depth, 0);
+  assert.equal(bounded.diving, false);
+  assert.equal(stops, 1);
+  assert.equal(bounded.direction, 0, 'the motion stopped itself at the surface');
+  assert.deepEqual(bounded.profile.at(-1)[1], 0);
+  const ended = bounded.profile.length;
+  bounded.advanceTo(100, {});
+  assert.equal(bounded.profile.length, ended);
+  // A reset (a new session) starts without any dive.
+  bounded.reset();
+  assert.deepEqual([bounded.profile, bounded.diving, bounded.diveTime, bounded.maxDepth], [[], false, 0, 0]);
+});
+
+test('game (view): the profile chart shows the current or the last dive, says so before the first descent and after Reset all, and a new descent starts a new chart', async () => {
+  const g = await mountGame();
+  resetAnswers(g);
+  const shown = () => ({
+    empty: g.el('profile-empty').hidden,
+    point: g.el('profile-point').hidden,
+    line: g.el('profile-line').getAttribute('d') || '',
+    area: g.el('profile-area').getAttribute('d') || '',
+    duration: g.text('profile-duration'),
+    max: g.text('max-depth-meta'),
+  });
+  g.feed(0, 0);
+  g.feed(60, 1000); // a minute on the boat
+  assert.deepEqual(shown(), { empty: false, point: true, line: '', area: '', duration: '0:00 elapsed', max: 'Max 0.0 m' });
+  assert.match(g.text('profile-empty'), /^No dive yet/);
+
+  g.view.changeMotion(30);
+  g.feed(70, 2000); // ten seconds of descent: 5 m
+  const diving = shown();
+  assert.equal(diving.empty, true, 'the message goes away with the first descent');
+  assert.equal(diving.point, false);
+  assert.equal(diving.duration, '0:10 elapsed', 'elapsed begins at 0:00 at the moment of the descent, not at the session');
+  assert.match(diving.line, /^M36\.00,12\.00 /, 'the line starts at dive time 0 on the surface line');
+  assert.equal(diving.max, 'Max 5.0 m');
+  near(g.view.sim.diveTime, 10);
+
+  // Surfacing ends the dive: the chart stays with its last point at the surface, and a long time at the surface changes nothing.
+  g.view.changeMotion(-18);
+  g.feed(100, 3000); // 5 m at 18 m/min: the surface after 16.7 s
+  assert.equal(g.view.sim.diving, false);
+  const finished = shown();
+  assert.equal(finished.duration, '0:26 elapsed');
+  assert.equal(finished.point, false, 'the last point is still marked');
+  assert.match(finished.line, /,12\.00$/, 'and it is on the surface line');
+  g.feed(700, 4000);
+  assert.deepEqual(shown(), finished, 'nothing is recorded at the surface');
+
+  // The next descent starts a new profile.
+  g.view.changeMotion(30);
+  g.feed(710, 5000);
+  const next = shown();
+  assert.equal(next.duration, '0:10 elapsed');
+  assert.equal(next.max, 'Max 5.0 m');
+  assert.match(next.line, /^M36\.00,12\.00 /);
+  assert.ok(next.line.split(' L').length < finished.line.split(' L').length, 'a chart of its own: the earlier dive\'s samples are gone');
+
+  // Reset all starts with an empty chart again.
+  g.el('reset').click();
+  await settle();
+  g.feed(0, 6000);
+  assert.deepEqual(shown(), { empty: false, point: true, line: '', area: '', duration: '0:00 elapsed', max: 'Max 0.0 m' });
+  g.view.hide();
 });
 
 test('game (clock): the virtual time at "now" is estimated only for a paced run, and never far ahead', () => {
@@ -3880,25 +4139,36 @@ test('game (state): the run state and the messages that must not hide an engine 
   const fault = game.stopAlerts({ running: true, faults: { main: { cfsr: 0x8000, hfsr: 0, lockup: null }, handset: { cfsr: 0, hfsr: 0, lockup: null } } });
   assert.equal(fault.length, 1);
   assert.match(fault[0].text, /^Main CPU fault: CFSR 0x00008000/);
-  assert.match(game.stopAlerts({ running: true, decoHealth: { tissues: 'invalid', oxygen: 'ok' } })[0].text, /stored tissues are blank.*reset the saved profile on the start screen/);
+  assert.match(game.stopAlerts({ running: true, decoHealth: { tissues: 'invalid', oxygen: 'ok' } })[0].text, /stored tissues are blank.*Use Reset all to begin with an initialized EEPROM\.$/);
   assert.deepEqual(game.stopAlerts({ running: true, decoHealth: { tissues: 'unknown', oxygen: 'unknown' } }), []);
 });
 
 /** The real GameView on the real index.html (fake DOM), a fake worker client and fake timers; the cells are fixed (+0.5 mV each). */
-async function mountGame({ options = {}, release = describeRelease(DEFAULT_RELEASE_ID), store = memoryStore(), frames, motion } = {}) {
+async function mountGame({ options = {}, release = describeRelease(DEFAULT_RELEASE_ID), store = memoryStore(), frames, motion, custom = false } = {}) {
   installDom(html);
   const { GameView } = await import('./game.js');
   const clock = fakeTimers();
   let wall = 0;
   const sent = [];
   const requests = [];
+  // The answers of the fake worker by request type: a function (payload) => result | Promise | throws; the default is `{}`. Reset all
+  // closes the session, resets the profile and boots a new one, so tests put their own answers (or a held promise) here.
+  const respond = {};
   const client = {
     send: (type, payload) => sent.push({ type, payload }),
-    request: (type, payload) => { requests.push({ type, payload }); return Promise.resolve({}); },
+    request: (type, payload) => {
+      requests.push({ type, payload });
+      try {
+        return Promise.resolve(respond[type] ? respond[type](payload) : {});
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    },
   };
   const quits = [];
   const view = new GameView(client, { quit: () => { quits.push(true); } }, { timers: clock, now: () => wall, random: () => 0.75, store, frames, motion });
-  view.show({ options: { mode: 'dual', adcSample: 400, ...options }, profile: 'stored', release });
+  const shown = { options: { mode: 'dual', adcSample: 400, ...options }, profile: 'stored', release, custom };
+  view.show(shown);
   const document = globalThis.document;
   const host = { generation: 1, profileEpoch: 1, speed: 1, keepingUp: true };
   const baseState = { running: true, virtualTime: 0, frameReady: false, hardwareOutputs: [], uartConsole: [], outputHistoryEpoch: 'domain-a' };
@@ -3907,7 +4177,7 @@ async function mountGame({ options = {}, release = describeRelease(DEFAULT_RELEA
     view.onState({ state: { ...baseState, virtualTime, ...extra }, host: { ...host, ...hostExtra } });
   };
   return {
-    view, clock, sent, requests, quits, document, store, feed, host, baseState,
+    view, clock, sent, requests, quits, document, store, feed, host, baseState, respond, shown,
     el: (id) => document.getElementById(`game-${id}`),
     text: (id) => document.getElementById(`game-${id}`).textContent,
     actions: () => requests.filter((item) => item.type === 'action').map((item) => item.payload.request),
@@ -4031,32 +4301,243 @@ test('game (view): pacing follows the speed menu, Uncapped is unpaced, a held va
   g.view.hide();
 });
 
-test('game (view): Reset dive returns to the surface with a fresh Air loop at 1x while the boards keep running', async () => {
+/** A promise that the test settles by hand (a worker request held open). */
+function deferred() {
+  const hold = {};
+  hold.promise = new Promise((resolve, reject) => { hold.resolve = resolve; hold.reject = reject; });
+  return hold;
+}
+
+/** The answers of a worker that closes a session, resets the profile and boots a new one (a fresh state at virtual time 0, generation 2). */
+function resetAnswers(g, { persist = true, release = g.shown.release } = {}) {
+  g.respond['close-session'] = () => ({ persist });
+  g.respond['reset-profile'] = () => ({});
+  g.respond.boot = () => ({ state: { ...g.baseState, virtualTime: 0 }, hostStatus: { ...g.host, generation: 2 }, release });
+}
+
+test('game (reset all): the header reads Reset all, asks first, and Cancel changes nothing', async () => {
   const g = await mountGame();
+  resetAnswers(g);
+  assert.equal(g.text('reset'), 'Reset all');
+  assert.doesNotMatch(g.el('reset').title, /Reset dive/);
+  assert.match(g.el('reset').title, /Erase the dive computer's memory \(settings, calibration, logbook and clock\)/);
   g.feed(0, 0);
+  await settle();
+  g.view.changeMotion(30);
+  g.feed(20, 300);
+  assert.ok(g.view.sim.depth > 5);
+  const sentBefore = g.requests.length;
+  const asked = [];
+  globalThis.window.confirm = (text) => { asked.push(text); return false; };
+  g.el('reset').click();
+  await settle();
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /^Reset all\?\n\nThis erases the dive computer's memory: settings, calibration, logbook and clock\. Both boards restart as new/);
+  assert.equal(g.requests.length, sentBefore, 'canceled: nothing is sent to the worker');
+  assert.equal(g.view.resetting, false);
+  assert.equal(g.view.sim.direction, 0, 'opening the confirmation let go of the water');
+  assert.ok(g.view.sim.depth > 5, 'the dive goes on');
+  assert.equal(g.text('run-state'), 'Running');
+  assert.equal(g.el('reset').disabled, false);
+  // The confirmation has the keyboard: the arrow keys do not press the handset behind it.
+  g.view.modalOpen = true;
+  g.document.dispatch('keydown', { key: 'ArrowUp', code: 'ArrowUp', repeat: false });
+  await settle();
+  assert.equal(g.actions().some((request) => request.action === 'up'), false);
+  g.view.modalOpen = false;
+  globalThis.window.confirm = () => true;
+  g.view.hide();
+});
+
+test('game (reset all): confirming closes the session without saving, clears the profile area and the cells, boots the same firmware and options again and starts a fresh game on the boat', async () => {
+  const removed = [];
+  const store = memoryStore();
+  const originalRemove = store.remove;
+  store.remove = (key) => { removed.push(key); return originalRemove(key); };
+  store.map.set('game-cells.profile', JSON.stringify({ version: 1, deviationsMv: [0.1, 0.2, 0.3] }));
+  const options = { mode: 'dual', adcSample: 400, surfacePressureMbar: 950, startPaused: false, startAtSurface: true };
+  const g = await mountGame({ store, options });
+  resetAnswers(g);
+  assert.equal(g.view.cells.drawn, false, 'the stored cells of this profile are in use');
+  g.feed(0, 0);
+  await settle();
   g.view.chooseSpeed(4);
   g.view.changeMotion(30);
   g.feed(30, 300);
   g.view.sim.setGas('tx1050');
-  assert.ok(g.view.sim.depth > 10);
   g.el('diluent-select').value = 'tx1050';
+  g.view.holdValve('oxygen', 'pointer:1', true);
+  assert.ok(g.view.sim.depth > 10);
+  g.view.sim.flow = 250;
+  g.el('mav-flow').value = '250';
+  const before = g.requests.length;
+  const asked = [];
+  globalThis.window.confirm = (text) => { asked.push(text); return true; };
+  // The boot is held, so the state in between can be seen.
+  const booting = deferred();
+  g.respond.boot = () => booting.promise;
   g.el('reset').click();
   await settle();
+  assert.equal(asked.length, 1, 'asked once');
+  const steps = g.requests.slice(before).filter((request) => ['close-session', 'reset-profile', 'boot'].includes(request.type));
+  assert.deepEqual(steps.map((request) => request.type), ['close-session', 'reset-profile', 'boot'], 'close, clear, start: in this order');
+  assert.deepEqual(steps[0].payload, { save: false }, 'the session is closed without saving');
+  assert.deepEqual(steps[1].payload, { release: 'TRITON-5.8-65.3' }, 'the profile area of the release');
+  assert.deepEqual(steps[2].payload, { options: { mode: 'dual', ...options }, remember: false, profile: 'stored', custom: false }, 'the same start options, the stored (now empty) profile');
+  assert.deepEqual(removed, ['game-cells.profile'], 'the oxygen-cell deviations of this profile area were forgotten, nothing else');
+  // While the new session is created: the header says so, nothing can be started, nothing reaches the discarded session.
+  assert.equal(g.view.resetting, true);
+  assert.equal(g.text('run-state'), 'Resetting…');
+  assert.equal(g.el('run-state').dataset.tone, 'warn');
+  assert.equal(g.el('reset').disabled, true);
+  assert.equal(g.el('quit').disabled, true);
+  g.el('quit').click();
+  await g.view.pressHandset('up');
+  g.feed(40, 500);
+  await settle();
+  assert.equal(g.actions().slice(-3).some((request) => request.action === 'up'), false, 'no handset press is sent');
+  assert.equal(g.quits.length, 0, 'Quit is refused while the session is being replaced');
+  assert.ok(g.view.sim.depth > 10, 'the states of the old session are not integrated into anything');
+  booting.resolve({ state: { ...g.baseState, virtualTime: 0 }, hostStatus: { ...g.host, generation: 2 }, release: g.shown.release });
+  await settle();
+  // The new game: the surface, a fresh Air loop at 1x, the boat, fresh cells, the clock of the new session.
+  assert.equal(g.view.resetting, false);
   const sim = g.view.sim;
   assert.equal(sim.depth, 0);
   assert.equal(sim.maxDepth, 0);
   assert.equal(sim.direction, 0);
   assert.equal(sim.gas.name, 'Air');
+  assert.equal(sim.flow, 100, 'the MAV flow is back to its default');
+  assert.equal(g.el('mav-flow').value, '100');
   assert.equal(g.el('diluent-select').value, 'air');
   assert.equal(g.view.clock.speed, 1);
-  assert.equal(g.speeds().at(-1), 1);
-  assert.equal(sim.virtual, 30, 'the emulator\'s clock is not reset');
-  assert.equal(g.text('virtual-time'), '00:00:30');
+  assert.equal(g.view.clock.injecting(), false, 'no valve is held');
+  assert.equal(g.view.scene.entry.phase, 'boat');
+  assert.equal(g.el('ocean').classList.contains('on-boat'), true);
+  assert.equal(sim.virtual, 0, 'the new session\'s virtual time');
+  assert.equal(g.text('virtual-time'), '00:00:00');
   assert.equal(g.text('max-depth-meta'), 'Max 0.0 m');
-  assert.equal(g.actions().some((request) => ['reset', 'cold', 'wake'].includes(request.action)), false, 'no board is restarted');
+  assert.equal(g.text('run-state'), 'Running');
+  assert.equal(g.el('reset').disabled, false);
+  assert.equal(g.el('quit').disabled, false);
+  assert.equal(g.view.cells.drawn, true, 'new cells are drawn for the new profile');
+  assert.match(g.text('fixture-list'), /newly drawn/);
+  assert.deepEqual(JSON.parse(store.map.get('game-cells.profile')).deviationsMv, [0.5, 0.5, 0.5]);
+  assert.equal(g.speeds().at(-1), 1, 'the first state of the new session sets 1x');
+  await settle();
   const surface = g.inputs().at(-1);
-  assert.equal(surface.pressure1Mbar, 1013.25);
-  assert.equal(surface.oxygen1Mv, 12.5);
+  assert.equal(surface.pressure1Mbar, 950, 'the session\'s surface pressure again');
+  closeTo(surface.oxygen1Mv, 12.5 * 0.95 / 1.01325, 0.01, 'air at 950 mbar with the new cell');
+  assert.equal(g.actions().some((request) => ['reset', 'cold', 'wake'].includes(request.action)), false, 'no board restart action: the boards are new');
+  assert.equal(g.view.alertsKey, '[]', 'no message is left over');
+  globalThis.window.confirm = () => true;
+  g.view.hide();
+});
+
+test('game (reset all): a session that kept no profile has none to erase, and a custom build resets the shared custom area', async () => {
+  // A session that did not save (another tab held the profile, or "Boot without the saved profile"): nothing is erased, it starts again the same way.
+  const removed = [];
+  const store = memoryStore();
+  const originalRemove = store.remove;
+  store.remove = (key) => { removed.push(key); return originalRemove(key); };
+  const unsaved = await mountGame({ store });
+  resetAnswers(unsaved, { persist: false });
+  unsaved.feed(0, 0);
+  unsaved.el('reset').click();
+  await settle();
+  assert.deepEqual(unsaved.requests.map((request) => request.type).filter((type) => ['close-session', 'reset-profile', 'boot'].includes(type)), ['close-session', 'boot']);
+  assert.equal(unsaved.requests.find((request) => request.type === 'boot').payload.profile, 'none', 'and nothing is saved');
+  assert.deepEqual(removed, [], 'the cells stay');
+  unsaved.view.hide();
+
+  // A custom build: the shared custom profile area, and a custom boot.
+  const custom = await mountGame({ release: describeRelease(CUSTOM_RELEASE_ID), custom: true, store });
+  resetAnswers(custom);
+  custom.feed(0, 0);
+  custom.el('reset').click();
+  await settle();
+  assert.deepEqual(custom.requests.find((request) => request.type === 'reset-profile').payload, { release: 'CUSTOM' });
+  assert.deepEqual([custom.requests.find((request) => request.type === 'boot').payload.custom, custom.requests.find((request) => request.type === 'boot').payload.profile], [true, 'stored']);
+  assert.ok(removed.includes('game-cells.custom'), 'the custom area\'s cells');
+  assert.equal(custom.text('release'), 'Custom build');
+  custom.view.hide();
+});
+
+test('game (reset all): a failure is shown in the game, and a session that is already closed is never left looking alive', async () => {
+  // Before the session closed nothing changed: the game goes on with the message in view.
+  const early = await mountGame();
+  resetAnswers(early);
+  early.respond['close-session'] = () => { throw new Error('The engine did not answer'); };
+  early.feed(0, 0);
+  early.view.changeMotion(30);
+  early.feed(20, 300);
+  const depth = early.view.sim.depth;
+  early.el('reset').click();
+  await settle();
+  assert.equal(early.view.resetting, false);
+  assert.match(early.text('alerts'), /^Reset all failed: The engine did not answer/);
+  assert.equal(early.el('alerts').hidden, false);
+  assert.equal(early.view.sim.depth, depth, 'the dive is where it was');
+  assert.equal(early.view.connectionError, '');
+  assert.equal(early.text('run-state'), 'Running');
+  assert.equal(early.el('reset').disabled, false);
+  assert.deepEqual(early.requests.map((request) => request.type).filter((type) => type === 'reset-profile' || type === 'boot'), [], 'nothing was erased or started');
+  early.feed(30, 800);
+  await settle();
+  assert.ok(early.inputs().length >= 1, 'the inputs flow again');
+  early.view.hide();
+
+  // The profile could not be cleared after the session closed: the game says so, keeps the cells (the profile may still hold the old calibration), and offers Quit.
+  const store = memoryStore();
+  store.map.set('game-cells.profile', JSON.stringify({ version: 1, deviationsMv: [0.1, 0.2, 0.3] }));
+  const half = await mountGame({ store });
+  resetAnswers(half);
+  half.respond['reset-profile'] = () => { throw new Error('Erasing the saved profile failed: quota'); };
+  half.feed(0, 0);
+  half.el('reset').click();
+  await settle();
+  assert.equal(half.view.resetting, false);
+  assert.match(half.text('alerts'), /Reset all did not finish: Erasing the saved profile failed: quota/);
+  assert.match(half.text('alerts'), /The session is closed and the saved profile may be incomplete\. Quit returns to the start screen/);
+  assert.equal(half.text('run-state'), 'Disconnected');
+  assert.equal(half.el('quit').disabled, false, 'Quit is the way out');
+  assert.equal(half.requests.some((request) => request.type === 'boot'), false);
+  assert.notEqual(store.map.get('game-cells.profile'), undefined, 'the cells are kept until the profile is known to be cleared');
+  half.el('quit').click();
+  await settle();
+  assert.equal(half.quits.length, 1);
+  half.view.hide();
+
+  // The new session could not be started after the profile was cleared: the same.
+  const late = await mountGame();
+  resetAnswers(late);
+  late.respond.boot = () => { throw new Error('The saved profile could not be used'); };
+  late.feed(0, 0);
+  late.el('reset').click();
+  await settle();
+  assert.match(late.text('alerts'), /Reset all did not finish: The saved profile could not be used/);
+  assert.equal(late.text('run-state'), 'Disconnected');
+  assert.equal(late.view.resetting, false);
+  late.view.hide();
+});
+
+test('game (reset all): the header holds the release, the run state, the virtual time with the play speed, Reset all and Quit; the hero heading is gone', async () => {
+  const header = html.match(/<div class="app-header">[\s\S]*?<div class="workspace">/)[0];
+  const order = ['game-release', 'game-run-state', 'game-virtual-time', 'game-header-speed', 'game-reset', 'game-quit'].map((id) => header.indexOf(`id="${id}"`));
+  assert.ok(order.every((at) => at > 0) && order.every((at, index) => index === 0 || at > order[index - 1]), `in this order: ${order}`);
+  assert.match(header, /class="session-chip"/, 'the badge keeps its look');
+  assert.doesNotMatch(html, /A LITTLE MORE IMMERSIVE|Your next dive starts here|class="intro"|class="eyebrow"/);
+  assert.doesNotMatch(html, /Reset dive/);
+  const css = fs.readFileSync(path.join(here, 'game.css'), 'utf8');
+  assert.doesNotMatch(css, /\.intro\b|\.eyebrow\b|#screen-game h1/, 'the hero rules are gone');
+  const g = await mountGame();
+  const bar = g.el('virtual-time').closest('.app-header');
+  assert.ok(bar, 'the virtual time is in the sticky header');
+  assert.equal(g.el('header-speed').closest('.app-header'), bar);
+  assert.equal(g.el('run-state').closest('.header-right'), g.el('virtual-time').closest('.header-right'));
+  g.feed(75, 0);
+  assert.equal(g.text('virtual-time'), '00:01:15');
+  assert.equal(g.text('header-speed'), '1×');
   g.view.hide();
 });
 
@@ -4571,7 +5052,7 @@ test('game (water entry): the diver starts on the boat, the first descent rolls 
   held.update({ dt: 0.3, depth: 0.5, direction: 1 });
   const progress = held.progress;
   assert.equal(held.update({ dt: 0, depth: 3, direction: 1 }).progress, progress);
-  // Reset dive: back to the boat, so the next descent plays the entry again.
+  // Reset all (a new session): back to the boat, so the next descent plays the entry again.
   entry.reset();
   assert.equal(entry.phase, 'boat');
   assert.equal(entry.update({ dt: 0.016, depth: 0.1, direction: 0 }).phase, 'entering', 'the depth alone starts it too');
@@ -4719,7 +5200,7 @@ function fakeFrames() {
   return frames;
 }
 
-test('game (water view): the diver starts on the boat, the first descent plays the entry, surfacing leaves the diver in the water, Reset dive returns to the boat', async () => {
+test('game (water view): the diver starts on the boat, the first descent plays the entry, surfacing leaves the diver in the water, Reset all returns to the boat', async () => {
   const g = await mountGame();
   const ocean = g.el('ocean');
   let clock = 1000;
@@ -4764,10 +5245,12 @@ test('game (water view): the diver starts on the boat, the first descent plays t
   assert.equal(g.view.scene.entry.phase, 'water');
   assert.deepEqual(flags(), []);
 
-  // Reset dive: the diver is back on the boat (the camera at the top), and the next descent plays the entry again.
+  // Reset all starts a new game session: the diver is back on the boat (the camera at the top), and the next descent plays the entry again.
+  resetAnswers(g);
   g.view.changeMotion(30);
   descend(60);
   g.el('reset').click();
+  await settle();
   frames(2);
   assert.equal(g.view.scene.entry.phase, 'boat');
   assert.deepEqual(flags(), ['on-boat']);

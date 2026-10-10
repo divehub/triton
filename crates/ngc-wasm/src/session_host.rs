@@ -57,6 +57,8 @@ impl SessionHost {
             // The button pins rest high from reset for every firmware (DESIGN.md 20.3). The benchmark hook `blankEeprom` selects the
             // Renode-recorded workload as a whole (`ngc::scenario::recorded_config`), which includes the Renode button model.
             button_pull_up: !config.blank_eeprom,
+            // The same recorded workload keeps the fresh RTC calendar of the recordings (DESIGN.md 23).
+            initial_local_time: if config.blank_eeprom { None } else { config.initial_local_time },
         };
         Ok(Box::new(SessionHost { session: Session::new(config, main, handset, profile)? }))
     }

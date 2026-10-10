@@ -137,6 +137,15 @@ mod tests {
         let (status, _, err) = run(&["run", "--mode", "handset", "--board", "main", "--pc-trace", "5", "x"]);
         assert_eq!(status, 2);
         assert!(err.contains("--board main needs --mode dual"), "{err}");
+        // The clock of a new profile (DESIGN.md 23): validated before any firmware is read, and only meaningful with a profile directory.
+        let (status, _, err) = run(&["run", "--initial-local-time", "2026-10-10T14:03:22"]);
+        assert_eq!(status, 2);
+        assert!(err.contains("--initial-local-time needs --data-dir"), "{err}");
+        for bad in ["2026-10-10 14:03:22", "2026-02-29T00:00:00", "1999-12-31T23:59:59", "2100-01-01T00:00:00", "2026-10-10T24:00:00", "now"] {
+            let (status, _, err) = run(&["run", "--data-dir", "profile-that-is-never-read", "--initial-local-time", bad]);
+            assert_eq!(status, 2, "{bad}");
+            assert!(err.contains("--initial-local-time: "), "{bad}: {err}");
+        }
         let (status, _, err) = run(&["bench", "--boot-seconds", "1"]);
         assert_eq!(status, 2);
         assert!(err.contains("--boot-seconds"), "{err}");

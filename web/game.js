@@ -12,11 +12,11 @@
 
 import { ActionQueue } from './conditions.js';
 import { DEFAULT_SURFACE_MBAR, parseSurfacePressure } from './deco.js';
-import { byId, prefs, setText } from './dom.js';
+import { byId, confirmDialog, prefs, setText } from './dom.js';
 import { DEFAULT_MAV_FLOW_SL_MIN, MAX_DEPTH_METERS } from './game-gas.js';
 import {
-  ENTRY_SEAT, GAME_INDICATORS, GameSim, InputsSender, PlayClock, SKY_M, VIEW_WINDOW_M, cellMillivolts, cellSensitivities, clockText,
-  durationText, estimateVirtual, gameInputs, gaugeGradient, indicatorView, loadCellFixture, runState, speedLabel, stopAlerts,
+  ENTRY_SEAT, GAME_INDICATORS, GameSim, InputsSender, PlayClock, SKY_M, VIEW_WINDOW_M, cellMillivolts, cellSensitivities, clearCellFixture,
+  clockText, durationText, estimateVirtual, gameInputs, gaugeGradient, indicatorView, loadCellFixture, runState, speedLabel, stopAlerts,
   worldGradient,
 } from './game-logic.js';
 import { DIVER_X, MAX_FRAME_STEP_S, WaterScene } from './game-water.js';
@@ -49,12 +49,22 @@ const SWIM_KEYS = { KeyW: 'up', KeyS: 'down' };
 const SWIM_RATES = { up: [6, 12, 18], down: [10, 20, 30] };
 const SWIM_TIERS = 3;
 const SWIM_TAP_GAP_MS = 300;
+// Reset all (DESIGN 23): the confirmation says what is erased.
+const RESET_ALL_TITLE = 'Reset all?';
+const RESET_ALL_MESSAGE = "This erases the dive computer's memory: settings, calibration, logbook and clock. Both boards restart as new, and the diver returns to the boat.";
 
 function svgNode(tag, attributes, content) {
   const node = document.createElementNS(SVG_NS, tag);
   for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, value);
   if (content !== undefined) node.textContent = content;
   return node;
+}
+
+/** Shows or hides a part of an SVG: SVG elements have no `hidden` property, only the attribute (which game.css honors). */
+function setSvgHidden(node, hidden) {
+  node.hidden = hidden; // an HTML element (and the Node tests' DOM) takes the property
+  if (hidden) node.setAttribute('hidden', '');
+  else node.removeAttribute('hidden');
 }
 
 function element(tag, attributes = {}, ...children) {
@@ -107,6 +117,8 @@ export class GameView {
     });
     this.active = false;
     this.closing = false;
+    this.resetting = false; // Reset all is under way: the old session is being discarded, so nothing is sent to it
+    this.modalOpen = false; // the Reset all confirmation is open: the keyboard belongs to it
     this.notices = [];
     this.sender = null;
     this.pressTimers = new Map();
@@ -140,7 +152,8 @@ export class GameView {
     this.clock = new PlayClock({ onChange: (change) => this.clockChanged(change) });
     if (startPaused) this.clock.speed = 0;
     this.queue = new ActionQueue({
-      perform: (payload) => this.client.request('action', { request: payload }),
+      // While Reset all discards the session, an action has nothing to act on: it is dropped without an error (the new session starts clean).
+      perform: (payload) => (this.resetting ? Promise.resolve({}) : this.client.request('action', { request: payload })),
       before: (request) => {
         if (request.action === 'wake') this.replay.clear(); // the boards are recreated: the output histories start over
         if (request.action !== 'inputs') this.actionError = '';
@@ -242,7 +255,7 @@ export class GameView {
   }
 
   async quit() {
-    if (this.closing) return;
+    if (this.closing || this.resetting) return;
     this.closing = true;
     this.stopMotion();
     this.releaseValves();
@@ -294,7 +307,8 @@ export class GameView {
    * backwards only restarts the integration from there. The inputs go out after every state (throttled by the sender).
    */
   onState(message) {
-    if (!this.active) return;
+    // Reset all: the states of the discarded session and of the one being created wait for `show` (the new simulation).
+    if (!this.active || this.resetting) return;
     const state = message.state;
     const host = message.host || {};
     const wall = this.now();
@@ -470,7 +484,7 @@ export class GameView {
 
   /** The depth and the loop gas as the emulator's sensor inputs; the sender throttles them and sends the newest. */
   offerInputs({ immediate = false } = {}) {
-    if (!this.active || !this.cells || this.connectionError) return;
+    if (!this.active || !this.cells || this.connectionError || this.resetting) return;
     const readings = this.sim.readings(this.surfaceMbar);
     this.sender.offer(gameInputs({
       surfaceMbar: this.surfaceMbar, depthM: this.sim.depth, ppo2: readings.ppo2, sensitivities: this.cells.sensitivities,
@@ -481,6 +495,7 @@ export class GameView {
 
   /** Presses a handset button ('up', 'down', 'confirm') through the same pin actions as the emulator view. */
   pressHandset(action, source = null) {
+    if (this.resetting) return Promise.resolve(false);
     this.closeMenu();
     $('device').focus({ preventScroll: true });
     if (source) this.feedback(source);
@@ -508,24 +523,84 @@ export class GameView {
 
   // ---- reset -----------------------------------------------------------------------------------------------------
 
-  /** Back to the surface with a fresh Air loop at 1x. The boards keep running; the firmware ends its dive itself. */
-  resetDive() {
+  /**
+   * Reset all (DESIGN 23): after a confirmation, the dive computer is made new. The session is closed without saving, the whole
+   * profile area of the release is cleared (EEPROM, log flash, RTC checkpoint, inputs, LED colors, and the game's oxygen-cell
+   * deviations) through the same worker request as the start screen's "Reset the saved profile", and a new game session starts on
+   * the same firmware with the same start options: the EEPROM factory image is written again, the clock starts from the browser's
+   * local time, the diver is on the boat with a fresh Air loop at 1x.
+   */
+  async resetAll() {
+    if (!this.active || this.resetting || this.closing) return;
     this.stopMotion();
-    this.clock.releaseValves({ silent: true });
-    this.sim.reset(this.sim.virtual);
-    this.scene.reset(); // back to the boat: the next descent plays the entry again
-    $('diluent-select').value = 'air';
+    this.releaseValves();
     this.closeMenu();
-    this.clock.reset();
-    this.offerInputs({ immediate: true });
+    this.modalOpen = true;
+    let confirmed = false;
+    try {
+      confirmed = await confirmDialog({ title: RESET_ALL_TITLE, message: RESET_ALL_MESSAGE, confirm: 'Reset all', danger: true });
+    } finally {
+      this.modalOpen = false;
+    }
+    if (!confirmed || !this.active) return;
+    await this.performResetAll();
+  }
+
+  async performResetAll() {
+    const info = this.info || {};
+    const release = this.release;
+    const custom = !!(info.custom || release.custom);
+    this.resetting = true;
+    this.stopMotion({ settle: false });
+    this.clock.releaseValves({ silent: true });
+    this.sender.cancel();
+    for (const item of this.queue.items.splice(0)) item.resolve(false); // nothing queued reaches the discarded session
+    this.replay.clear();
+    this.closeMenu();
     this.render();
-    this.paintWater();
+    let closed = false;
+    try {
+      // Requests are handled in order by the worker: an action still in flight finishes before the session closes.
+      const result = await this.client.request('close-session', { save: false });
+      closed = true;
+      // A session that kept no profile (another tab held it, or "Boot without the saved profile") has none of its own to erase; it
+      // starts again the same way, with nothing saved.
+      const persist = !result || result.persist !== false;
+      if (persist) {
+        await this.client.request('reset-profile', { release: release.id });
+        clearCellFixture(this.store, profileArea(release.id)); // the cells belong to the profile: new ones are drawn
+      }
+      const profile = persist ? 'stored' : 'none';
+      const booted = await this.client.request('boot', { options: info.options || {}, remember: false, profile, custom });
+      this.resetting = false;
+      this.show({ ...info, profile, release: (booted && booted.release) || release });
+      this.onState({ state: booted.state, host: booted.hostStatus });
+    } catch (error) {
+      this.resetting = false;
+      this.resetFailed(error, closed);
+    }
+  }
+
+  /**
+   * Reset all did not finish. Before the session closed nothing changed and the game goes on with the error in view; after it closed
+   * there is no session to go on with, so the game says so and stops pretending (Quit returns to the start screen).
+   */
+  resetFailed(error, closed) {
+    const message = (error && error.message) || 'The emulator could not be reset.';
+    if (!closed) {
+      this.actionError = `Reset all failed: ${message}`;
+      this.render();
+      return;
+    }
+    this.setConnectionError(
+      `Reset all did not finish: ${message}\nThe session is closed and the saved profile may be incomplete. Quit returns to the start screen, where the saved profile can be reset again.`,
+    );
   }
 
   // ---- wiring ----------------------------------------------------------------------------------------------------
 
   wire() {
-    $('reset').addEventListener('click', () => this.resetDive());
+    $('reset').addEventListener('click', () => this.resetAll());
     $('quit').addEventListener('click', () => this.quit());
     $('alerts').addEventListener('click', (event) => {
       const button = event.target && typeof event.target.closest === 'function' ? event.target.closest('button') : null;
@@ -673,7 +748,7 @@ export class GameView {
     // W and S swim up and down, O and D hold the valves, Space pauses and resumes, Escape lets everything go.
     document.addEventListener('keydown', (event) => {
       const target = event.target;
-      if (!this.active) return;
+      if (!this.active || this.modalOpen || this.resetting) return; // the Reset all confirmation has the keyboard
       if (isHandsetArrow(event)) {
         const action = handsetKeyAction(event);
         event.preventDefault(); // a held key is one press, and the page does not scroll
@@ -758,10 +833,13 @@ export class GameView {
   }
 
   renderHeader() {
-    const run = runState(this.state, this.host, { connectionError: !!this.connectionError });
+    const run = this.resetting ? { text: 'Resetting…', tone: 'warn' } : runState(this.state, this.host, { connectionError: !!this.connectionError });
     const badge = $('run-state');
     setText(badge, run.text);
     if (badge.dataset.tone !== run.tone) badge.dataset.tone = run.tone;
+    // Reset all discards the session: neither it nor Quit can start another close until it is done.
+    $('reset').disabled = this.resetting;
+    if (!this.closing) $('quit').disabled = this.resetting;
     setText($('virtual-time'), clockText(this.state && typeof this.state.virtualTime === 'number' ? this.state.virtualTime : 0));
     setText($('header-speed'), speedLabel(this.clock.effective()));
   }
@@ -1073,7 +1151,8 @@ export class GameView {
     const bottom = 29;
     const plotWidth = width - left - right;
     const plotHeight = height - top - bottom;
-    const timeRange = Math.max(600, Math.ceil(sim.elapsed / 600) * 600);
+    // The chart shows the current or the last dive (DESIGN 23 addition): its dive time and its deepest point, nothing before the first descent.
+    const timeRange = Math.max(600, Math.ceil(sim.diveTime / 600) * 600);
     const depthRange = Math.min(MAX_DEPTH_METERS, Math.max(40, Math.ceil((sim.maxDepth + 5) / 20) * 20));
     const x = (time) => left + time / timeRange * plotWidth;
     const y = (depth) => top + depth / depthRange * plotHeight;
@@ -1095,13 +1174,18 @@ export class GameView {
         labels.append(svgNode('text', { x: x(time), y: height - 5, 'text-anchor': index === 0 ? 'start' : index === 5 ? 'end' : 'middle' }, `${Math.round(time / 60)}′`));
       }
     }
-    const samples = [...sim.profile, [sim.elapsed, sim.depth]];
+    const empty = sim.profile.length === 0;
+    setSvgHidden($('profile-empty'), !empty);
+    setSvgHidden($('profile-point'), empty);
+    // A dive in progress ends at the diver's current point; a finished dive ends at its surface point (recorded by the dive).
+    const samples = sim.diving ? [...sim.profile, [sim.diveTime, sim.depth]] : sim.profile;
+    const end = samples.length ? samples[samples.length - 1] : [0, 0];
     const path = samples.map(([time, depth], index) => `${index === 0 ? 'M' : 'L'}${x(time).toFixed(2)},${y(depth).toFixed(2)}`).join(' ');
     $('profile-line').setAttribute('d', path);
-    $('profile-area').setAttribute('d', `${path} L${x(sim.elapsed).toFixed(2)},${top} L${left},${top} Z`);
-    $('profile-point').setAttribute('cx', x(sim.elapsed));
-    $('profile-point').setAttribute('cy', y(sim.depth));
-    setText($('profile-duration'), `${durationText(sim.elapsed)} elapsed`);
+    $('profile-area').setAttribute('d', empty ? '' : `${path} L${x(end[0]).toFixed(2)},${top} L${left},${top} Z`);
+    $('profile-point').setAttribute('cx', x(end[0]));
+    $('profile-point').setAttribute('cy', y(end[1]));
+    setText($('profile-duration'), `${durationText(sim.diveTime)} elapsed`);
   }
 
   /** Engine errors, stops (standby, a CPU fault), lost connections and worker notices stay in view: no silent freeze. */

@@ -221,7 +221,7 @@ export class PlayClock {
     this.setSpeed(this.speed === 0 ? this.previousSpeed : 0);
   }
 
-  /** Back to 1x with the valves released (Reset dive). */
+  /** Back to 1x with the valves released (a new game session). */
   reset() {
     this.releaseValves({ silent: true });
     this.setSpeed(1);
@@ -260,11 +260,18 @@ export const MAX_STEP_SECONDS = 0.25;
 export const MAX_ASCENT_M_MIN = 18;
 export const MAX_DESCENT_M_MIN = 30;
 const PROFILE_LIMIT = 2400;
+const SURFACE_EPSILON_M = 1e-9;
 
 /**
  * Depth, gas and the dive profile, advanced over the emulator's virtual time (never a local clock): `advanceTo(v)` integrates
  * from the virtual time reached so far to `v` in steps of at most 0.25 s, with the motion and valves in force. `elapsed` is the
- * dive time (what the profile chart plots), the sum of the virtual time integrated since the last reset.
+ * session time, the sum of the virtual time integrated since the last reset (the ADV and vent indicators stamp it).
+ *
+ * The dive profile records the dive only, like a dive computer. A dive starts when the diver first leaves the surface (the depth
+ * goes above 0 m): the profile starts with the surface point at dive time 0, so the time on the boat or floating at the surface
+ * before it is not recorded. Reaching the surface again ends the dive: the final surface point is recorded and nothing more is
+ * recorded while the diver is at the surface. The next descent starts a new profile, so `profile`, `diveTime` and `maxDepth` always
+ * belong to the current or the last dive (empty until the first descent). Long dives keep thinning their samples.
  */
 export class GameSim {
   constructor({ flow = DEFAULT_MAV_FLOW_SL_MIN, onBoundary } = {}) {
@@ -278,12 +285,16 @@ export class GameSim {
     this.elapsed = 0;
     this.virtual = virtual;
     this.depth = 0;
-    this.maxDepth = 0;
     this.direction = 0;
     this.rate = 0;
     this.gas = DILUENTS.air;
     this.loop = createLoop();
-    this.profile = [[0, 0]];
+    // The current or last dive (none yet): [dive seconds, depth] samples, the dive time and the deepest point, and whether the diver
+    // is in the water below the surface now.
+    this.profile = [];
+    this.diveTime = 0;
+    this.maxDepth = 0;
+    this.diving = false;
     this.samplePeriod = 1;
     this.nextSample = 1;
     this.lastActivity = { adv: -Infinity, vent: -Infinity };
@@ -330,11 +341,28 @@ export class GameSim {
     this.setMotion(0, 0);
   }
 
+  /** The diver leaves the surface: a new profile starts at dive time 0 (the earlier dive is forgotten), with its own deepest point. */
+  beginDive() {
+    this.diving = true;
+    this.diveTime = 0;
+    this.maxDepth = 0;
+    this.profile = [[0, 0]];
+    this.samplePeriod = 1;
+    this.nextSample = 1;
+  }
+
+  /** The diver is back at the surface: the final point (depth 0) is recorded and the profile stays as the last dive. */
+  endDive() {
+    this.recordProfile(true);
+    this.diving = false;
+  }
+
+  /** Records a sample of the dive in progress (none at the surface and none before the first dive); `force` records one now. */
   recordProfile(force = false) {
-    if (!force && this.elapsed < this.nextSample) return;
+    if (!this.diving || (!force && this.diveTime < this.nextSample)) return;
     const last = this.profile.at(-1);
-    if (last[0] !== this.elapsed) this.profile.push([this.elapsed, this.depth]);
-    this.nextSample = this.elapsed + this.samplePeriod;
+    if (last[0] !== this.diveTime) this.profile.push([this.diveTime, this.depth]);
+    this.nextSample = this.diveTime + this.samplePeriod;
     // Retain the entire time span while thinning long, accelerated dives.
     if (this.profile.length > PROFILE_LIMIT) {
       this.profile = this.profile.filter((_, index) => index % 2 === 0);
@@ -343,9 +371,13 @@ export class GameSim {
   }
 
   step(dt, valves) {
-    const newDepth = Math.max(0, Math.min(MAX_DEPTH_METERS, this.depth + this.direction * this.rate * dt / 60));
+    // A depth within a nanometer of the surface is the surface (rounding of the 0.25 s steps must not keep a dive open for one more step).
+    const moved = this.depth + this.direction * this.rate * dt / 60;
+    const newDepth = moved < SURFACE_EPSILON_M ? 0 : Math.min(MAX_DEPTH_METERS, moved);
+    if (!this.diving && newDepth > 0) this.beginDive(); // the dive starts at the beginning of the step that leaves the surface
     advanceLoop(this.loop, { depth: newDepth, dt, oxygen: !!valves.oxygen, diluent: !!valves.diluent, flow: this.flow });
     this.elapsed += dt;
+    if (this.diving) this.diveTime += dt;
     this.depth = newDepth;
     this.maxDepth = Math.max(this.maxDepth, newDepth);
     if (this.loop.last.adv > 1e-12) this.lastActivity.adv = this.elapsed;
@@ -356,6 +388,7 @@ export class GameSim {
       this.onBoundary();
     }
     this.recordProfile();
+    if (this.diving && newDepth === 0) this.endDive(); // back at the surface: this dive is over
   }
 
   /**
@@ -468,7 +501,7 @@ export class Camera {
     this.snap(0);
   }
 
-  /** Put the window where it belongs for `depth` at once, the diver in the middle of it (a new session, Reset dive). */
+  /** Put the window where it belongs for `depth` at once, the diver in the middle of it (a new session). */
   snap(depth = 0) {
     this.target = cameraTarget(depth, depth - VIEW_WINDOW_M / 2);
     this.top = this.target;
@@ -596,7 +629,7 @@ const smoothstep = (value) => {
 };
 
 /**
- * The state of the diver's entry: 'boat' (sitting on the boat; a new session and Reset dive start here), 'entering' (the roll and
+ * The state of the diver's entry: 'boat' (sitting on the boat; a new session, and so Reset all, starts here), 'entering' (the roll and
  * the splash) and 'water' (swimming, from then on, also back at the surface). `update` reports the phase, the progress (0 to 1)
  * and `splash` (true on the one update that reaches the water). With the reduced-motion preference the diver goes from the boat
  * straight into the water. A `dt` of 0 (a pause) holds the animation.
@@ -727,7 +760,7 @@ export function stopAlerts(state) {
   if (decoWarnings(state).some((warning) => warning.id === 'tissues')) {
     alerts.push({
       id: 'deco-tissues', level: 'warning',
-      text: "Decompression state invalid: this profile's stored tissues are blank, so the handset's no-decompression limit stays at 99. Quit and reset the saved profile on the start screen to begin with an initialized EEPROM.",
+      text: "Decompression state invalid: this profile's stored tissues are blank, so the handset's no-decompression limit stays at 99. Use Reset all to begin with an initialized EEPROM.",
     });
   }
   return alerts;

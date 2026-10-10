@@ -31,11 +31,8 @@
 #screen-game .reset-button { display: flex; align-items: center; gap: 8px; border: 1px solid #30454e; border-radius: 8px; background: #172730; padding: 9px 12px; font-size: 12px; }
 #screen-game .reset-button .icon { width: 15px; height: 15px; }
 #screen-game .reset-button:hover { background: #213741; }
-#screen-game .workspace { max-width: 1640px; margin: 0 auto; padding: 29px 38px 20px; }
-#screen-game .intro { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
-#screen-game .eyebrow { margin: 0 0 7px; color: #729e9c; letter-spacing: .18em; font-size: 9px; font-weight: 750; }
-#screen-game h1 { font-size: 27px; font-weight: 500; letter-spacing: -.035em; margin: 0; }
-#screen-game .session-chip { display: flex; gap: 11px; align-items: center; border: 1px solid #2a3f49; background: #12232c; padding: 10px 13px; border-radius: 10px; }
+#screen-game .workspace { max-width: 1640px; margin: 0 auto; padding: 24px 38px 20px; }
+#screen-game .session-chip { display: flex; gap: 11px; align-items: center; border: 1px solid #2a3f49; background: #12232c; padding: 7px 13px; border-radius: 10px; white-space: nowrap; flex-shrink: 0; }
 #screen-game .clock-dot { width: 7px; height: 7px; background: var(--g-teal); border-radius: 50%; box-shadow: 0 0 12px #70e7cc55; }
 #screen-game .tiny-label { display: block; letter-spacing: .11em; font-size: 8px; color: var(--g-muted); margin-bottom: 3px; }
 #screen-game .session-chip strong { font-variant-numeric: tabular-nums; font-size: 17px; font-weight: 550; letter-spacing: .04em; }
@@ -214,6 +211,7 @@
 #screen-game #game-profile { display: block; width: 100%; height: 151px; overflow: visible; font-family: inherit; }
 #screen-game #game-profile-grid line { stroke: #29424b; stroke-width: 1; opacity: .65; }
 #screen-game #game-profile-labels text { fill: #77949f; font-size: 10px; }
+#screen-game #game-profile-empty { fill: #8facb0; font-size: 11px; }
 #screen-game .instrument-card { display: flex; flex-direction: column; }
 #screen-game .instrument-stage { flex: 1; }
 #screen-game .loop-panel { display: grid; grid-template-columns: 1fr 1fr 1fr; margin-top: 20px; padding: 22px 25px; gap: 25px; }
@@ -337,9 +335,10 @@
 
 /* ---- connected to the emulator: what replaced the prototype's mock parts ---- */
 
-/* The header: the release, the run state, Reset dive and Quit. It stays in view while the page scrolls. */
+/* The header: the release, the run state, the virtual time and play speed, Reset all and Quit. It stays in view while the page scrolls. */
 #screen-game .app-header { position: sticky; top: 0; z-index: 30; backdrop-filter: blur(12px); }
-#screen-game .release-label { font-size: 12px; color: #9fb8bd; }
+#screen-game .release-label { font-size: 12px; color: #9fb8bd; white-space: nowrap; }
+#screen-game .reset-button { white-space: nowrap; }
 #screen-game .run-state { font-size: 12px; padding: 6px 11px; border: 1px solid #30454e; border-radius: 999px; color: #8facb0; white-space: nowrap; }
 #screen-game .run-state[data-tone="ok"] { color: var(--g-teal); border-color: #3a625f; }
 #screen-game .run-state[data-tone="warn"] { color: #eed291; border-color: #6b5a2a; }
