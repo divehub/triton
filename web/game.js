@@ -918,11 +918,18 @@ export class GameView {
     const badge = $('run-state');
     setText(badge, run.text);
     if (badge.dataset.tone !== run.tone) badge.dataset.tone = run.tone;
+    // The clock chip shows the state: the dot's color always, the word only when the emulator is not simply running (screen
+    // readers still hear it).
+    const chip = $('session-chip');
+    if (chip.dataset.tone !== run.tone) chip.dataset.tone = run.tone;
+    badge.classList.toggle('sr-only', run.key === 'running');
     // Reset all discards the session: neither it nor Quit can start another close until it is done.
     $('reset').disabled = this.resetting;
     if (!this.closing) $('quit').disabled = this.resetting;
     setText($('virtual-time'), clockText(this.state && typeof this.state.virtualTime === 'number' ? this.state.virtualTime : 0));
     setText($('header-speed'), speedLabel(this.clock.effective()));
+    // Paused, the state word already says so: no second "Pause" beside it.
+    $('header-speed').hidden = this.clock.effective() === 0;
   }
 
   renderPlay() {

@@ -4523,9 +4523,10 @@ test('game (reset all): a failure is shown in the game, and a session that is al
 
 test('game (reset all): the header holds the release, the run state, the virtual time with the play speed, Reset all and Quit; the hero heading is gone', async () => {
   const header = html.match(/<div class="app-header">[\s\S]*?<div class="workspace">/)[0];
-  const order = ['game-release', 'game-run-state', 'game-virtual-time', 'game-header-speed', 'game-reset', 'game-quit'].map((id) => header.indexOf(`id="${id}"`));
+  const order = ['game-release', 'game-session-chip', 'game-virtual-time', 'game-header-speed', 'game-run-state', 'game-reset', 'game-quit'].map((id) => header.indexOf(`id="${id}"`));
   assert.ok(order.every((at) => at > 0) && order.every((at, index) => index === 0 || at > order[index - 1]), `in this order: ${order}`);
-  assert.match(header, /class="session-chip"/, 'the badge keeps its look');
+  assert.match(header, /class="session-chip"/, 'one clock chip holds the time, the speed and the run state');
+  assert.doesNotMatch(header, /VIRTUAL TIME|tiny-label/, 'no caption: the chip stays as low as the buttons');
   assert.doesNotMatch(html, /A LITTLE MORE IMMERSIVE|Your next dive starts here|class="intro"|class="eyebrow"/);
   assert.doesNotMatch(html, /Reset dive/);
   const css = fs.readFileSync(path.join(here, 'game.css'), 'utf8');
@@ -4534,10 +4535,14 @@ test('game (reset all): the header holds the release, the run state, the virtual
   const bar = g.el('virtual-time').closest('.app-header');
   assert.ok(bar, 'the virtual time is in the sticky header');
   assert.equal(g.el('header-speed').closest('.app-header'), bar);
-  assert.equal(g.el('run-state').closest('.header-right'), g.el('virtual-time').closest('.header-right'));
+  assert.equal(g.el('run-state').closest('.session-chip'), g.el('virtual-time').closest('.session-chip'), 'the run state is inside the clock chip');
   g.feed(75, 0);
   assert.equal(g.text('virtual-time'), '00:01:15');
   assert.equal(g.text('header-speed'), '1×');
+  // Running: the dot says so and the word is for screen readers only; any other state shows its word and tone.
+  assert.equal(g.el('session-chip').dataset.tone, 'ok');
+  assert.equal(g.text('run-state'), 'Running');
+  assert.equal(g.el('run-state').classList.contains('sr-only'), true);
   g.view.hide();
 });
 

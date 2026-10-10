@@ -27,16 +27,23 @@
 #screen-game .brand-symbol .icon { width: 23px; height: 23px; }
 #screen-game .brand-divider { font-weight: 300; color: #46606b; padding: 0 16px; }
 #screen-game .brand-name { font-size: 16px; font-weight: 500; letter-spacing: 0; }
-#screen-game .header-right { display: flex; align-items: center; gap: 20px; }
-#screen-game .reset-button { display: flex; align-items: center; gap: 8px; border: 1px solid #30454e; border-radius: 8px; background: #172730; padding: 9px 12px; font-size: 12px; }
+#screen-game .header-right { display: flex; align-items: center; gap: 14px; }
+#screen-game .reset-button { display: flex; align-items: center; gap: 8px; height: 36px; border: 1px solid #30454e; border-radius: 8px; background: #172730; padding: 0 12px; font-size: 12px; }
 #screen-game .reset-button .icon { width: 15px; height: 15px; }
 #screen-game .reset-button:hover { background: #213741; }
+/* The header row: every control is 36 px high. The clock chip carries the run state: the dot's color, and a word unless the
+   emulator is simply running. */
+#screen-game .session-chip { --g-chip-dot: #6f8a93; display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 12px; border: 1px solid #2a3f49; border-radius: 8px; background: #12232c; white-space: nowrap; flex-shrink: 0; }
+#screen-game .session-chip[data-tone="ok"] { --g-chip-dot: var(--g-teal); }
+#screen-game .session-chip[data-tone="warn"] { --g-chip-dot: #eed291; border-color: #6b5a2a; }
+#screen-game .session-chip[data-tone="bad"] { --g-chip-dot: #f4b5ac; border-color: #753d3b; }
+#screen-game .clock-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--g-chip-dot); }
+#screen-game .session-chip[data-tone="ok"] .clock-dot { box-shadow: 0 0 10px #70e7cc77; }
+#screen-game .session-chip strong { font-variant-numeric: tabular-nums; font-size: 14px; font-weight: 600; letter-spacing: .04em; }
+#screen-game .speed-chip, #screen-game .run-state { border-left: 1px solid #344a52; padding-left: 10px; font-size: 12px; }
+#screen-game .speed-chip { color: var(--g-teal); min-width: 28px; }
+#screen-game .run-state { color: var(--g-chip-dot); }
 #screen-game .workspace { max-width: 1640px; margin: 0 auto; padding: 24px 38px 20px; }
-#screen-game .session-chip { display: flex; gap: 11px; align-items: center; border: 1px solid #2a3f49; background: #12232c; padding: 7px 13px; border-radius: 10px; white-space: nowrap; flex-shrink: 0; }
-#screen-game .clock-dot { width: 7px; height: 7px; background: var(--g-teal); border-radius: 50%; box-shadow: 0 0 12px #70e7cc55; }
-#screen-game .tiny-label { display: block; letter-spacing: .11em; font-size: 8px; color: var(--g-muted); margin-bottom: 3px; }
-#screen-game .session-chip strong { font-variant-numeric: tabular-nums; font-size: 17px; font-weight: 550; letter-spacing: .04em; }
-#screen-game .speed-chip { border-left: 1px solid #344a52; padding-left: 12px; color: var(--g-teal); font-size: 13px; margin-left: 5px; min-width: 32px; }
 #screen-game .dive-grid { display: grid; grid-template-columns: minmax(400px,.85fr) minmax(480px,1.15fr); gap: 20px; }
 #screen-game .dive-card { display: flex; flex-direction: column; }
 #screen-game .dive-card>.panel-heading, #screen-game .dive-card>.scene-meta { flex-shrink: 0; }
@@ -339,10 +346,6 @@
 #screen-game .app-header { position: sticky; top: 0; z-index: 30; backdrop-filter: blur(12px); }
 #screen-game .release-label { font-size: 12px; color: #9fb8bd; white-space: nowrap; }
 #screen-game .reset-button { white-space: nowrap; }
-#screen-game .run-state { font-size: 12px; padding: 6px 11px; border: 1px solid #30454e; border-radius: 999px; color: #8facb0; white-space: nowrap; }
-#screen-game .run-state[data-tone="ok"] { color: var(--g-teal); border-color: #3a625f; }
-#screen-game .run-state[data-tone="warn"] { color: #eed291; border-color: #6b5a2a; }
-#screen-game .run-state[data-tone="bad"] { color: #f4b5ac; border-color: #753d3b; }
 #screen-game .quit-button:hover { background: #3a2327; border-color: #753d3b; }
 
 /* Engine errors, stops and notices stay in view. */
