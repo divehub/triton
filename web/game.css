@@ -348,6 +348,20 @@
 #screen-game .reset-button { white-space: nowrap; }
 #screen-game .quit-button:hover { background: #3a2327; border-color: #753d3b; }
 
+/* The controls guide: a square icon button (36 px like the rest of the header row) at the far right, and a popover under it in the
+   look of the play-speed menu. It is not a modal: the game goes on behind it, and game.js keeps the game keys out of it. */
+#screen-game .help-control { position: relative; flex-shrink: 0; }
+#screen-game .help-button { width: 36px; padding: 0; justify-content: center; }
+#screen-game .help-button .icon { width: 18px; height: 18px; }
+#screen-game .help-button[aria-expanded="true"] { background: #213741; border-color: #466974; color: var(--g-teal); }
+#screen-game .help-panel { position: absolute; top: calc(100% + 10px); right: 0; z-index: 40; width: 352px; max-width: calc(100vw - 76px); max-height: calc(100vh - 110px); overflow-y: auto; padding: 14px 16px 6px; background: #102b36; border: 1px solid #466974; border-radius: 10px; box-shadow: 0 15px 30px #04131db3; font-size: 12px; line-height: 1.5; color: var(--g-text); }
+#screen-game .help-panel:focus { outline: none; }
+#screen-game .help-group { margin: 0 0 12px; }
+#screen-game .help-group h3 { margin: 0 0 6px; font-size: 9px; font-weight: 650; letter-spacing: .13em; text-transform: uppercase; color: #769ea5; }
+#screen-game .help-group ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+#screen-game .help-group li { margin: 0; padding: 0; color: #c9dcdc; }
+#screen-game .help-panel kbd { display: inline-block; min-width: 20px; padding: 0 6px; border: 1px solid #4a6a75; border-bottom-width: 2px; border-radius: 5px; background: #1b3540; font-family: inherit; font-size: 11px; font-weight: 600; line-height: 17px; text-align: center; color: #e5eeed; }
+
 /* Engine errors, stops and notices stay in view. */
 #screen-game .game-alerts { display: grid; gap: 8px; margin-bottom: 18px; }
 #screen-game .game-alert { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 14px; border: 1px solid #6b5a2a; border-radius: 10px; background: #33290f; color: #f2d58c; font-size: 12px; line-height: 1.5; }

@@ -4143,9 +4143,14 @@ test('game (state): the run state and the messages that must not hide an engine 
   assert.deepEqual(game.stopAlerts({ running: true, decoHealth: { tissues: 'unknown', oxygen: 'unknown' } }), []);
 });
 
-/** The real GameView on the real index.html (fake DOM), a fake worker client and fake timers; the cells are fixed (+0.5 mV each). */
-async function mountGame({ options = {}, release = describeRelease(DEFAULT_RELEASE_ID), store = memoryStore(), frames, motion, custom = false } = {}) {
+/**
+ * The real GameView on the real index.html (fake DOM), a fake worker client and fake timers; the cells are fixed (+0.5 mV each).
+ * The controls guide opens by itself on a browser's first game start, which would hold the game keys in every test: the settings
+ * start with it already seen (`helpSeen: false` is the first visit).
+ */
+async function mountGame({ options = {}, release = describeRelease(DEFAULT_RELEASE_ID), store = memoryStore(), frames, motion, custom = false, helpSeen = true } = {}) {
   installDom(html);
+  if (helpSeen) store.map.set('game-help-seen', '1');
   const { GameView } = await import('./game.js');
   const clock = fakeTimers();
   let wall = 0;
@@ -4521,9 +4526,9 @@ test('game (reset all): a failure is shown in the game, and a session that is al
   late.view.hide();
 });
 
-test('game (reset all): the header holds the release, the run state, the virtual time with the play speed, Reset all and Quit; the hero heading is gone', async () => {
+test('game (reset all): the header holds the release, the run state, the virtual time with the play speed, Reset all, Quit and the controls button; the hero heading is gone', async () => {
   const header = html.match(/<div class="app-header">[\s\S]*?<div class="workspace">/)[0];
-  const order = ['game-release', 'game-session-chip', 'game-virtual-time', 'game-header-speed', 'game-run-state', 'game-reset', 'game-quit'].map((id) => header.indexOf(`id="${id}"`));
+  const order = ['game-release', 'game-session-chip', 'game-virtual-time', 'game-header-speed', 'game-run-state', 'game-reset', 'game-quit', 'game-help'].map((id) => header.indexOf(`id="${id}"`));
   assert.ok(order.every((at) => at > 0) && order.every((at, index) => index === 0 || at > order[index - 1]), `in this order: ${order}`);
   assert.match(header, /class="session-chip"/, 'one clock chip holds the time, the speed and the run state');
   assert.doesNotMatch(header, /VIRTUAL TIME|tiny-label/, 'no caption: the chip stays as low as the buttons');
@@ -4871,6 +4876,193 @@ test('game (quit): nothing is asked without a live session, a session that ends 
   assert.equal(plain.view.modalOpen, false);
   plain.view.hide();
 }));
+
+test('game (help): a square 36 px "?" button named Controls is the last control in the header, and the guide has four groups with key chips', async () => {
+  const css = fs.readFileSync(path.join(here, 'game.css'), 'utf8');
+  const g = await mountGame();
+  const row = g.el('quit').parent;
+  assert.match(row.className, /\bheader-right\b/);
+  const last = row.children.filter((node) => node instanceof Element).at(-1);
+  assert.equal(last.id, 'game-help-control', 'at the far right of the header row, after Quit');
+  assert.equal(last.querySelectorAll('button')[0], g.el('help'), 'the button is the control');
+  assert.equal(g.el('help').getAttribute('aria-label'), 'Controls');
+  assert.equal(g.el('help').title, 'Controls', 'the tooltip');
+  assert.equal(g.text('help'), '', 'icon only');
+  assert.equal(g.el('help').querySelectorAll('use')[0].getAttribute('href'), '#game-i-help');
+  assert.match(g.el('help').className, /\breset-button\b/, 'the header button style, so the same 36 px height');
+  assert.match(css, /#screen-game \.reset-button \{[^}]*height: 36px/);
+  assert.match(css, /#screen-game \.help-button \{[^}]*width: 36px[^}]*padding: 0/, 'and square');
+  assert.deepEqual([g.view.helpOpen, g.el('help-panel').hidden, g.el('help').getAttribute('aria-expanded')], [false, true, 'false'], 'closed to start with');
+  assert.equal(g.el('help').getAttribute('aria-controls'), 'game-help-panel');
+  assert.equal(g.el('help-panel').getAttribute('aria-label'), 'Controls');
+  const panel = g.el('help-panel');
+  assert.deepEqual(panel.querySelectorAll('h3').map((heading) => heading.textContent), ['Diver', 'Dive computer (handset)', 'Loop', 'Clock']);
+  assert.deepEqual(panel.querySelectorAll('kbd').map((chip) => chip.textContent), ['W', 'S', '↑', '↓', 'Enter', 'O', 'D', 'Space', 'Esc']);
+  assert.match(panel.textContent, /top third is Up, middle is Confirm, bottom is Down/);
+  assert.match(panel.textContent, /Holding a valve runs the clock at 1×/);
+  g.view.hide();
+});
+
+test('game (help): the button, Escape, a click outside and a focus elsewhere close the guide; opening it lets go of what is held and does not pause', async () => {
+  const g = await mountGame();
+  g.feed(0, 0);
+  await settle();
+  const panel = g.el('help-panel');
+  const press = () => g.el('help').click();
+  const state = () => [g.view.helpOpen, panel.hidden, g.el('help').getAttribute('aria-expanded')];
+
+  // Opening lets go of the water and the valves (as Quit does), and the clock goes on.
+  g.view.changeMotion(30);
+  g.view.holdValve('oxygen', 'pointer:1', true);
+  assert.equal(g.view.sim.direction, 1);
+  assert.equal(g.view.clock.injecting(), true);
+  press();
+  assert.deepEqual(state(), [true, false, 'true']);
+  assert.equal(g.view.sim.direction, 0, 'the water is let go');
+  assert.equal(g.view.clock.injecting(), false, 'and so is the valve');
+  assert.equal(g.view.clock.speed, 1, 'the clock was not paused');
+  await settle();
+  assert.equal(g.actions().some((request) => request.action === 'pause'), false);
+  assert.equal(g.text('run-state'), 'Running');
+
+  // The button again closes it, with the focus on the button.
+  press();
+  assert.deepEqual(state(), [false, true, 'false']);
+  assert.equal(g.document.activeElement, g.el('help'));
+
+  // Escape closes it and puts the focus back on the button.
+  press();
+  g.el('ocean').focus();
+  const escape = g.document.dispatch('keydown', { key: 'Escape', code: 'Escape', repeat: false });
+  assert.deepEqual(state(), [false, true, 'false']);
+  assert.equal(escape.defaultPrevented, true);
+  assert.equal(g.document.activeElement, g.el('help'));
+
+  // A click outside closes it: on nothing, the focus goes back to the button; on a control, the control keeps it. Inside, it stays.
+  press();
+  g.document.activeElement = null;
+  g.el('scene-hint').dispatch('click');
+  assert.deepEqual(state(), [false, true, 'false']);
+  assert.equal(g.document.activeElement, g.el('help'));
+  press();
+  panel.dispatch('click');
+  assert.equal(g.view.helpOpen, true, 'a click inside the guide keeps it open');
+  g.el('handset-up').click();
+  assert.equal(g.view.helpOpen, false);
+  assert.equal(g.document.activeElement, g.el('device'), 'the handset has the focus it took');
+
+  // The focus moving to another control (Tab) closes it; the button and the guide are not "elsewhere".
+  press();
+  g.document.dispatch('focusin', { target: g.el('help') });
+  g.document.dispatch('focusin', { target: panel });
+  assert.equal(g.view.helpOpen, true);
+  g.document.dispatch('focusin', { target: g.el('mav-oxygen') });
+  assert.equal(g.view.helpOpen, false);
+
+  // The session ending closes it too.
+  press();
+  g.view.hide();
+  assert.deepEqual(state(), [false, true, 'false']);
+});
+
+test('game (help): while the guide is open the arrow keys, W / S, O / D and Space do nothing in the game, and they work again once it is closed', async () => {
+  const g = await mountGame();
+  g.feed(0, 0);
+  await settle();
+  const key = (type, code, extra = {}) => g.document.dispatch(type, { code, key: code.startsWith('Key') ? code.slice(3).toLowerCase() : code, repeat: false, ...extra });
+  const handsetPresses = () => g.actions().filter((request) => ['up', 'down', 'confirm'].includes(request.action)).length;
+
+  // A swim key held when the guide opens is let go; releasing it afterwards changes nothing.
+  key('keydown', 'KeyW');
+  assert.equal(g.view.sim.direction, -1);
+  g.el('help').click();
+  assert.equal(g.view.sim.direction, 0);
+  key('keyup', 'KeyW');
+  assert.equal(g.view.sim.direction, 0);
+
+  for (const code of ['ArrowUp', 'ArrowDown']) assert.equal(key('keydown', code).defaultPrevented, true, `${code} is cancelled: no scroll either`);
+  key('keydown', 'KeyW');
+  key('keydown', 'KeyS');
+  assert.equal(g.view.sim.direction, 0, 'W and S do not swim');
+  key('keydown', 'KeyO');
+  key('keydown', 'KeyD');
+  assert.equal(g.view.clock.injecting(), false, 'O and D hold no valve');
+  assert.equal(key('keydown', 'Space').defaultPrevented, true, 'Space is cancelled: no scroll either');
+  assert.equal(g.view.clock.speed, 1, 'Space does not pause');
+  assert.equal(key('keydown', 'Space', { target: g.el('help') }).defaultPrevented, false, 'on the "?" button it stays the button\'s own key (it closes the guide)');
+  assert.equal(g.view.clock.speed, 1);
+  // Not through a control's own key handling either (the focus cannot be there while the guide is open, but nothing relies on it).
+  g.el('device').dispatch('keydown', { key: 'Enter', code: 'Enter', repeat: false });
+  g.el('mav-oxygen').dispatch('keydown', { key: ' ', code: 'Space', repeat: false });
+  await settle();
+  assert.equal(handsetPresses(), 0, 'no handset press');
+  assert.equal(g.view.clock.injecting(), false);
+  assert.equal(g.actions().some((request) => request.action === 'pause'), false);
+  for (const code of ['KeyW', 'KeyS', 'KeyO', 'KeyD']) key('keyup', code);
+  assert.equal(g.view.helpOpen, true, 'only Escape (or a click) closes it');
+
+  // Closed, the keys are the game's again.
+  key('keydown', 'Escape');
+  assert.equal(g.view.helpOpen, false);
+  key('keydown', 'ArrowUp');
+  await settle();
+  assert.equal(handsetPresses(), 1, 'the arrow keys press the handset');
+  key('keydown', 'KeyS');
+  assert.equal(g.view.sim.direction, 1, 'S swims');
+  key('keyup', 'KeyS');
+  key('keydown', 'KeyO');
+  assert.equal(g.view.clock.injecting(), true, 'O holds the oxygen valve');
+  key('keyup', 'KeyO');
+  key('keydown', 'Space');
+  assert.equal(g.view.clock.speed, 0, 'Space pauses');
+  g.view.hide();
+});
+
+test('game (help): the guide opens by itself on the first game start in a browser only, and a settings store that fails does not break it', async () => {
+  const store = memoryStore();
+  const first = await mountGame({ store, helpSeen: false });
+  assert.equal(first.view.helpOpen, true, 'the first start shows it');
+  assert.equal(first.el('help-panel').hidden, false);
+  assert.equal(store.map.get('game-help-seen'), '1', 'and remembers it in the page settings');
+  first.feed(0, 0);
+  await settle();
+  assert.equal(first.view.clock.speed, 1, 'it does not pause the game');
+  assert.equal(first.actions().some((request) => request.action === 'pause'), false);
+  assert.equal(first.text('run-state'), 'Running');
+  first.document.dispatch('keydown', { key: 'Escape', code: 'Escape', repeat: false });
+  assert.equal(first.view.helpOpen, false);
+
+  // Another start in the same page and Reset all do not show it again.
+  first.view.hide();
+  first.view.show(first.shown);
+  assert.equal(first.view.helpOpen, false);
+  resetAnswers(first);
+  first.el('reset').click();
+  await settle();
+  first.feed(0, 6000);
+  assert.equal(first.view.helpOpen, false, 'Reset all starts a new session without it');
+  assert.equal(store.map.get('game-help-seen'), '1', 'and does not forget that it was seen');
+  first.view.hide();
+
+  // A later visit of the same browser: only on demand.
+  const later = await mountGame({ store, helpSeen: false });
+  assert.equal(later.view.helpOpen, false);
+  later.el('help').click();
+  assert.equal(later.view.helpOpen, true, 'still there on demand');
+  later.view.hide();
+
+  // Settings that throw: it shows once in the page, never an error.
+  const failing = memoryStore();
+  const { get, set } = failing;
+  failing.get = (key, fallback) => { if (key === 'game-help-seen') throw new Error('storage denied'); return get(key, fallback); };
+  failing.set = (key, value) => { if (key === 'game-help-seen') throw new Error('storage denied'); return set(key, value); };
+  const blocked = await mountGame({ store: failing, helpSeen: false });
+  assert.equal(blocked.view.helpOpen, true);
+  blocked.view.hide();
+  blocked.view.show(blocked.shown);
+  assert.equal(blocked.view.helpOpen, false, 'but not again in the same page');
+  blocked.view.hide();
+});
 
 test('game (view): the three indicators show the firmware\'s outputs with the pulse replay, and have no tap-to-preview', async () => {
   const g = await mountGame();

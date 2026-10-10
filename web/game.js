@@ -56,6 +56,8 @@ const RESET_ALL_MESSAGE = "This erases the dive computer's memory: settings, cal
 // state, the same for original and custom builds), and never relies on the firmware's own power-off.
 const QUIT_TITLE = 'The dive computer is still on';
 const QUIT_MESSAGE = 'Turn it off on the device first, then quit. Or force a shutdown: the session closes now, and anything the device has not saved yet may be lost.';
+// The controls guide opens by itself on the first game start in a browser; this page setting (localStorage, through the store) remembers it.
+const HELP_SEEN_KEY = 'game-help-seen';
 
 function svgNode(tag, attributes, content) {
   const node = document.createElementNS(SVG_NS, tag);
@@ -163,6 +165,8 @@ export class GameView {
     this.resetting = false; // Reset all is under way: the old session is being discarded, so nothing is sent to it
     this.modalOpen = false; // a confirmation (Reset all or Quit) is open: the keyboard belongs to it
     this.quitDialog = null; // the open Quit confirmation: `close(reason)` ends it from outside (the device turned off, the game ended)
+    this.helpOpen = false; // the controls guide is open: the keyboard is the guide's, not the game's
+    this.helpShown = false; // the guide has been shown on its own in this page (when the settings cannot remember it)
     this.notices = [];
     this.sender = null;
     this.pressTimers = new Map();
@@ -272,10 +276,12 @@ export class GameView {
     this.client.send('ui', { uartOpen: false });
     this.render();
     this.startWater();
+    this.showHelpFirstTime();
   }
 
   hide() {
     if (this.quitDialog) this.quitDialog.close('hidden'); // the session is gone: nothing is left to confirm
+    this.closeHelp();
     this.stopWater();
     this.stopMotion({ settle: false });
     this.clock.releaseValves({ silent: true });
@@ -310,6 +316,7 @@ export class GameView {
     this.stopMotion();
     this.releaseValves();
     this.closeMenu();
+    this.closeHelp();
     if (this.deviceIsOn() && !(await this.confirmForceShutdown())) return;
     await this.leave();
   }
@@ -615,6 +622,7 @@ export class GameView {
     this.stopMotion();
     this.releaseValves();
     this.closeMenu();
+    this.closeHelp();
     this.modalOpen = true;
     let confirmed = false;
     try {
@@ -677,11 +685,93 @@ export class GameView {
     );
   }
 
+  // ---- the controls guide ----------------------------------------------------------------------------------------
+  //
+  // An icon button at the far right of the header opens a popover under it. It is not a modal: the game goes on behind it. Opening
+  // it lets go of what is held (as the Quit confirmation does), and while it is open the keyboard is not the game's: Escape closes
+  // it, and the arrow keys, W / S, O / D and Space do nothing in the dive, the handset or the clock. It closes on Escape, on the
+  // button again, on a click outside it and when the focus moves out of it (so no control behind it takes a key).
+
+  /** Whether the guide has been shown on its own before: in this page, or in this browser (the page setting). */
+  helpWasShown() {
+    if (this.helpShown) return true;
+    try {
+      return this.store.get(HELP_SEEN_KEY, '') === '1';
+    } catch (_) {
+      return false; // no readable settings: it shows once in each page instead
+    }
+  }
+
+  /** The first game start in a browser opens the guide by itself, once; after that it opens only on demand. */
+  showHelpFirstTime() {
+    if (this.helpWasShown()) return;
+    this.helpShown = true;
+    try {
+      this.store.set(HELP_SEEN_KEY, '1');
+    } catch (_) { /* the flag is a convenience: without it the guide shows again in the next page */ }
+    this.openHelp();
+  }
+
+  openHelp() {
+    if (!this.active || this.helpOpen || this.modalOpen || this.resetting) return;
+    this.stopMotion();
+    this.releaseValves();
+    this.closeMenu();
+    this.helpOpen = true;
+    $('help-panel').hidden = false;
+    $('help').setAttribute('aria-expanded', 'true');
+  }
+
+  /** `focus` puts the keyboard focus back on the button (Escape, the button itself); a click or a focus elsewhere keeps its own. */
+  closeHelp({ focus = false } = {}) {
+    if (!this.helpOpen) return;
+    this.helpOpen = false;
+    $('help-panel').hidden = true;
+    $('help').setAttribute('aria-expanded', 'false');
+    if (focus) $('help').focus({ preventScroll: true });
+  }
+
+  toggleHelp() {
+    if (this.helpOpen) this.closeHelp({ focus: true });
+    else this.openHelp();
+  }
+
+  insideHelp(target) {
+    return !!(target && typeof target.closest === 'function' && target.closest('#game-help-control'));
+  }
+
+  /**
+   * A key while the guide is open: Escape closes it; the arrow keys and Space are inert (no handset press, no pause, no page scroll;
+   * on a button, Space is still that button's own key, which is how the "?" button closes it); the rest is not the game's.
+   */
+  helpKeydown(event) {
+    const target = event.target;
+    if (event.code === 'Escape') {
+      event.preventDefault();
+      this.closeHelp({ focus: true });
+    } else if (isHandsetArrow(event)) {
+      event.preventDefault();
+    } else if (event.code === 'Space' && !(target && typeof target.closest === 'function' && target.closest('button'))) {
+      event.preventDefault();
+    }
+  }
+
   // ---- wiring ----------------------------------------------------------------------------------------------------
 
   wire() {
     $('reset').addEventListener('click', () => this.resetAll());
     $('quit').addEventListener('click', () => this.quit());
+    $('help').addEventListener('click', () => this.toggleHelp());
+    document.addEventListener('click', (event) => {
+      if (!this.helpOpen || this.insideHelp(event.target)) return;
+      this.closeHelp();
+      // A click on nothing leaves the focus nowhere: it goes back to the button. A click on a control keeps the control's focus.
+      const focused = document.activeElement;
+      if (!focused || focused === document.body) $('help').focus({ preventScroll: true });
+    });
+    document.addEventListener('focusin', (event) => {
+      if (this.helpOpen && !this.insideHelp(event.target)) this.closeHelp();
+    });
     $('alerts').addEventListener('click', (event) => {
       const button = event.target && typeof event.target.closest === 'function' ? event.target.closest('button') : null;
       if (!button) return;
@@ -713,7 +803,7 @@ export class GameView {
     // Enter confirms only with the handset focused (elsewhere it activates the focused control); the arrow keys press Up
     // and Down from anywhere in the game (the document listener below).
     $('device').addEventListener('keydown', (event) => {
-      if (handsetKeyAction(event) !== 'confirm') return;
+      if (this.helpOpen || handsetKeyAction(event) !== 'confirm') return; // the controls guide has the keyboard
       event.preventDefault();
       this.pressHandset('confirm');
     });
@@ -785,7 +875,7 @@ export class GameView {
       button.addEventListener('lostpointercapture', release);
       // Space / Enter keep a focused valve usable without a pointer.
       button.addEventListener('keydown', (event) => {
-        if ((event.code === 'Space' || event.code === 'Enter') && this.clock.speed !== 0) {
+        if ((event.code === 'Space' || event.code === 'Enter') && this.clock.speed !== 0 && !this.helpOpen) {
           event.preventDefault();
           this.holdValve(gas, `focused-key:${event.code}`, true);
         }
@@ -830,6 +920,10 @@ export class GameView {
     document.addEventListener('keydown', (event) => {
       const target = event.target;
       if (!this.active || this.modalOpen || this.resetting) return; // the Reset all confirmation has the keyboard
+      if (this.helpOpen) {
+        this.helpKeydown(event); // so does the controls guide
+        return;
+      }
       if (isHandsetArrow(event)) {
         const action = handsetKeyAction(event);
         event.preventDefault(); // a held key is one press, and the page does not scroll

@@ -394,6 +394,7 @@
       <symbol id="game-i-play" viewBox="0 0 24 24"><path d="m9 5 10 7-10 7Z"></path></symbol>
       <symbol id="game-i-reset" viewBox="0 0 24 24"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6"></path></symbol>
       <symbol id="game-i-quit" viewBox="0 0 24 24"><path d="M10 5H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h4M14 8l4 4-4 4M18 12H9"></path></symbol>
+      <symbol id="game-i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M9.6 9.4a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1.1.9-1.1 1.7M12 16.9h.01"></path></symbol>
       <symbol id="game-i-chevron" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"></path></symbol>
       <symbol id="game-i-wave" viewBox="0 0 24 24"><path d="M2 8c3-6 5 6 8 0s5 6 8 0 4 0 4 0M2 16c3-6 5 6 8 0s5 6 8 0 4 0 4 0"></path></symbol>
       <symbol id="game-i-gas" viewBox="0 0 24 24"><path d="M9 5V3h6v2M7 8a5 5 0 0 1 10 0v10a3 3 0 0 1-3 3h-4a3 3 0 0 1-3-3ZM7 10h10"></path></symbol>
@@ -407,6 +408,42 @@
         <div class="session-chip" id="game-session-chip" data-tone="idle" title="Virtual time, play speed and run state"><span class="clock-dot" aria-hidden="true"></span><strong id="game-virtual-time" aria-label="Virtual time">00:00:00</strong><span class="speed-chip" id="game-header-speed" aria-label="Play speed">1×</span><span class="run-state" id="game-run-state" role="status">Starting</span></div>
         <button type="button" class="reset-button" id="game-reset" title="Erase the dive computer's memory (settings, calibration, logbook and clock) and restart both boards as new"><svg class="icon"><use href="#game-i-reset"></use></svg><span>Reset all</span></button>
         <button type="button" class="reset-button quit-button" id="game-quit" title="Close the session (the profile is saved) and return to the start screen; asks first while the dive computer is on"><svg class="icon"><use href="#game-i-quit"></use></svg><span>Quit</span></button>
+        <!-- The controls guide: an icon-only button at the far right of the header and the popover under it (opened and closed by game.js). -->
+        <div class="help-control" id="game-help-control">
+          <button type="button" class="reset-button help-button" id="game-help" aria-label="Controls" title="Controls" aria-haspopup="dialog" aria-expanded="false" aria-controls="game-help-panel"><svg class="icon" aria-hidden="true"><use href="#game-i-help"></use></svg></button>
+          <div class="help-panel" id="game-help-panel" role="dialog" aria-label="Controls" tabindex="-1" hidden>
+            <section class="help-group" aria-labelledby="game-help-diver">
+              <h3 id="game-help-diver">Diver</h3>
+              <ul>
+                <li>Hold <kbd>W</kbd> to ascend, <kbd>S</kbd> to descend.</li>
+                <li>Tap twice or three times, then hold, to go faster.</li>
+                <li>Or press and drag in the water. Release to hold depth.</li>
+              </ul>
+            </section>
+            <section class="help-group" aria-labelledby="game-help-handset">
+              <h3 id="game-help-handset">Dive computer (handset)</h3>
+              <ul>
+                <li><kbd>↑</kbd> <kbd>↓</kbd> press Up and Down, wherever the focus is.</li>
+                <li><kbd>Enter</kbd> confirms when the handset is focused.</li>
+                <li>Or click the bezel buttons, or tap the display: top third is Up, middle is Confirm, bottom is Down.</li>
+              </ul>
+            </section>
+            <section class="help-group" aria-labelledby="game-help-loop">
+              <h3 id="game-help-loop">Loop</h3>
+              <ul>
+                <li>Hold <kbd>O</kbd> for the oxygen MAV and <kbd>D</kbd> for the diluent MAV.</li>
+                <li>Holding a valve runs the clock at 1×.</li>
+              </ul>
+            </section>
+            <section class="help-group" aria-labelledby="game-help-clock">
+              <h3 id="game-help-clock">Clock</h3>
+              <ul>
+                <li><kbd>Space</kbd> pauses and resumes. The speed menu in the water sets the speed.</li>
+                <li><kbd>Esc</kbd> lets go of everything.</li>
+              </ul>
+            </section>
+          </div>
+        </div>
       </div>
     </div>
 
