@@ -362,6 +362,25 @@
 #screen-game .help-group li { margin: 0; padding: 0; color: #c9dcdc; }
 #screen-game .help-panel kbd { display: inline-block; min-width: 20px; padding: 0 6px; border: 1px solid #4a6a75; border-bottom-width: 2px; border-radius: 5px; background: #1b3540; font-family: inherit; font-size: 11px; font-weight: 600; line-height: 17px; text-align: center; color: #e5eeed; }
 
+/* The sound control: the same square icon button just left of the "?", and a small popover under it in the guide's look, with the two
+   settings of the sound (the switch and the volume). The button shows a muted speaker while the sound is off or at 0 %. */
+#screen-game .sound-control { position: relative; flex-shrink: 0; }
+#screen-game .sound-button { width: 36px; padding: 0; justify-content: center; }
+#screen-game .sound-button .icon { width: 18px; height: 18px; }
+#screen-game .sound-button.muted { color: #7f9ba2; }
+#screen-game .sound-button[aria-expanded="true"] { background: #213741; border-color: #466974; color: var(--g-teal); }
+#screen-game .sound-panel { position: absolute; top: calc(100% + 10px); right: 0; z-index: 40; display: grid; gap: 14px; width: 246px; max-width: calc(100vw - 76px); padding: 14px 16px; background: #102b36; border: 1px solid #466974; border-radius: 10px; box-shadow: 0 15px 30px #04131db3; font-size: 12px; line-height: 1.5; color: var(--g-text); }
+#screen-game .sound-panel:focus { outline: none; }
+#screen-game .sound-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 0; }
+#screen-game .sound-row > span { color: #c9dcdc; }
+#screen-game .sound-row input[type="range"] { width: 104px; margin: 0; accent-color: var(--g-teal); }
+#screen-game .sound-row input[type="range"]:disabled { opacity: .45; }
+#screen-game .sound-row output { min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; color: var(--g-teal); }
+#screen-game .sound-row input[type="checkbox"] { position: relative; flex-shrink: 0; width: 34px; height: 20px; margin: 0; border: 1px solid #466974; border-radius: 10px; background: #1b3540; appearance: none; -webkit-appearance: none; cursor: pointer; transition: background .15s, border-color .15s; }
+#screen-game .sound-row input[type="checkbox"]::before { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #9fb8bd; transition: transform .15s, background .15s; }
+#screen-game .sound-row input[type="checkbox"]:checked { background: #1d5a55; border-color: #3f8f86; }
+#screen-game .sound-row input[type="checkbox"]:checked::before { transform: translateX(14px); background: var(--g-teal); }
+
 /* Engine errors, stops and notices stay in view. */
 #screen-game .game-alerts { display: grid; gap: 8px; margin-bottom: 18px; }
 #screen-game .game-alert { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 14px; border: 1px solid #6b5a2a; border-radius: 10px; background: #33290f; color: #f2d58c; font-size: 12px; line-height: 1.5; }

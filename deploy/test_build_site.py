@@ -8,6 +8,7 @@ Temporary sites are built from copies of the real source files below target/ (ig
 import contextlib
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -63,6 +64,19 @@ class FirmwareDetection(unittest.TestCase):
     def test_oversized_and_non_wasm_files_are_refused(self):
         self.assertIn("limit", build_site.looks_like_firmware("big.js", b"x" * (build_site.MAX_FILE_BYTES + 1)))
         self.assertIn("WebAssembly", build_site.looks_like_firmware("pkg/ngc_wasm.wasm", b"not wasm"))
+
+    def test_audio_is_allowed_for_the_mav_clips_only_and_only_as_wav(self):
+        riff = b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\0" * 16
+        for name in build_site.AUDIO_FILES:
+            self.assertIsNone(build_site.looks_like_firmware(name, riff), name)
+        self.assertEqual(len(build_site.AUDIO_FILES), 4)
+        self.assertIn("only for the MAV clips", build_site.looks_like_firmware("splash.wav", riff))
+        self.assertIn("only for the MAV clips", build_site.looks_like_firmware("MAV-OXYGEN-LOOP.WAV", riff))
+        self.assertIn("RIFF/WAVE", build_site.looks_like_firmware("mav-oxygen-loop.wav", b"not a wave file at all" + b"\0" * 40))
+        self.assertIn("RIFF/WAVE", build_site.looks_like_firmware("mav-oxygen-loop.wav", b"RIFF\0\0\0\0AVI " + b"\0" * 16))
+        self.assertIn("limit", build_site.looks_like_firmware("mav-oxygen-loop.wav", riff + b"\0" * build_site.MAX_AUDIO_BYTES))
+        # Firmware hiding behind an audio name is refused by the S-record rule as well.
+        self.assertIn("starts with S0", build_site.looks_like_firmware("mav-oxygen-loop.wav", SREC))
 
 
 class ProxyAddress(unittest.TestCase):
@@ -166,6 +180,23 @@ class PlanAndOutput(TempTree):
     def test_a_new_module_must_be_added_to_the_allowlist_on_purpose(self):
         (self.web / "extra.js").write_text("export {};\n")
         with self.assertRaisesRegex(build_site.SiteError, "not on the allowlist.*extra.js"):
+            self.plan()
+
+    def test_the_mav_clips_are_published_and_no_other_audio(self):
+        names = [name for name, _ in self.plan()]
+        for name in ("mav-oxygen-onset.wav", "mav-oxygen-loop.wav", "mav-diluent-onset.wav", "mav-diluent-loop.wav"):
+            self.assertIn(name, names)
+        self.assertEqual(sorted(name for name in names if name.endswith(".wav")), sorted(build_site.AUDIO_FILES))
+        # Every clip the sound module names is a published file (it fetches them from beside itself).
+        source = (build_site.WEB / "game-sound.js").read_text(encoding="utf-8")
+        named = set(re.findall(r"'(mav-[a-z-]+\.wav)'", source))
+        self.assertEqual(named, set(build_site.AUDIO_FILES))
+        (self.web / "extra.wav").write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\0" * 16)
+        with self.assertRaisesRegex(build_site.SiteError, "audio files that are not on the allowlist.*extra.wav"):
+            self.plan()
+        (self.web / "extra.wav").unlink()
+        (self.web / "mav-oxygen-loop.wav").write_bytes(SREC)
+        with self.assertRaisesRegex(build_site.SiteError, "refusing to publish.*mav-oxygen-loop.wav"):
             self.plan()
 
     def test_missing_files_and_links_are_refused(self):

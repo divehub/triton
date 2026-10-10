@@ -25,7 +25,10 @@ TYPES = {
     ".wasm": "application/wasm",
     ".svg": "image/svg+xml",
     ".txt": "text/plain; charset=utf-8",
+    ".wav": "audio/wav",
 }
+# The only audio the page loads: the four recorded MAV clips of the dive game (licenses/README.md). Any other .wav is not served.
+AUDIO_NAMES = {"mav-oxygen-onset.wav", "mav-oxygen-loop.wav", "mav-diluent-onset.wav", "mav-diluent-loop.wav"}
 # The same policy as the source index.html <meta>; the worker script is governed by this header (not by the page).
 # connect-src also names loopback dev proxies ("Load from URLs" with ?firmware-proxy=, firmware-url.js). The deployed
 # site (GitHub Pages) cannot send headers: deploy/build_site.py adds the configured firmware proxy origin to the
@@ -100,6 +103,8 @@ def make_handler(wasm_path, port, firmware_dirs=()):
                 return None  # only the files of this directory (no sub-directories, no dot files)
             candidate = WEB / parts[0]
             if candidate.suffix not in TYPES or not candidate.is_file():
+                return None
+            if candidate.suffix == ".wav" and candidate.name not in AUDIO_NAMES:
                 return None
             return candidate
 

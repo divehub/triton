@@ -4144,11 +4144,27 @@ test('game (state): the run state and the messages that must not hide an engine 
 });
 
 /**
+ * The sound of game-sound.js as the game sees it: every call is recorded as [name, ...arguments], nothing plays. `named(name)` lists
+ * the calls of one name, `clear()` forgets the calls so far (a session start makes a few).
+ */
+function fakeSound() {
+  const sound = { calls: [], disposed: 0 };
+  for (const name of ['setEnabled', 'setVolume', 'setUnderwater', 'setPaused', 'setAmbience', 'setMav', 'setVentRate', 'setSwimRate', 'surfaceBreak', 'click', 'vibrate', 'torch', 'powerDown', 'powerUp']) {
+    sound[name] = (...args) => { sound.calls.push([name, ...args]); };
+  }
+  sound.unlock = () => { sound.calls.push(['unlock']); return Promise.resolve(true); };
+  sound.dispose = () => { sound.disposed += 1; sound.calls.push(['dispose']); };
+  sound.named = (name) => sound.calls.filter((call) => call[0] === name);
+  sound.clear = () => { sound.calls.length = 0; };
+  return sound;
+}
+
+/**
  * The real GameView on the real index.html (fake DOM), a fake worker client and fake timers; the cells are fixed (+0.5 mV each).
  * The controls guide opens by itself on a browser's first game start, which would hold the game keys in every test: the settings
  * start with it already seen (`helpSeen: false` is the first visit).
  */
-async function mountGame({ options = {}, release = describeRelease(DEFAULT_RELEASE_ID), store = memoryStore(), frames, motion, custom = false, helpSeen = true } = {}) {
+async function mountGame({ options = {}, release = describeRelease(DEFAULT_RELEASE_ID), store = memoryStore(), frames, motion, custom = false, helpSeen = true, sound = fakeSound(), realSound = false } = {}) {
   installDom(html);
   if (helpSeen) store.map.set('game-help-seen', '1');
   const { GameView } = await import('./game.js');
@@ -4171,7 +4187,8 @@ async function mountGame({ options = {}, release = describeRelease(DEFAULT_RELEA
     },
   };
   const quits = [];
-  const view = new GameView(client, { quit: () => { quits.push(true); } }, { timers: clock, now: () => wall, random: () => 0.75, store, frames, motion });
+  // The sound is a recorder (nothing plays) unless a test asks for the real module, which is silent here: Node has no Web Audio.
+  const view = new GameView(client, { quit: () => { quits.push(true); } }, { timers: clock, now: () => wall, random: () => 0.75, store, frames, motion, createSound: realSound ? undefined : () => sound });
   const shown = { options: { mode: 'dual', adcSample: 400, ...options }, profile: 'stored', release, custom };
   view.show(shown);
   const document = globalThis.document;
@@ -4182,7 +4199,7 @@ async function mountGame({ options = {}, release = describeRelease(DEFAULT_RELEA
     view.onState({ state: { ...baseState, virtualTime, ...extra }, host: { ...host, ...hostExtra } });
   };
   return {
-    view, clock, sent, requests, quits, document, store, feed, host, baseState, respond, shown,
+    view, clock, sent, requests, quits, document, store, feed, host, baseState, respond, shown, sound,
     el: (id) => document.getElementById(`game-${id}`),
     text: (id) => document.getElementById(`game-${id}`).textContent,
     actions: () => requests.filter((item) => item.type === 'action').map((item) => item.payload.request),
@@ -5773,4 +5790,944 @@ test('game (water structure): the water layers are decorative, the labels of the
   assert.equal(g.text('depth-value'), '5.0');
   assert.equal(g.text('max-depth-meta'), 'Max 5.0 m');
   g.view.hide();
+});
+
+// =====================================================================================================
+// the game's sound: what the game tells game-sound.js, the header control, and the module on a fake Web Audio
+// =====================================================================================================
+
+const soundKey = (g) => (type, code, extra = {}) => g.document.dispatch(type, { code, key: code.startsWith('Key') ? code.slice(3).toLowerCase() : code, repeat: false, ...extra });
+const soundNames = (g) => g.sound.calls.map((call) => call[0]);
+
+/** Feeds states of an ascent from `depth` meters until the diver is at the surface (a state each virtual second). */
+function ascendToSurface(g, virtual, wall) {
+  g.view.changeMotion(-18);
+  for (let step = 0; step < 400 && g.view.sim.depth > 0; step++) {
+    virtual += 1;
+    wall += 200;
+    g.feed(virtual, wall);
+  }
+  return { virtual, wall };
+}
+
+test('game (sound): Start game creates and unlocks the sound inside the click; a session starts on the boat with its ambience, the settings and a power-up', async () => {
+  const g = await mountGame();
+  const calls = g.sound.calls;
+  assert.ok(soundNames(g).includes('unlock'), 'the sound is unlocked when the session shows');
+  assert.deepEqual(g.sound.named('setVolume'), [['setVolume', 0.6]], 'the default volume is 60 %');
+  assert.deepEqual(g.sound.named('setEnabled'), [['setEnabled', true]], 'on by default');
+  assert.deepEqual(g.sound.named('setUnderwater'), [['setUnderwater', false, { immediate: true }]], 'on the boat: the air');
+  assert.deepEqual(g.sound.named('setAmbience'), [['setAmbience', true]], 'the surface ambience');
+  assert.deepEqual(g.sound.named('setPaused'), [['setPaused', false]]);
+  assert.deepEqual(g.sound.named('powerUp'), [['powerUp']]);
+  assert.equal(calls.at(-1)[0], 'powerUp', 'the power-up closes the start');
+  assert.deepEqual([g.sound.named('setMav')[0], g.sound.named('setSwimRate')[0], g.sound.named('setVentRate')[0]], [['setMav', null], ['setSwimRate', 0], ['setVentRate', 0]], 'nothing swims, vents or is held');
+
+  // The start screen's button is the gesture: its click unlocks (a browser starts audio only from a user gesture).
+  g.sound.clear();
+  g.document.getElementById('start-game').click();
+  assert.deepEqual(g.sound.calls, [['unlock']]);
+
+  // Start paused: the sound starts paused too.
+  const paused = await mountGame({ options: { startPaused: true } });
+  assert.deepEqual(paused.sound.named('setPaused'), [['setPaused', true]]);
+  paused.view.hide();
+  g.view.hide();
+});
+
+test('game (sound): the water follows the dive: underwater when the diver leaves the boat, a surface break on reaching 0 m from below, nothing for a descent that never left the surface', async () => {
+  const g = await mountGame();
+  g.feed(0, 0);
+  await settle();
+  g.sound.clear();
+  g.view.changeMotion(30); // the entry from the boat: the first descent
+  assert.deepEqual(g.sound.calls, [['setUnderwater', true], ['setSwimRate', 30]], 'the muffling starts with the entry; no splash sound');
+  g.feed(30, 1000);
+  g.view.stopMotion();
+  assert.ok(g.view.sim.depth > 10);
+  assert.equal(g.sound.named('setUnderwater').length, 1, 'once');
+  assert.equal(g.sound.named('surfaceBreak').length, 0, 'nothing while below');
+
+  const end = ascendToSurface(g, 30, 1000);
+  assert.equal(g.view.sim.depth, 0);
+  assert.equal(g.sound.named('surfaceBreak').length, 1, 'reaching 0 m from below');
+  assert.equal(g.sound.named('setUnderwater').length, 1, 'the break opens the muffling itself: no second change');
+  assert.deepEqual(g.sound.calls.at(-1), ['setSwimRate', 0], 'and the swimming stops');
+
+  // Floating at the surface, then down again and up again: another break; a stopped emulator never integrates, so a descent that
+  // is let go at once never left the surface and is no surface break.
+  g.view.changeMotion(30);
+  g.feed(end.virtual + 20, end.wall + 3000);
+  g.view.stopMotion();
+  ascendToSurface(g, end.virtual + 20, end.wall + 3000);
+  assert.equal(g.sound.named('surfaceBreak').length, 2, 'every return from below');
+  g.feed(end.virtual + 400, end.wall + 90000, { running: false });
+  const before = g.sound.calls.length;
+  g.view.changeMotion(30);
+  g.view.stopMotion();
+  assert.deepEqual(g.sound.calls.slice(before), [['setUnderwater', true], ['setSwimRate', 30], ['setUnderwater', false], ['setSwimRate', 0]]);
+  assert.equal(g.sound.named('surfaceBreak').length, 2);
+  g.view.hide();
+});
+
+test('game (sound): the swim sound follows the motion (drag or W and S) and is silent when holding depth, paused or let go', async () => {
+  const g = await mountGame();
+  const key = soundKey(g);
+  g.feed(0, 0);
+  await settle();
+  g.sound.clear();
+  const swims = () => g.sound.named('setSwimRate').map((call) => call[1]);
+  key('keydown', 'KeyS');
+  assert.deepEqual(swims(), [10], 'S: 10 m/min');
+  key('keyup', 'KeyS');
+  assert.deepEqual(swims(), [10, 0], 'let go: silence');
+  g.view.changeMotion(12.3);
+  g.view.changeMotion(12.4);
+  assert.deepEqual(swims(), [10, 0, 12.5], 'a drag: the speed in steps of half a meter per minute, told only when it changes');
+  g.view.changeMotion(0);
+  assert.equal(swims().at(-1), 0, 'holding depth');
+  g.feed(10, 1000);
+  key('keydown', 'KeyW');
+  key('keydown', 'KeyS');
+  assert.equal(swims().at(-1), 0, 'W and S together hold the depth');
+  key('keyup', 'KeyW');
+  key('keyup', 'KeyS');
+  g.view.changeMotion(20);
+  assert.equal(swims().at(-1), 20);
+  g.view.chooseSpeed(0);
+  assert.equal(swims().at(-1), 0, 'the pause stops the swimming');
+  assert.deepEqual(g.sound.named('setPaused').at(-1), ['setPaused', true]);
+  g.view.hide();
+});
+
+test('game (sound): a held valve is a MAV from the press (oxygen or diluent), and it stops on release, pause, blur and Escape', async () => {
+  const g = await mountGame();
+  const key = soundKey(g);
+  g.feed(0, 0);
+  await settle();
+  g.sound.clear();
+  const mavs = () => g.sound.named('setMav').map((call) => call[1]);
+  g.view.chooseSpeed(4); // a valve then needs the worker's confirmation of the 1x override before the injection counts
+  g.view.holdValve('oxygen', 'pointer:1', true);
+  assert.deepEqual(mavs(), ['oxygen'], 'at the press, before the 1x override is confirmed');
+  assert.deepEqual(g.view.valveFlags(), { oxygen: false, diluent: false }, 'the emulator has not confirmed it yet');
+  g.view.holdValve('diluent', 'pointer:2', true);
+  assert.deepEqual(mavs(), ['oxygen'], 'both held: the oxygen');
+  g.view.holdValve('oxygen', 'pointer:1', false);
+  assert.deepEqual(mavs(), ['oxygen', 'diluent']);
+  g.view.holdValve('diluent', 'pointer:2', false);
+  assert.deepEqual(mavs(), ['oxygen', 'diluent', null], 'released');
+
+  key('keydown', 'KeyD');
+  key('keyup', 'KeyD');
+  key('keydown', 'KeyO');
+  key('keyup', 'KeyO');
+  assert.deepEqual(mavs().slice(3), ['diluent', null, 'oxygen', null], 'the O and D keys');
+
+  g.sound.clear();
+  g.view.holdValve('oxygen', 'pointer:3', true);
+  g.view.chooseSpeed(0);
+  assert.deepEqual(mavs(), ['oxygen', null], 'a pause releases it');
+  g.view.togglePause();
+  assert.deepEqual(mavs(), ['oxygen', null], 'and resuming does not hold it again');
+  g.sound.clear();
+  g.view.holdValve('diluent', 'pointer:4', true);
+  globalThis.window.dispatch('blur');
+  assert.deepEqual(mavs(), ['diluent', null], 'losing the window lets go');
+  g.sound.clear();
+  key('keydown', 'KeyO');
+  key('keydown', 'Escape');
+  assert.deepEqual(mavs(), ['oxygen', null], 'Escape lets go of everything');
+  g.view.hide();
+});
+
+test('game (sound): every handset press clicks: the bezel keys, the display\'s tap zones and the keyboard, but not behind a guide or during Reset all', async () => {
+  const g = await mountGame();
+  const key = soundKey(g);
+  g.feed(0, 0);
+  await settle();
+  g.sound.clear();
+  const clicks = () => g.sound.named('click').map((call) => call[1]);
+  g.el('handset-up').click();
+  g.el('handset-down').click();
+  assert.deepEqual(clicks(), ['up', 'down'], 'the bezel');
+  const frame = g.el('frame');
+  frame.dispatch('click', { clientY: 10 });
+  frame.dispatch('click', { clientY: 240 });
+  frame.dispatch('click', { clientY: 470 });
+  assert.deepEqual(clicks().slice(2), ['up', 'confirm', 'down'], 'the thirds of the display');
+  key('keydown', 'ArrowUp');
+  key('keydown', 'ArrowDown');
+  g.el('device').dispatch('keydown', { key: 'Enter', code: 'Enter', repeat: false });
+  assert.deepEqual(clicks().slice(5), ['up', 'down', 'confirm'], 'the keyboard');
+  assert.equal(clicks().length, 8, 'one click for each press');
+  g.el('help').click();
+  key('keydown', 'ArrowUp');
+  assert.equal(clicks().length, 8, 'the guide has the keyboard');
+  g.el('help').click();
+  g.view.resetting = true;
+  await g.view.pressHandset('up');
+  g.view.resetting = false;
+  assert.equal(clicks().length, 8, 'Reset all sends nothing, and clicks nothing');
+  g.view.hide();
+});
+
+test('game (sound): the vibrator buzzes once for each pulse the indicator lights, never for an LED, and a steady drive keeps buzzing', async () => {
+  const g = await mountGame();
+  const buzzes = () => g.sound.named('vibrate').map((call) => call[1]);
+  g.feed(0, 0, { hardwareOutputs: [vibratorOrLed(pulses(0), 'vibrator'), vibratorOrLed(pulses(0))] });
+  assert.deepEqual(buzzes(), [], 'the first observation is a baseline: nothing buzzes');
+  g.sound.clear();
+
+  // One captured pulse between two states: the indicator flashes (150 ms) and the sound buzzes once, not for every state that follows.
+  g.feed(1, 300, { hardwareOutputs: [vibratorOrLed(pulses(1), 'vibrator'), vibratorOrLed(pulses(0))] });
+  assert.equal(g.el('signal-vibrator').classList.contains('active'), true);
+  assert.deepEqual(buzzes(), [50]);
+  g.feed(1.2, 500, { hardwareOutputs: [vibratorOrLed(pulses(1), 'vibrator'), vibratorOrLed(pulses(0))] });
+  assert.deepEqual(buzzes(), [50], 'a state while it is lit is not another buzz');
+  g.clock.advance(150);
+  assert.equal(g.el('signal-vibrator').classList.contains('active'), false);
+  g.clock.advance(100);
+  assert.deepEqual(buzzes(), [50]);
+
+  // Three pulses at once: the replay flashes them one after the other, and each lit flash is one buzz (no more, no backlog of extras).
+  g.feed(2, 800, { hardwareOutputs: [vibratorOrLed(pulses(4), 'vibrator'), vibratorOrLed(pulses(0))] });
+  assert.deepEqual(buzzes(), [50, 50], 'the first of them lights now');
+  for (let flash = 0; flash < 6; flash++) g.clock.advance(125);
+  g.clock.advance(500);
+  assert.deepEqual(buzzes(), [50, 50, 50, 50], 'one for each of the three');
+  assert.equal(g.el('signal-vibrator').classList.contains('active'), false);
+
+  // An LED pulse lights its indicator and makes no sound.
+  g.sound.clear();
+  g.feed(3, 1500, { hardwareOutputs: [vibratorOrLed(pulses(4), 'vibrator'), vibratorOrLed(pulses(1))] });
+  assert.equal(g.el('signal-white').classList.contains('active'), true);
+  assert.deepEqual(buzzes(), []);
+  g.view.hide();
+
+  // A vibrator held on: it buzzes from the moment it lights and keeps buzzing with each state while it is on.
+  const steady = await mountGame();
+  const held = () => steady.sound.named('vibrate').map((call) => call[1]);
+  steady.feed(0, 0, { hardwareOutputs: [vibratorOrLed([event(1, false), event(2, true)], 'vibrator')] });
+  assert.deepEqual(held(), [50], 'lit');
+  steady.feed(0.2, 300, { hardwareOutputs: [vibratorOrLed([event(1, false), event(2, true)], 'vibrator')] });
+  steady.feed(0.4, 600, { hardwareOutputs: [vibratorOrLed([event(1, false), event(2, true)], 'vibrator')] });
+  assert.deepEqual(held(), [50, 250, 250], 'each state while it is on extends the buzz');
+  steady.view.hide();
+});
+
+test('game (sound): the torch clicks when it switches on at 40 m and off above 39 m, not on load and not on Reset all', async () => {
+  const g = await mountGame();
+  let clock = 1000;
+  const frames = (count, millis = 16) => { for (let index = 0; index < count; index++) g.view.frame(clock += millis); };
+  const torches = () => g.sound.named('torch').map((call) => call[1]);
+  g.feed(0, 0);
+  frames(5);
+  assert.deepEqual(torches(), [], 'a session starts with the torch off and says nothing');
+  g.view.changeMotion(30);
+  g.feed(76, 5000); // 38 m
+  g.view.stopMotion();
+  frames(40);
+  assert.deepEqual(torches(), []);
+  g.view.changeMotion(30);
+  g.feed(86, 6000); // 43 m
+  g.view.stopMotion();
+  frames(40);
+  assert.deepEqual(torches(), [true], 'on at 40 m');
+  g.view.changeMotion(-18);
+  g.feed(86 + 12, 7000); // 39.4 m
+  g.view.stopMotion();
+  frames(20);
+  assert.deepEqual(torches(), [true], 'still on at 39.4 m: the hysteresis');
+  g.view.changeMotion(-18);
+  g.feed(86 + 12 + 8, 8000); // 37.9 m
+  g.view.stopMotion();
+  frames(20);
+  assert.deepEqual(torches(), [true, false], 'off above 39 m');
+
+  // Reset all from deep water with the torch on: the new session says nothing about the torch.
+  g.view.changeMotion(30);
+  g.feed(86 + 12 + 8 + 20, 9000);
+  g.view.stopMotion();
+  frames(40);
+  assert.deepEqual(torches(), [true, false, true]);
+  resetAnswers(g);
+  globalThis.window.confirm = () => true;
+  g.el('reset').click();
+  await settle();
+  frames(5);
+  assert.deepEqual(torches(), [true, false, true], 'Reset all: no torch sound');
+  assert.equal(g.view.scene.torchOn, false);
+  g.view.hide();
+});
+
+test('game (sound): the vent sound comes from the same gas as the bubbles (one consumer of the vented gas), follows its rate and stops with the vent, the pause and a closed loop', async () => {
+  const g = await mountGame();
+  let clock = 1000;
+  const frames = (count, millis = 16) => { for (let index = 0; index < count; index++) g.view.frame(clock += millis); };
+  const rates = () => g.sound.named('setVentRate').map((call) => call[1]);
+  g.feed(0, 0);
+  g.view.changeMotion(30);
+  g.feed(40, 3000); // 20 m
+  g.view.stopMotion();
+  frames(120); // the entry from the boat is over: the diver is in the water, where the vent makes bubbles
+  g.sound.clear();
+  assert.equal(g.view.sim.takeVented(), 0, 'a closed loop vents nothing');
+  g.view.changeMotion(-18);
+  let virtual = 40;
+  for (let step = 0; step < 5; step++) {
+    virtual += 1;
+    g.feed(virtual, 3000 + step * 200);
+    frames(12);
+  }
+  const rising = rates();
+  assert.ok(rising.length > 0 && rising.at(-1) > 0, `an ascent vents, and the sound hears it (${rising})`);
+  closeTo(rising.at(-1), Math.round(g.view.scene.ventLevel / 0.05) * 0.05, 1e-9, 'the sound hears the rate the bubbles are sized by');
+  assert.equal(g.view.sim.takeVented(), 0, 'the sound drains nothing itself: the frame loop is the one consumer');
+  assert.ok(g.view.scene.bubbles.length > 0, 'and the same gas draws the bubbles');
+  assert.ok(rising.every((rate) => rate >= 0 && Math.abs(rate * 20 - Math.round(rate * 20)) < 1e-9), 'in steps of 0.05 SL/s');
+
+  g.view.stopMotion();
+  frames(400);
+  assert.equal(rates().at(-1), 0, 'holding depth: the vent has closed');
+  const settled = rates().length;
+  frames(60);
+  assert.equal(rates().length, settled, 'and nothing more is told');
+
+  g.view.changeMotion(-18);
+  for (let step = 0; step < 3; step++) {
+    virtual += 1;
+    g.feed(virtual, 6000 + step * 200);
+    frames(12);
+  }
+  assert.ok(rates().at(-1) > 0);
+  g.view.chooseSpeed(0);
+  frames(2);
+  assert.equal(rates().at(-1), 0, 'a pause is silent');
+  g.view.hide();
+});
+
+test('game (sound): at the surface and on the boat a MAV that makes the loop vent is not heard venting, like the bubbles; in the water it is', async () => {
+  const g = await mountGame();
+  let clock = 1000;
+  const frames = (count, millis = 16) => { for (let index = 0; index < count; index++) g.view.frame(clock += millis); };
+  const heard = () => g.sound.named('setVentRate').filter((call) => call[1] > 0);
+  g.feed(0, 0);
+  frames(5);
+  g.sound.clear();
+  g.view.holdValve('oxygen', 'pointer:1', true);
+  for (let step = 1; step <= 12; step++) {
+    g.feed(step, step * 200);
+    frames(8);
+  }
+  assert.ok(g.view.scene.ventLevel > 0.05, `the loop vents (${g.view.scene.ventLevel})`);
+  assert.equal(g.view.sim.depth, 0);
+  assert.deepEqual(heard(), [], 'on the boat nothing of it is heard');
+  assert.deepEqual(g.sound.named('setMav').map((call) => call[1]), ['oxygen'], 'the MAV itself is');
+  g.view.holdValve('oxygen', 'pointer:1', false);
+  frames(200);
+  g.view.changeMotion(30);
+  g.feed(40, 5000);
+  g.view.stopMotion();
+  frames(150);
+  g.sound.clear();
+  g.view.holdValve('oxygen', 'pointer:2', true);
+  for (let step = 1; step <= 12; step++) {
+    g.feed(40 + step, 5000 + step * 200);
+    frames(8);
+  }
+  assert.ok(heard().length > 0, 'in the water the same vent is heard');
+  g.view.hide();
+});
+
+test('game (sound): the pause follows the clock (also a lost connection), and a hidden tab lets go of the swimming and the valves', async () => {
+  const g = await mountGame();
+  const key = soundKey(g);
+  g.feed(0, 0);
+  await settle();
+  g.sound.clear();
+  const pauses = () => g.sound.named('setPaused').map((call) => call[1]);
+  g.view.chooseSpeed(0);
+  assert.deepEqual(pauses(), [true]);
+  key('keydown', 'Space');
+  assert.deepEqual(pauses(), [true, false], 'Space resumes');
+  g.view.chooseSpeed(4);
+  assert.deepEqual(pauses(), [true, false], 'another speed is not a pause');
+  g.view.setConnectionError('The engine stopped.');
+  assert.deepEqual(pauses(), [true, false, true], 'a lost connection is silent');
+  g.view.hide();
+
+  const h = await mountGame();
+  h.feed(0, 0);
+  await settle();
+  h.view.changeMotion(30);
+  h.feed(20, 3000); // 10 m: the diver is in the water
+  h.view.holdValve('diluent', 'pointer:1', true);
+  h.sound.clear();
+  globalThis.document.hidden = true;
+  globalThis.document.dispatch('visibilitychange');
+  assert.deepEqual(h.sound.calls, [['setSwimRate', 0], ['setMav', null]], 'the module suspends itself; the game lets go');
+  globalThis.document.hidden = false;
+  h.view.hide();
+});
+
+test('game (sound): Quit ends with a power-down that rings out before the sound is disposed; Reset all powers down, then up with the new session', async () => {
+  const g = await mountGame();
+  g.feed(0, 0, { standby: true, running: false });
+  await settle();
+  const quitting = g.sound;
+  quitting.clear();
+  g.el('quit').click();
+  await settle();
+  assert.equal(g.quits.length, 1);
+  assert.deepEqual(g.sound.named('powerDown'), [['powerDown']], 'Quit powers down');
+  assert.equal(g.sound.disposed, 0, 'the tone is still ringing');
+  g.view.hide(); // the app's hide, once the worker has closed the session
+  assert.equal(g.view.sound, null);
+  assert.deepEqual(g.sound.calls.slice(-4), [['setMav', null], ['setSwimRate', 0], ['setVentRate', 0], ['setAmbience', false]], 'the continuous sounds stop at once');
+  g.clock.advance(1400);
+  assert.equal(g.sound.disposed, 0, 'not before the tone has rung out');
+  g.clock.advance(200);
+  assert.equal(g.sound.disposed, 1, 'then disposed');
+
+  // Reset all: the power-down when the confirmed reset begins, the power-up when the new session shows; the water is back to the air.
+  const h = await mountGame();
+  resetAnswers(h);
+  h.feed(0, 0);
+  await settle();
+  h.view.changeMotion(30);
+  h.feed(20, 3000);
+  h.sound.clear();
+  const before = h.requests.length;
+  globalThis.window.confirm = () => true;
+  const booting = deferred();
+  h.respond.boot = () => booting.promise;
+  h.el('reset').click();
+  await settle();
+  assert.deepEqual(h.sound.named('powerDown'), [['powerDown']], 'the confirmed reset powers down');
+  assert.equal(h.sound.named('powerUp').length, 0, 'the new session has not shown yet');
+  assert.deepEqual(h.sound.named('setAmbience'), [['setAmbience', false]]);
+  assert.ok(h.requests.slice(before).some((request) => request.type === 'close-session'));
+  booting.resolve({ state: { ...h.baseState, virtualTime: 0 }, hostStatus: { ...h.host, generation: 2 }, release: h.shown.release });
+  await settle();
+  assert.deepEqual(h.sound.named('powerUp'), [['powerUp']], 'the new session powers up');
+  assert.deepEqual(h.sound.named('setUnderwater').at(-1), ['setUnderwater', false, { immediate: true }], 'back on the boat: the air');
+  assert.deepEqual(h.sound.named('setAmbience').at(-1), ['setAmbience', true], 'with the boat\'s ambience');
+  const names = soundNames(h);
+  assert.ok(names.indexOf('powerDown') < names.indexOf('powerUp'));
+  assert.equal(h.sound.named('surfaceBreak').length, 0, 'a reset is not a surfacing');
+  assert.equal(h.sound.disposed, 0, 'the sound lives on through Reset all');
+  h.view.hide();
+});
+
+test('game (sound): a speaker button just left of the "?" opens a popover with the switch and the volume; they are remembered, and the icon shows a muted state', async () => {
+  const css = fs.readFileSync(path.join(here, 'game.css'), 'utf8');
+  const store = memoryStore();
+  const g = await mountGame({ store });
+  const row = g.el('quit').parent;
+  const controls = row.children.filter((node) => node instanceof Element);
+  assert.deepEqual(controls.slice(-3).map((node) => node.id), ['game-quit', 'game-sound-control', 'game-help-control'], 'just left of the "?"');
+  assert.equal(g.el('sound').getAttribute('aria-label'), 'Sound');
+  assert.equal(g.text('sound'), '', 'icon only');
+  assert.match(g.el('sound').className, /\breset-button\b/, 'the header button style, so the same 36 px height');
+  assert.match(css, /#screen-game \.sound-button \{[^}]*width: 36px[^}]*padding: 0/, 'and square, like the "?"');
+  assert.equal(g.el('sound').querySelectorAll('use')[0].getAttribute('href'), '#game-i-sound');
+  assert.equal(g.el('sound').getAttribute('aria-controls'), 'game-sound-panel');
+  assert.equal(g.el('sound-panel').getAttribute('aria-label'), 'Sound');
+  assert.deepEqual([g.view.soundOpen, g.el('sound-panel').hidden, g.el('sound').getAttribute('aria-expanded')], [false, true, 'false'], 'closed to start with');
+  assert.deepEqual(g.el('sound-panel').querySelectorAll('span').map((node) => node.textContent), ['Sound', 'Volume']);
+  assert.equal(g.el('sound-on').checked, true);
+  assert.equal(g.el('sound-volume').value, '60');
+  assert.equal(g.text('sound-volume-value'), '60%');
+  assert.equal(g.el('sound-on').getAttribute('role'), 'switch');
+
+  g.el('sound').click();
+  assert.deepEqual([g.view.soundOpen, g.el('sound-panel').hidden, g.el('sound').getAttribute('aria-expanded')], [true, false, 'true']);
+  g.sound.clear();
+  g.el('sound-on').checked = false;
+  g.el('sound-on').dispatch('change');
+  assert.deepEqual(g.sound.named('setEnabled'), [['setEnabled', false]]);
+  assert.equal(store.map.get('game-sound-on'), '0', 'remembered');
+  assert.equal(g.el('sound').querySelectorAll('use')[0].getAttribute('href'), '#game-i-sound-off', 'the icon shows the muted speaker');
+  assert.equal(g.el('sound').classList.contains('muted'), true);
+  assert.equal(g.el('sound').title, 'Sound is off');
+  assert.equal(g.el('sound-volume').disabled, true, 'no volume to set while it is off');
+  g.el('sound-on').checked = true;
+  g.el('sound-on').dispatch('change');
+  assert.deepEqual(g.sound.named('setEnabled').at(-1), ['setEnabled', true]);
+  assert.ok(soundNames(g).includes('unlock'), 'turning it on is a gesture: it unlocks again');
+  assert.equal(store.map.get('game-sound-on'), '1');
+  assert.equal(g.el('sound').classList.contains('muted'), false);
+  g.el('sound-volume').value = '35';
+  g.el('sound-volume').dispatch('input');
+  assert.deepEqual(g.sound.named('setVolume').at(-1), ['setVolume', 0.35]);
+  assert.equal(store.map.get('game-sound-volume'), '35');
+  assert.equal(g.text('sound-volume-value'), '35%');
+  g.el('sound-volume').value = '0';
+  g.el('sound-volume').dispatch('input');
+  assert.equal(g.el('sound').querySelectorAll('use')[0].getAttribute('href'), '#game-i-sound-off', 'at 0 % it is muted too');
+  g.el('sound-volume').value = '35';
+  g.el('sound-volume').dispatch('input');
+  g.view.hide();
+
+  // Another visit of the same browser: both settings come back, and the sound gets them when it starts.
+  store.map.set('game-sound-on', '0');
+  const later = await mountGame({ store });
+  assert.deepEqual(later.sound.named('setVolume'), [['setVolume', 0.35]]);
+  assert.deepEqual(later.sound.named('setEnabled'), [['setEnabled', false]]);
+  assert.equal(later.el('sound-on').checked, false);
+  assert.equal(later.el('sound-volume').value, '35');
+  assert.equal(later.el('sound').classList.contains('muted'), true);
+  later.view.hide();
+
+  // Settings that throw or hold nonsense: the defaults, and no error.
+  const failing = memoryStore();
+  const { get, set } = failing;
+  failing.get = (key, fallback) => { if (key.startsWith('game-sound')) throw new Error('storage denied'); return get(key, fallback); };
+  failing.set = (key, value) => { if (key.startsWith('game-sound')) throw new Error('storage denied'); return set(key, value); };
+  const blocked = await mountGame({ store: failing });
+  assert.deepEqual(blocked.sound.named('setVolume'), [['setVolume', 0.6]]);
+  assert.deepEqual(blocked.sound.named('setEnabled'), [['setEnabled', true]]);
+  blocked.el('sound-volume').value = '80';
+  blocked.el('sound-volume').dispatch('input');
+  assert.deepEqual(blocked.sound.named('setVolume').at(-1), ['setVolume', 0.8], 'it still applies in this page');
+  blocked.view.hide();
+  const odd = memoryStore();
+  odd.map.set('game-sound-volume', 'loud');
+  const nonsense = await mountGame({ store: odd });
+  assert.deepEqual(nonsense.sound.named('setVolume'), [['setVolume', 0.6]]);
+  nonsense.view.hide();
+});
+
+test('game (sound): the popover has the rules of the controls guide: it lets go of what is held, Escape, the button, a click outside and a focus elsewhere close it, and it keeps the game keys out', async () => {
+  const g = await mountGame();
+  const key = soundKey(g);
+  g.feed(0, 0);
+  await settle();
+  const panel = g.el('sound-panel');
+  const state = () => [g.view.soundOpen, panel.hidden, g.el('sound').getAttribute('aria-expanded')];
+  const press = () => g.el('sound').click();
+
+  // Opening lets go of the water and the valves, does not pause; the button closes it with the focus on the button.
+  g.view.changeMotion(30);
+  g.view.holdValve('oxygen', 'pointer:1', true);
+  press();
+  assert.deepEqual(state(), [true, false, 'true']);
+  assert.equal(g.view.sim.direction, 0, 'the water is let go');
+  assert.equal(g.view.clock.injecting(), false, 'and so is the valve');
+  assert.equal(g.view.clock.speed, 1, 'the clock was not paused');
+  press();
+  assert.deepEqual(state(), [false, true, 'false']);
+  assert.equal(g.document.activeElement, g.el('sound'));
+
+  // Escape, a click outside (on nothing the focus returns to the button), a focus elsewhere. Inside, it stays.
+  press();
+  g.el('ocean').focus();
+  const escape = key('keydown', 'Escape');
+  assert.deepEqual(state(), [false, true, 'false']);
+  assert.equal(escape.defaultPrevented, true);
+  assert.equal(g.document.activeElement, g.el('sound'));
+  press();
+  g.document.activeElement = null;
+  g.el('scene-hint').dispatch('click');
+  assert.deepEqual(state(), [false, true, 'false']);
+  assert.equal(g.document.activeElement, g.el('sound'));
+  press();
+  panel.dispatch('click');
+  g.el('sound-volume').dispatch('click');
+  assert.equal(g.view.soundOpen, true, 'a click inside keeps it open');
+  g.document.dispatch('focusin', { target: g.el('sound-volume') });
+  assert.equal(g.view.soundOpen, true, 'and so does a focus inside');
+  g.document.dispatch('focusin', { target: g.el('mav-oxygen') });
+  assert.equal(g.view.soundOpen, false, 'a focus elsewhere closes it');
+
+  // One popover at a time.
+  press();
+  g.el('help').click();
+  assert.deepEqual([g.view.soundOpen, g.view.helpOpen], [false, true]);
+  press();
+  assert.deepEqual([g.view.soundOpen, g.view.helpOpen], [true, false]);
+
+  // The game keys do nothing while it is open; the slider keeps its arrow keys, a button or the switch its Space.
+  const presses = () => g.actions().filter((request) => ['up', 'down', 'confirm'].includes(request.action)).length;
+  assert.equal(key('keydown', 'ArrowUp').defaultPrevented, true, 'cancelled: no scroll, no handset press');
+  assert.equal(key('keydown', 'ArrowUp', { target: g.el('sound-volume') }).defaultPrevented, false, 'the slider keeps its own arrow keys');
+  key('keydown', 'KeyW');
+  key('keydown', 'KeyS');
+  assert.equal(g.view.sim.direction, 0, 'W and S do not swim');
+  key('keydown', 'KeyO');
+  assert.equal(g.view.clock.injecting(), false, 'O holds no valve');
+  assert.equal(key('keydown', 'Space').defaultPrevented, true, 'Space does not pause');
+  assert.equal(g.view.clock.speed, 1);
+  assert.equal(key('keydown', 'Space', { target: g.el('sound') }).defaultPrevented, false, 'on the button it stays the button\'s own key');
+  assert.equal(key('keydown', 'Space', { target: g.el('sound-on') }).defaultPrevented, false, 'and on the switch');
+  g.el('device').dispatch('keydown', { key: 'Enter', code: 'Enter', repeat: false });
+  g.el('mav-oxygen').dispatch('keydown', { key: ' ', code: 'Space', repeat: false });
+  await settle();
+  assert.equal(presses(), 0);
+  assert.equal(g.view.clock.injecting(), false);
+  for (const code of ['KeyW', 'KeyS', 'KeyO']) key('keyup', code);
+  key('keydown', 'Escape');
+  assert.equal(g.view.soundOpen, false);
+  key('keydown', 'ArrowDown');
+  await settle();
+  assert.equal(presses(), 1, 'closed, the arrow keys press the handset again');
+
+  // The session ending, Quit and Reset all close it too.
+  press();
+  g.view.hide();
+  assert.deepEqual(state(), [false, true, 'false']);
+});
+
+test('game (sound): the game runs silently where there is no Web Audio, and the real module is released with the session', async () => {
+  const g = await mountGame({ realSound: true });
+  const sound = g.view.sound;
+  assert.ok(sound && typeof sound.stats === 'function', 'the real module');
+  assert.equal(sound.stats().contextState, 'none', 'Node has no Web Audio: no context was made');
+  g.feed(0, 0);
+  await settle();
+  g.el('handset-up').click();
+  g.view.holdValve('oxygen', 'pointer:1', true);
+  g.view.changeMotion(30);
+  g.feed(30, 1000);
+  g.view.stopMotion();
+  g.view.holdValve('oxygen', 'pointer:1', false);
+  g.view.changeMotion(-18);
+  for (let step = 0; step < 100 && g.view.sim.depth > 0; step++) g.feed(30 + step + 1, 1000 + step * 200);
+  g.view.frame(1000);
+  g.view.frame(1016);
+  g.el('sound').click();
+  g.el('sound-on').checked = false;
+  g.el('sound-on').dispatch('change');
+  assert.equal(sound.stats().errors, 0, 'nothing failed');
+  assert.deepEqual([sound.stats().liveNodes, sound.stats().liveVoices], [0, 0]);
+  assert.equal(sound.snapshot().enabled, false, 'the switch reached the module');
+  g.view.hide();
+  assert.equal(g.view.sound, null);
+  g.clock.advance(1600);
+  assert.equal(sound.disposed, true, 'disposed once the tail has rung out');
+});
+
+// ---- the module on a fake Web Audio (the nodes it makes and releases) -------------------------------------------------------
+
+/** A recording stand-in for an AudioContext: nodes with parameters that accept automation, `drain()` ends every started source. */
+function fakeAudioContext({ failing = false } = {}) {
+  // A parameter records its automation as [call, ...arguments].
+  const param = (value = 0) => {
+    const automated = { value, events: [], cancelScheduledValues() {} };
+    for (const name of ['setValueAtTime', 'linearRampToValueAtTime', 'exponentialRampToValueAtTime', 'setTargetAtTime']) automated[name] = (...args) => { automated.events.push([name, ...args]); };
+    return automated;
+  };
+  const created = [];
+  const buffers = [];
+  const make = (kind, extra = {}) => {
+    if (failing) throw new Error('no audio here');
+    const node = { kind, disconnected: false, connections: [], connect(target) { node.connections.push(target); return target; }, disconnect() { node.disconnected = true; }, ...extra };
+    created.push(node);
+    return node;
+  };
+  const source = (kind, extra) => make(kind, { onended: null, started: false, ended: false, start(at) { this.started = true; this.startAt = at; }, stop(when) { this.stopped = true; this.stopAt = when; }, ...extra });
+  const ctx = {
+    created, buffers, currentTime: 0, sampleRate: 48000, state: 'running', onstatechange: null,
+    createGain: () => make('gain', { gain: param(1) }),
+    createBiquadFilter: () => make('filter', { type: 'lowpass', frequency: param(350), Q: param(1), gain: param(0) }),
+    createOscillator: () => source('osc', { type: 'sine', frequency: param(440), wave: false, setPeriodicWave() { this.wave = true; } }),
+    createBufferSource: () => source('noise', { buffer: null, loop: false, playbackRate: param(1) }),
+    /** "Decodes" a clip: the fake loader hands over `{file}`, the lengths are the real clips' (an opening of 0.18 s, a loop of 0.70 s). */
+    decodeAudioData: async (data) => ({ file: data.file, duration: data.file.includes('onset') ? 0.18 : 0.7 }),
+    createBuffer: (channels, length, rate) => { const buffer = { index: buffers.length, duration: length / rate, copyToChannel() {} }; buffers.push(buffer); return buffer; },
+    createPeriodicWave: () => ({}),
+    createDynamicsCompressor: () => make('compressor', { threshold: param(), knee: param(), ratio: param(), attack: param(), release: param() }),
+    destination: { kind: 'destination', connect() {}, disconnect() {} },
+    /** Every source that was told to stop ends now (a voice whose last source ends is released); the ones still running go on. */
+    drain() { for (const node of [...created]) if (node.started && node.stopped && !node.ended && node.onended) { node.ended = true; node.onended(); } },
+  };
+  return ctx;
+}
+
+function seededRandom(seed = 1) {
+  let state = seed >>> 0;
+  return () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; };
+}
+
+test('game-sound (api): the module has only the sounds the game uses: no splash, no variants', async () => {
+  const module = await import('./game-sound.js');
+  assert.deepEqual(Object.keys(module).sort(), ['GameSound', 'createGameSound']);
+  const sound = module.createGameSound({ context: fakeAudioContext(), random: seededRandom(), autoPump: false });
+  for (const name of ['unlock', 'setEnabled', 'setVolume', 'setUnderwater', 'setPaused', 'setAmbience', 'setMav', 'setVentRate', 'setSwimRate', 'surfaceBreak', 'click', 'vibrate', 'torch', 'powerDown', 'powerUp', 'stats', 'dispose']) {
+    assert.equal(typeof sound[name], 'function', name);
+  }
+  for (const name of ['splash', 'setVariant', 'getVariant', 'getAnalyser']) assert.equal(sound[name], undefined, `${name} is gone`);
+  sound.dispose();
+});
+
+test('game-sound (silence): without Web Audio, or with a context that fails, every call is safe', async () => {
+  const { createGameSound } = await import('./game-sound.js');
+  const none = createGameSound();
+  assert.equal(await none.unlock(), false, 'no AudioContext in Node');
+  none.setAmbience(true);
+  none.setMav('oxygen');
+  none.setSwimRate(12);
+  none.setVentRate(1);
+  none.click('up');
+  none.vibrate(50);
+  none.torch(true);
+  none.surfaceBreak();
+  none.powerUp();
+  none.powerDown();
+  assert.deepEqual([none.stats().errors, none.stats().liveNodes, none.stats().contextState], [0, 0, 'none']);
+  none.dispose();
+
+  const broken = createGameSound({ context: fakeAudioContext({ failing: true }), random: seededRandom(), autoPump: false });
+  assert.doesNotThrow(() => { broken.setAmbience(true); broken.click('up'); broken.setMav('oxygen'); broken.torch(false); broken.advance(5); });
+  assert.ok(broken.stats().errors >= 1, 'a failing context is counted, not thrown');
+  broken.dispose();
+});
+
+test('game-sound (voices): a flood of clicks stays bounded, and every node a sound made is disconnected when it ends', async () => {
+  const { createGameSound } = await import('./game-sound.js');
+  const ctx = fakeAudioContext();
+  const sound = createGameSound({ context: ctx, random: seededRandom(2), autoPump: false });
+  const permanent = ctx.created.length;
+  let most = 0;
+  for (let index = 0; index < 200; index++) {
+    sound.click(['up', 'down', 'confirm'][index % 3]);
+    most = Math.max(most, sound.stats().liveVoices);
+  }
+  assert.ok(most <= 6, `at most six clicks sound at once (${most})`);
+  assert.ok(sound.stats().dropped > 100, 'the rest were dropped, never queued');
+  assert.ok(sound.stats().liveNodes < 6 * 20, 'a bounded number of nodes');
+  ctx.drain();
+  assert.deepEqual([sound.stats().liveNodes, sound.stats().liveVoices], [0, 0], 'all released when their sources ended');
+  assert.ok(ctx.created.slice(permanent).every((node) => node.disconnected), 'and every one of them was disconnected');
+
+  // Every one-shot and every continuous sound, then a dispose: nothing is left.
+  sound.surfaceBreak();
+  sound.vibrate(50);
+  sound.vibrate(50);
+  sound.torch(true);
+  sound.torch(false);
+  sound.powerDown();
+  sound.powerUp();
+  sound.setAmbience(true);
+  sound.setUnderwater(true);
+  sound.setMav('diluent');
+  sound.setSwimRate(20);
+  sound.setVentRate(1);
+  sound.advance(2);
+  assert.ok(sound.stats().liveVoices > 5);
+  sound.dispose();
+  assert.deepEqual([sound.stats().liveNodes, sound.stats().liveVoices, sound.stats().errors], [0, 0, 0]);
+  assert.ok(ctx.created.slice(permanent).every((node) => node.disconnected));
+});
+
+test('game-sound (vibrator): one measured motor spinning up to 150 Hz, at least 120 ms, extended rather than stacked, and never muffled', async () => {
+  const { createGameSound } = await import('./game-sound.js');
+  const ctx = fakeAudioContext();
+  const sound = createGameSound({ context: ctx, random: seededRandom(3), autoPump: false });
+  await sound.unlock();
+  sound.setUnderwater(true, { immediate: true });
+  const since = ctx.created.length;
+  sound.vibrate(50);
+  const made = ctx.created.slice(since);
+  const motors = made.filter((node) => node.kind === 'osc');
+  assert.equal(motors.length, 1, 'a single oscillator, no noise and no filter');
+  assert.equal(made.some((node) => node.kind === 'filter' || node.kind === 'noise'), false);
+  assert.equal(motors[0].wave, true, 'with the measured harmonics');
+  const [spinFrom, spinTo] = motors[0].frequency.events;
+  assert.ok(Math.abs(spinFrom[1] - 135) < 1e-9 && spinTo[0] === 'setTargetAtTime' && spinTo[1] === 150, 'the spin-up from 135 Hz to 150 Hz');
+  assert.ok(made.some((node) => node.connections.includes(sound.graph.master)), 'straight to the master');
+  assert.equal(made.some((node) => node.connections.includes(sound.graph.bus)), false, 'not through the underwater low-pass');
+  const start = motors[0].startAt;
+  assert.ok(Math.abs(motors[0].stopAt - (start + 0.12 + 0.14 + 0.03)) < 1e-9, 'a 50 ms pulse buzzes 120 ms, then spins down');
+  sound.vibrate(250);
+  assert.equal(ctx.created.slice(since).filter((node) => node.kind === 'osc').length, 1, 'a pulse within the buzz extends it');
+  assert.ok(Math.abs(motors[0].stopAt - (start + 0.25 + 0.14 + 0.03)) < 1e-9);
+  ctx.drain();
+  assert.deepEqual([sound.stats().liveVoices, sound.stats().errors], [0, 0]);
+  sound.dispose();
+});
+
+/** The recorded MAV: the clips of a gas, as the sources a held valve made (the onset plays once, the loop loops), in the order they were made. */
+function mavSources(ctx, since = 0) {
+  return ctx.created.slice(since).filter((node) => node.kind === 'noise' && node.buffer && node.buffer.file);
+}
+
+test('game-sound (mav): a held valve plays the recorded opening, then its loop cross-faded in; oxygen at its natural pitch, diluent lower; nothing before the clips are loaded', async () => {
+  const { createGameSound } = await import('./game-sound.js');
+  const ctx = fakeAudioContext();
+  const requested = [];
+  const sound = createGameSound({ context: ctx, random: seededRandom(3), autoPump: false, clipLoader: async (file) => { requested.push(file); return { file }; } });
+
+  // Not loaded yet: the valve is silent, and that is not an error.
+  sound.setMav('oxygen');
+  assert.deepEqual([sound.stats().liveVoices, sound.stats().errors, mavSources(ctx).length], [0, 0, 0]);
+  sound.setMav(null);
+
+  // `unlock` starts the load (once): the four files of the module, fetched by name.
+  await sound.unlock();
+  await sound.loadClips();
+  await sound.loadClips();
+  assert.deepEqual(requested.sort(), ['mav-diluent-loop.wav', 'mav-diluent-onset.wav', 'mav-oxygen-loop.wav', 'mav-oxygen-onset.wav'], 'each file once');
+  assert.equal(sound.stats().errors, 0);
+
+  // Oxygen: the opening at once at its own speed, the loop 30 ms before the opening ends, fading in over 30 ms.
+  ctx.currentTime = 1;
+  const before = ctx.created.length;
+  sound.setMav('oxygen');
+  const [onset, loop] = mavSources(ctx, before);
+  assert.equal(onset.buffer.file, 'mav-oxygen-onset.wav');
+  assert.equal(loop.buffer.file, 'mav-oxygen-loop.wav');
+  assert.deepEqual([onset.loop, loop.loop], [false, true], 'the opening plays once, the loop loops');
+  assert.deepEqual([onset.playbackRate.value, loop.playbackRate.value], [1, 1], 'natural pitch');
+  closeTo(onset.startAt, 1.005, 1e-9, 'the opening starts at the press');
+  closeTo(loop.startAt, 1.005 + 0.18 - 0.03, 1e-9, 'the loop starts 30 ms before the opening ends');
+  const fade = loop.connections[0];
+  assert.deepEqual(fade.gain.events, [['setValueAtTime', 0, loop.startAt], ['linearRampToValueAtTime', 1, loop.startAt + 0.03]], 'and fades in over 30 ms');
+  assert.equal(sound.stats().liveVoices, 1);
+
+  // Letting go: just stop. Both clips fade out linearly over 50 ms from the level they play at, and nothing is scheduled after it.
+  ctx.currentTime = 3;
+  const released = ctx.created.length;
+  sound.setMav(null);
+  assert.equal(ctx.created.length, released, 'no release clip, no tail: nothing new is made');
+  const level = onset.connections[0];
+  assert.equal(level, fade.connections[0], 'both clips go through one level node');
+  assert.equal(level.gain.events.length, 2);
+  assert.deepEqual(level.gain.events[0], ['setValueAtTime', level.gain.value, 3], 'it starts from the level the clips play at');
+  assert.deepEqual(level.gain.events[1].slice(0, 2), ['linearRampToValueAtTime', 0]);
+  closeTo(level.gain.events[1][2], 3.05, 1e-9, 'to silence in 50 ms');
+  closeTo(onset.stopAt, 3.06, 1e-9, 'the opening ends just after the fade');
+  closeTo(loop.stopAt, 3.06, 1e-9, 'and so does the loop');
+  ctx.drain();
+  assert.deepEqual([sound.stats().liveVoices, sound.stats().liveNodes, sound.stats().errors], [0, 0, 0]);
+
+  // Diluent: the other clips, 0.87 times the speed (a little lower); the opening is longer in time, so the loop starts later.
+  ctx.currentTime = 5;
+  const diluent = ctx.created.length;
+  sound.setMav('diluent');
+  const [dOnset, dLoop] = mavSources(ctx, diluent);
+  assert.deepEqual([dOnset.buffer.file, dLoop.buffer.file], ['mav-diluent-onset.wav', 'mav-diluent-loop.wav']);
+  assert.deepEqual([dOnset.playbackRate.value, dLoop.playbackRate.value], [0.87, 0.87]);
+  closeTo(dLoop.startAt, 5.005 + 0.18 / 0.87 - 0.03, 1e-9, 'the opening lasts 0.18 / 0.87 s at that speed');
+
+  // A switch of gas while held: the old voice fades out the same way, the new one starts.
+  ctx.currentTime = 6;
+  const switched = ctx.created.length;
+  sound.setMav('oxygen');
+  closeTo(dOnset.stopAt, 6.06, 1e-9);
+  closeTo(dLoop.stopAt, 6.06, 1e-9);
+  const ramp = dOnset.connections[0].gain.events.at(-1);
+  assert.deepEqual(ramp.slice(0, 2), ['linearRampToValueAtTime', 0]);
+  closeTo(ramp[2], 6.05, 1e-9, 'the old voice fades out over 50 ms');
+  assert.deepEqual(mavSources(ctx, switched).map((node) => node.buffer.file), ['mav-oxygen-onset.wav', 'mav-oxygen-loop.wav']);
+  ctx.drain();
+  assert.equal(sound.stats().liveVoices, 1, 'only the new one is left');
+
+  // A pause stops it the same way, nothing starts while paused, and a valve still held plays again when resumed.
+  ctx.currentTime = 7;
+  sound.setPaused(true);
+  ctx.drain();
+  assert.equal(sound.stats().liveVoices, 0);
+  const paused = ctx.created.length;
+  sound.setMav('diluent');
+  assert.equal(ctx.created.length, paused, 'nothing starts while paused');
+  sound.setPaused(false);
+  assert.equal(sound.stats().liveVoices, 1);
+  assert.equal(mavSources(ctx, paused)[0].buffer.file, 'mav-diluent-onset.wav');
+
+  // A release while the opening is still playing (the loop has not started yet) leaves nothing behind.
+  ctx.currentTime = 8;
+  sound.setMav(null);
+  ctx.drain();
+  assert.deepEqual([sound.stats().liveVoices, sound.stats().liveNodes], [0, 0]);
+  sound.dispose();
+});
+
+test('game-sound (mav): clips that fail to load leave the MAV silent, count one error, are tried again later and never block the rest of the sound', async () => {
+  const { createGameSound } = await import('./game-sound.js');
+  const ctx = fakeAudioContext();
+  let failing = true;
+  const sound = createGameSound({ context: ctx, random: seededRandom(4), autoPump: false, clipLoader: async (file) => { if (failing) throw new Error(`${file}: HTTP 404`); return { file }; } });
+  assert.equal(await sound.loadClips(), false, 'the load fails');
+  assert.equal(sound.stats().errors, 1, 'counted once, however many files were asked for');
+  sound.setMav('oxygen');
+  sound.setMav('diluent');
+  assert.deepEqual([sound.stats().liveVoices, sound.stats().errors, mavSources(ctx).length], [0, 1, 0], 'silent, and holding the valve is no new error');
+  sound.click('up'); // the rest of the sound is unaffected
+  assert.equal(sound.stats().liveVoices, 1);
+  failing = false;
+  assert.equal(await sound.unlock(), true);
+  await sound.loadClips();
+  assert.equal(sound.clips !== null, true, 'tried again, and loaded');
+  assert.equal(sound.stats().liveVoices, 1 + 1, 'a valve held meanwhile starts as soon as the clips arrive');
+  assert.equal(sound.stats().errors, 1);
+  sound.dispose();
+
+  // A decoder that refuses the data, and a loader that never answers (the game is not held up by it).
+  const refusing = fakeAudioContext();
+  refusing.decodeAudioData = async () => { throw new Error('unsupported data'); };
+  const bad = createGameSound({ context: refusing, random: seededRandom(5), autoPump: false, clipLoader: async (file) => ({ file }) });
+  assert.equal(await bad.loadClips(), false);
+  bad.setMav('oxygen');
+  assert.deepEqual([bad.stats().errors, bad.stats().liveVoices], [1, 0]);
+  bad.dispose();
+  const slow = createGameSound({ context: fakeAudioContext(), random: seededRandom(6), autoPump: false, clipLoader: () => new Promise(() => {}) });
+  slow.loadClips();
+  slow.setMav('oxygen');
+  slow.click('confirm');
+  assert.deepEqual([slow.stats().errors, slow.stats().liveVoices], [0, 1], 'still loading: the MAV is silent, the click is not');
+  slow.dispose();
+});
+
+test('game-sound (continuous): the pause silences the ambience, the vent and the swim; the vent density follows the rate; the entry only muffles and a surface break opens', async () => {
+  const { createGameSound } = await import('./game-sound.js');
+  const bubbles = async (rate) => {
+    const ctx = fakeAudioContext();
+    const sound = createGameSound({ context: ctx, random: seededRandom(5), autoPump: false });
+    sound.setUnderwater(true);
+    sound.setVentRate(rate);
+    let blubs = 0;
+    for (let time = 0; time < 10; time += 0.05) {
+      ctx.currentTime = time;
+      const before = ctx.created.filter((node) => node.wave).length;
+      sound.advance(time + 0.2);
+      blubs += ctx.created.filter((node) => node.wave).length - before;
+      ctx.drain();
+    }
+    assert.equal(sound.stats().errors, 0);
+    sound.dispose();
+    return blubs;
+  };
+  const faint = await bubbles(0.1);
+  const middle = await bubbles(0.5);
+  const full = await bubbles(3);
+  assert.ok(faint > 5 && faint < middle && middle < full, `the blubs follow the vent rate (${faint}, ${middle}, ${full})`);
+  assert.equal(await bubbles(0), 0, 'a closed vent is silent');
+
+  const ctx = fakeAudioContext();
+  const sound = createGameSound({ context: ctx, random: seededRandom(6), autoPump: false });
+  sound.setAmbience(true);
+  sound.setSwimRate(20);
+  sound.setVentRate(1);
+  sound.advance(1);
+  ctx.drain();
+  const playing = sound.stats().liveVoices;
+  assert.ok(playing >= 2, `the surface ambience and the swim (${playing})`);
+  sound.setPaused(true);
+  ctx.drain();
+  assert.equal(sound.stats().liveVoices, 0, 'paused: nothing sounds');
+  sound.advance(2);
+  assert.equal(sound.stats().liveVoices, 0, 'and the scheduler plans nothing');
+  sound.setPaused(false);
+  sound.advance(3);
+  assert.ok(sound.stats().liveVoices >= 2, 'resumed');
+
+  // The water: the entry only muffles (no sound of its own: only the ambience changes), the surface break opens again.
+  sound.setUnderwater(true);
+  assert.equal(sound.snapshot().underwater, true);
+  assert.ok(Object.keys(sound.stats().kinds).every((kind) => kind.startsWith('ambience') || ['bloop', 'creak', 'knock', 'swim', 'mav'].includes(kind)), `no one-shot for the entry (${Object.keys(sound.stats().kinds)})`);
+  sound.surfaceBreak();
+  assert.equal(sound.snapshot().underwater, false, 'the surface break opens the muffling');
+  sound.dispose();
 });

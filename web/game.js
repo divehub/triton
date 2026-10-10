@@ -19,6 +19,7 @@ import {
   clockText, durationText, estimateVirtual, gameInputs, gaugeGradient, indicatorView, loadCellFixture, runState, speedLabel, stopAlerts,
   worldGradient,
 } from './game-logic.js';
+import { createGameSound } from './game-sound.js';
 import { DIVER_X, MAX_FRAME_STEP_S, WaterScene } from './game-water.js';
 import { handsetKeyAction, isHandsetArrow } from './keys.js';
 import { LcdView } from './lcd.js';
@@ -58,6 +59,16 @@ const QUIT_TITLE = 'The dive computer is still on';
 const QUIT_MESSAGE = 'Turn it off on the device first, then quit. Or force a shutdown: the session closes now, and anything the device has not saved yet may be lost.';
 // The controls guide opens by itself on the first game start in a browser; this page setting (localStorage, through the store) remembers it.
 const HELP_SEEN_KEY = 'game-help-seen';
+// Sound (game-sound.js, synthesized): the header control's two settings are page settings too (on or off, and the volume in percent).
+const SOUND_ON_KEY = 'game-sound-on';
+const SOUND_VOLUME_KEY = 'game-sound-volume';
+const SOUND_DEFAULT_VOLUME = 60;
+const SOUND_TAIL_MS = 1500; // a closed session lets its last sound (the power-down tone) ring out before the sound is disposed
+const VIBRATE_PULSE_MS = 50; // one firmware pulse; the sound makes at least 120 ms of it
+const VIBRATE_HOLD_MS = 250; // a vibrator held on keeps its buzz going (each state extends it)
+const SWIM_SOUND_STEP = 0.5; // m/min: the swim sound hears the speed in steps this big
+const VENT_SOUND_STEP = 0.05; // SL/s: and the vent rate in steps this big (anything under half a step is silence)
+const VENT_SOUND_MIN_DEPTH_M = 0.15; // the water scene's own limit: shallower than this its bubbles vanish, and the vent is not heard
 
 function svgNode(tag, attributes, content) {
   const node = document.createElementNS(SVG_NS, tag);
@@ -127,15 +138,19 @@ export class GameView {
    * @param {import('./worker-client.js').WorkerClient} client
    * @param {{quit: () => (void|Promise<void>)}} hooks `quit` closes the session (profile saved) and leaves the game
    * @param {{timers?: {setTimer: Function, clearTimer: Function}, now?: () => number, random?: () => number, store?: object,
-   *   frames?: ({request: Function, cancel: Function}|null), motion?: ({matches: boolean}|null)}} [options]
-   *   the tests inject timers, a clock, a random source, the settings store, the animation frames (`null` is none) and the
-   *   reduced-motion media query (`null` is none)
+   *   frames?: ({request: Function, cancel: Function}|null), motion?: ({matches: boolean}|null), createSound?: () => object}} [options]
+   *   the tests inject timers, a clock, a random source, the settings store, the animation frames (`null` is none), the
+   *   reduced-motion media query (`null` is none) and the sound (an object with the calls of game-sound.js)
    */
-  constructor(client, hooks, { timers, now, random, store, frames, motion } = {}) {
+  constructor(client, hooks, { timers, now, random, store, frames, motion, createSound } = {}) {
     this.client = client;
     this.hooks = hooks;
     this.root = byId('screen-game');
     this.store = store || prefs;
+    this.createSound = createSound || createGameSound;
+    this.sound = null; // from Start game to Quit (see `unlockSound`); the page without Web Audio runs silently
+    this.soundSettings = this.loadSoundSettings();
+    this.soundOpen = false; // the sound popover is open: like the controls guide, it holds the keyboard
     this.random = random || Math.random;
     this.now = now || (() => performance.now());
     this.setTimer = (timers && timers.setTimer) || ((fn, ms) => setTimeout(fn, ms));
@@ -242,6 +257,8 @@ export class GameView {
     this.actionError = '';
     this.inputsError = '';
     this.connectionError = '';
+    // What the sound was last told (it is told only what changed): on the boat, nothing swimming, venting or held.
+    this.soundMemo = { wet: false, below: false, paused: false, swim: 0, vent: 0, mav: null, torch: false, buzzing: false };
   }
 
   /**
@@ -274,6 +291,7 @@ export class GameView {
     this.renderFixture();
     // The worker keeps the console text back unless the console is on screen; the game never shows it.
     this.client.send('ui', { uartOpen: false });
+    this.startSoundSession();
     this.render();
     this.startWater();
     this.showHelpFirstTime();
@@ -281,7 +299,8 @@ export class GameView {
 
   hide() {
     if (this.quitDialog) this.quitDialog.close('hidden'); // the session is gone: nothing is left to confirm
-    this.closeHelp();
+    this.closePopovers();
+    this.endSound();
     this.stopWater();
     this.stopMotion({ settle: false });
     this.clock.releaseValves({ silent: true });
@@ -316,7 +335,7 @@ export class GameView {
     this.stopMotion();
     this.releaseValves();
     this.closeMenu();
-    this.closeHelp();
+    this.closePopovers();
     if (this.deviceIsOn() && !(await this.confirmForceShutdown())) return;
     await this.leave();
   }
@@ -344,6 +363,7 @@ export class GameView {
     this.closing = true;
     this.stopMotion();
     this.releaseValves();
+    this.sfx('powerDown'); // the session is closing: the power-down tone rings out while the screen changes (`endSound`)
     $('quit').disabled = true;
     try {
       await this.hooks.quit();
@@ -586,6 +606,7 @@ export class GameView {
     this.closeMenu();
     $('device').focus({ preventScroll: true });
     if (source) this.feedback(source);
+    this.sfx('click', action); // every press, whichever way it came: the bezel, a tap on the display or the keyboard
     return this.queue.send(action);
   }
 
@@ -622,7 +643,7 @@ export class GameView {
     this.stopMotion();
     this.releaseValves();
     this.closeMenu();
-    this.closeHelp();
+    this.closePopovers();
     this.modalOpen = true;
     let confirmed = false;
     try {
@@ -645,6 +666,7 @@ export class GameView {
     for (const item of this.queue.items.splice(0)) item.resolve(false); // nothing queued reaches the discarded session
     this.replay.clear();
     this.closeMenu();
+    this.soundResetting(); // the old session ends with a power-down tone; the new one starts with a power-up (`show`)
     this.render();
     let closed = false;
     try {
@@ -714,6 +736,7 @@ export class GameView {
 
   openHelp() {
     if (!this.active || this.helpOpen || this.modalOpen || this.resetting) return;
+    this.closeSound();
     this.stopMotion();
     this.releaseValves();
     this.closeMenu();
@@ -756,21 +779,296 @@ export class GameView {
     }
   }
 
+  // ---- the sound control -----------------------------------------------------------------------------------------
+  //
+  // A speaker button just left of the "?" opens a small popover under it, in the look and with the rules of the controls guide: not a
+  // modal, opening it lets go of what is held, Escape, the button, a click outside and a focus elsewhere close it, and while it is
+  // open the keyboard is not the game's. It holds the two settings of the sound: on or off, and the volume.
+
+  popoverOpen() {
+    return this.helpOpen || this.soundOpen;
+  }
+
+  closePopovers() {
+    this.closeHelp();
+    this.closeSound();
+  }
+
+  insideSound(target) {
+    return !!(target && typeof target.closest === 'function' && target.closest('#game-sound-control'));
+  }
+
+  openSound() {
+    if (!this.active || this.soundOpen || this.modalOpen || this.resetting) return;
+    this.closeHelp();
+    this.stopMotion();
+    this.releaseValves();
+    this.closeMenu();
+    this.soundOpen = true;
+    this.paintSoundControl();
+    $('sound-panel').hidden = false;
+    $('sound').setAttribute('aria-expanded', 'true');
+  }
+
+  closeSound({ focus = false } = {}) {
+    if (!this.soundOpen) return;
+    this.soundOpen = false;
+    $('sound-panel').hidden = true;
+    $('sound').setAttribute('aria-expanded', 'false');
+    if (focus) $('sound').focus({ preventScroll: true });
+  }
+
+  toggleSound() {
+    if (this.soundOpen) this.closeSound({ focus: true });
+    else this.openSound();
+  }
+
+  /**
+   * A key while the popover is open: Escape closes it; the arrow keys and Space are inert in the game (no handset press, no pause, no
+   * page scroll). The slider keeps its own arrow keys, and on a button or the switch Space stays that control's own key.
+   */
+  soundKeydown(event) {
+    const target = event.target;
+    const within = (selector) => !!(target && typeof target.closest === 'function' && target.closest(selector));
+    if (event.code === 'Escape') {
+      event.preventDefault();
+      this.closeSound({ focus: true });
+    } else if (isHandsetArrow(event)) {
+      if (!within('#game-sound-panel input')) event.preventDefault();
+    } else if (event.code === 'Space' && !within('button,input')) {
+      event.preventDefault();
+    }
+  }
+
+  /** The settings as the page remembers them: on by default, at 60 %. A store that fails leaves the defaults. */
+  loadSoundSettings() {
+    let on = true;
+    let volume = SOUND_DEFAULT_VOLUME;
+    try {
+      on = this.store.get(SOUND_ON_KEY, '1') !== '0';
+      const stored = String(this.store.get(SOUND_VOLUME_KEY, '')).trim();
+      if (stored !== '' && Number.isFinite(Number(stored))) volume = Math.min(100, Math.max(0, Math.round(Number(stored))));
+    } catch (_) { /* no readable settings: the defaults */ }
+    return { on, volume };
+  }
+
+  saveSoundSetting(key, value) {
+    try {
+      this.store.set(key, value);
+    } catch (_) { /* the setting is a convenience: it applies for this page */ }
+  }
+
+  setSoundOn(on) {
+    this.soundSettings.on = !!on;
+    this.saveSoundSetting(SOUND_ON_KEY, on ? '1' : '0');
+    this.sfx('setEnabled', !!on);
+    if (on) this.unlockSound(); // turning it on is a gesture: a context the browser suspended may start now
+    this.paintSoundControl();
+  }
+
+  setSoundVolume(percent) {
+    const volume = Number.isFinite(percent) ? Math.min(100, Math.max(0, Math.round(percent))) : SOUND_DEFAULT_VOLUME;
+    this.soundSettings.volume = volume;
+    this.saveSoundSetting(SOUND_VOLUME_KEY, String(volume));
+    this.sfx('setVolume', volume / 100);
+    this.paintSoundControl();
+  }
+
+  /** The button shows a muted speaker while the sound is off or at 0 %; the panel shows the settings. */
+  paintSoundControl() {
+    const { on, volume } = this.soundSettings;
+    const muted = !on || volume === 0;
+    $('sound-on').checked = on;
+    if ($('sound-volume').value !== String(volume)) $('sound-volume').value = String(volume);
+    $('sound-volume').disabled = !on;
+    $('sound-volume').setAttribute('aria-valuetext', `${volume} percent`);
+    setText($('sound-volume-value'), `${volume}%`);
+    $('sound').classList.toggle('muted', muted);
+    $('sound').title = on ? 'Sound' : 'Sound is off';
+    $('sound').querySelector('use').setAttribute('href', muted ? '#game-i-sound-off' : '#game-i-sound');
+  }
+
+  // ---- sound -------------------------------------------------------------------------------------------------------
+  //
+  // The game tells game-sound.js what happens (the module synthesizes everything; nothing here reads it back): the entry and the
+  // surface (the underwater muffling and the ambience), the swim speed, the vented gas, a held valve, handset presses, the vibrator
+  // lighting, the torch, the pause, a session starting (power up), Reset all and Quit (power down). Every call goes through `sfx`,
+  // which ignores a sound that is missing or fails: the game runs silently where there is no Web Audio (the Node tests).
+
+  /** Creates the sound the first time it is needed and gives it the settings. */
+  ensureSound() {
+    if (this.sound) return this.sound;
+    try {
+      this.sound = this.createSound();
+    } catch (_) {
+      this.sound = null;
+    }
+    if (this.sound) {
+      this.sfx('setVolume', this.soundSettings.volume / 100);
+      this.sfx('setEnabled', this.soundSettings.on);
+    }
+    return this.sound;
+  }
+
+  /** Start game: the sound is created and unlocked inside the click (a browser starts audio only from a user gesture). */
+  unlockSound() {
+    const sound = this.ensureSound();
+    if (!sound || typeof sound.unlock !== 'function') return;
+    try {
+      Promise.resolve(sound.unlock()).catch(() => {});
+    } catch (_) { /* silent */ }
+  }
+
+  /** One call to the sound, or nothing. */
+  sfx(name, ...args) {
+    const sound = this.sound;
+    if (!sound || typeof sound[name] !== 'function') return;
+    try {
+      sound[name](...args);
+    } catch (_) { /* a sound never breaks the game */ }
+  }
+
+  /** A session starts (also after Reset all): the boat with its ambience, nothing held, the clock's pause, and the power-up. */
+  startSoundSession() {
+    this.unlockSound();
+    const memo = this.soundMemo;
+    memo.paused = this.clock.speed === 0 || !!this.connectionError;
+    memo.torch = false; // a session starts at the surface without the torch (Reset all included): the torch is told only when it changes
+    this.sfx('setMav', null);
+    this.sfx('setSwimRate', 0);
+    this.sfx('setVentRate', 0);
+    this.sfx('setUnderwater', false, { immediate: true });
+    this.sfx('setPaused', memo.paused);
+    this.sfx('setAmbience', true);
+    this.sfx('powerUp');
+    this.paintSoundControl();
+  }
+
+  /** Reset all: the continuous sounds stop, the old session ends with the power-down tone. */
+  soundResetting() {
+    this.sfx('setMav', null);
+    this.sfx('setSwimRate', 0);
+    this.sfx('setVentRate', 0);
+    this.sfx('setAmbience', false);
+    this.sfx('powerDown');
+  }
+
+  /** The session is over (Quit): everything stops, the sound is disposed once the last tone has rung out. */
+  endSound() {
+    const sound = this.sound;
+    this.sound = null;
+    if (!sound) return;
+    for (const [name, value] of [['setMav', null], ['setSwimRate', 0], ['setVentRate', 0], ['setAmbience', false]]) {
+      try {
+        if (typeof sound[name] === 'function') sound[name](value);
+      } catch (_) { /* silent */ }
+    }
+    this.setTimer(() => {
+      try {
+        if (typeof sound.dispose === 'function') sound.dispose();
+      } catch (_) { /* silent */ }
+    }, SOUND_TAIL_MS);
+  }
+
+  /**
+   * The dive as the sound hears it, from the simulation: underwater from the moment the diver leaves the surface (a descent is
+   * commanded or the depth is above 0 m; on the boat it is the entry), and back at the surface only when the depth is 0 again,
+   * which, from below, is the surface break. The swim sound follows the speed (silence when holding depth), and a held valve is a
+   * MAV of that gas. Called after every render and every water frame; the sound is told only what changed.
+   */
+  syncSound() {
+    if (!this.sound || !this.active || this.resetting) return;
+    const memo = this.soundMemo;
+    const sim = this.sim;
+    const paused = this.clock.speed === 0 || !!this.connectionError;
+    if (paused !== memo.paused) {
+      memo.paused = paused;
+      this.sfx('setPaused', paused);
+    }
+    const wet = sim.depth > 0 || sim.direction > 0;
+    if (sim.depth > 0) memo.below = true;
+    if (wet !== memo.wet) {
+      memo.wet = wet;
+      if (wet) {
+        this.sfx('setUnderwater', true);
+      } else if (memo.below) {
+        this.sfx('surfaceBreak'); // reaching 0 m from below: a soft splash, and the bus opens
+      } else {
+        this.sfx('setUnderwater', false); // a descent that never left the surface
+      }
+      if (!wet) memo.below = false;
+    }
+    const swim = paused || sim.direction === 0 ? 0 : Math.round(sim.rate / SWIM_SOUND_STEP) * SWIM_SOUND_STEP;
+    if (swim !== memo.swim) {
+      memo.swim = swim;
+      this.sfx('setSwimRate', swim);
+    }
+    // A valve is a MAV from the press (before the 1x override is confirmed): the sound answers the hand, not the emulator.
+    const held = (gas) => !paused && this.clock.held[gas].size > 0;
+    const mav = held('oxygen') ? 'oxygen' : held('diluent') ? 'diluent' : null;
+    if (mav !== memo.mav) {
+      memo.mav = mav;
+      this.sfx('setMav', mav);
+    }
+  }
+
+  /**
+   * What the water scene knows after a frame: the recent vent rate (the scene's own smoothing of the gas `takeVented()` gave it, so
+   * the bubbles drawn and the bubbles heard come from the same gas) and the torch (on at 40 m, off above 39 m).
+   */
+  syncSoundWater() {
+    if (!this.sound || !this.active || this.resetting) return;
+    const memo = this.soundMemo;
+    const paused = this.clock.speed === 0;
+    // Like the bubbles, the vent is heard only in the water: on the boat and at the surface the loop's gas goes nowhere to be seen.
+    const venting = !paused && this.scene.depth > VENT_SOUND_MIN_DEPTH_M;
+    const rate = venting ? Math.round(this.scene.ventLevel / VENT_SOUND_STEP) * VENT_SOUND_STEP : 0;
+    if (rate !== memo.vent) {
+      memo.vent = rate;
+      this.sfx('setVentRate', rate);
+    }
+    const torch = !!this.scene.view.torch.on;
+    if (torch !== memo.torch) {
+      memo.torch = torch;
+      this.sfx('torch', torch);
+    }
+    this.syncSound();
+  }
+
+  /** The vibrator indicator lit: one buzz per lit pulse (the replay's flashes are the pulses), and a held-on vibrator keeps buzzing. */
+  buzzFrom(view) {
+    const memo = this.soundMemo;
+    const lit = !!view.lit;
+    const rising = lit && !memo.buzzing;
+    memo.buzzing = lit;
+    if (rising) this.sfx('vibrate', VIBRATE_PULSE_MS);
+    else if (lit && view.state === 'on') this.sfx('vibrate', VIBRATE_HOLD_MS);
+  }
+
   // ---- wiring ----------------------------------------------------------------------------------------------------
 
   wire() {
     $('reset').addEventListener('click', () => this.resetAll());
     $('quit').addEventListener('click', () => this.quit());
     $('help').addEventListener('click', () => this.toggleHelp());
+    $('sound').addEventListener('click', () => this.toggleSound());
+    $('sound-on').addEventListener('change', (event) => this.setSoundOn(!!event.target.checked));
+    $('sound-volume').addEventListener('input', (event) => this.setSoundVolume(Number(event.target.value)));
+    // Start game is a click on the start screen's button: the sound is created and unlocked in that gesture (a later `show` repeats
+    // it, which needs none once the page has had one).
+    const startGame = document.getElementById('start-game');
+    if (startGame) startGame.addEventListener('click', () => this.unlockSound());
     document.addEventListener('click', (event) => {
-      if (!this.helpOpen || this.insideHelp(event.target)) return;
-      this.closeHelp();
+      const open = this.helpOpen ? 'help' : this.soundOpen ? 'sound' : null;
+      if (!open || (open === 'help' ? this.insideHelp(event.target) : this.insideSound(event.target))) return;
+      this.closePopovers();
       // A click on nothing leaves the focus nowhere: it goes back to the button. A click on a control keeps the control's focus.
       const focused = document.activeElement;
-      if (!focused || focused === document.body) $('help').focus({ preventScroll: true });
+      if (!focused || focused === document.body) $(open).focus({ preventScroll: true });
     });
     document.addEventListener('focusin', (event) => {
       if (this.helpOpen && !this.insideHelp(event.target)) this.closeHelp();
+      if (this.soundOpen && !this.insideSound(event.target)) this.closeSound();
     });
     $('alerts').addEventListener('click', (event) => {
       const button = event.target && typeof event.target.closest === 'function' ? event.target.closest('button') : null;
@@ -803,7 +1101,7 @@ export class GameView {
     // Enter confirms only with the handset focused (elsewhere it activates the focused control); the arrow keys press Up
     // and Down from anywhere in the game (the document listener below).
     $('device').addEventListener('keydown', (event) => {
-      if (this.helpOpen || handsetKeyAction(event) !== 'confirm') return; // the controls guide has the keyboard
+      if (this.popoverOpen() || handsetKeyAction(event) !== 'confirm') return; // the controls guide and the sound popover have the keyboard
       event.preventDefault();
       this.pressHandset('confirm');
     });
@@ -875,7 +1173,7 @@ export class GameView {
       button.addEventListener('lostpointercapture', release);
       // Space / Enter keep a focused valve usable without a pointer.
       button.addEventListener('keydown', (event) => {
-        if ((event.code === 'Space' || event.code === 'Enter') && this.clock.speed !== 0 && !this.helpOpen) {
+        if ((event.code === 'Space' || event.code === 'Enter') && this.clock.speed !== 0 && !this.popoverOpen()) {
           event.preventDefault();
           this.holdValve(gas, `focused-key:${event.code}`, true);
         }
@@ -922,6 +1220,10 @@ export class GameView {
       if (!this.active || this.modalOpen || this.resetting) return; // the Reset all confirmation has the keyboard
       if (this.helpOpen) {
         this.helpKeydown(event); // so does the controls guide
+        return;
+      }
+      if (this.soundOpen) {
+        this.soundKeydown(event); // and the sound popover
         return;
       }
       if (isHandsetArrow(event)) {
@@ -1122,6 +1424,7 @@ export class GameView {
     $('speedometer').classList.toggle('descending', sim.direction > 0);
     $('speedometer').setAttribute('aria-valuenow', signedRate.toFixed(1));
     $('speedometer').setAttribute('aria-valuetext', sim.direction === 0 ? 'Holding depth' : `${sim.direction > 0 ? 'Descending' : 'Ascending'} at ${sim.rate.toFixed(1)} meters per minute`);
+    this.syncSound(); // every change of the motion, the valves and the clock passes here
   }
 
   // ---- the water view (DESIGN 22) --------------------------------------------------------------------------------
@@ -1266,6 +1569,7 @@ export class GameView {
     this.scene.step({
       dt: paused ? 0 : dt, depth: this.shownDepth(), direction: this.sim.direction, vented: paused ? 0 : vented, layout: this.layout, timeScale,
     });
+    this.syncSoundWater(); // the one consumer of the vented gas feeds the bubbles and, through the scene's vent rate, the sound
     this.paintWater();
   }
 
@@ -1415,11 +1719,13 @@ export class GameView {
     node.classList.toggle('unknown', view.state === 'unknown');
     node.setAttribute('aria-label', `${INDICATOR_NAMES[slot]}: ${view.text}`);
     node.title = `${INDICATOR_NAMES[slot]} · ${view.title}`;
+    if (slot === 'vibrator') this.buzzFrom(view); // the sound follows the indicator: a buzz for each lit pulse
   }
 
   resetIndicator(id) {
     const slot = GAME_INDICATORS[id];
     if (!slot) return;
+    if (slot === 'vibrator') this.soundMemo.buzzing = false;
     const node = $(`signal-${slot}`);
     node.classList.remove('active');
     node.classList.add('unknown');

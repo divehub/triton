@@ -6,8 +6,9 @@
     python3 deploy/build_site.py --out DIR           # another directory below target/
     python3 deploy/build_site.py --firmware-proxy-url https://<host>/api/firmware
 
-The result is `target/pages-site/` (ignored by Git): the page and its modules, the engine module `pkg/ngc_wasm.wasm`
-and a generated `config.js`, and nothing else: no tests, `serve.py`, `build.py`, README files, scratch files, source
+The result is `target/pages-site/` (ignored by Git): the page and its modules, the four recorded MAV clips of the dive game
+(`mav-*.wav`, RIFF/WAVE only, see licenses/README.md), the engine module `pkg/ngc_wasm.wasm` and a generated `config.js`,
+and nothing else: no tests, `serve.py`, `build.py`, README files, scratch files, source
 maps, proxy sources or firmware. Every file must be on the allowlist below, every relative import must resolve inside
 the result, and nothing may look like firmware (an SREC / binary extension, or content that starts with S0 or holds
 S-record lines). The script prints each file with its size and SHA-256 and exits non-zero on any violation.
@@ -45,9 +46,14 @@ DEFAULT_OUT = ROOT / "target" / "pages-site"
 # are published in a generated / adapted form.
 SITE_FILES = (
     "index.html", "style.css", "game.css", "config.js", "app.js", "conditions.js", "deco.js", "dom.js", "emulator.js", "engine.js",
-    "entry.js", "faults.js", "firmware-url.js", "game.js", "game-gas.js", "game-logic.js", "game-water.js", "keys.js", "lcd.js", "releases.js", "replay.js",
+    "entry.js", "faults.js", "firmware-url.js", "game.js", "game-gas.js", "game-logic.js", "game-sound.js", "game-water.js", "keys.js", "lcd.js", "releases.js", "replay.js",
     "runtime.js", "sensors.js", "storage.js", "worker-client.js", "worker.js", "zip.js",
+    "mav-oxygen-onset.wav", "mav-oxygen-loop.wav", "mav-diluent-onset.wav", "mav-diluent-loop.wav",
 )
+# The only audio the site carries: four short recorded clips of the dive game's MAV sound (see licenses/README.md). A WAV is allowed
+# for these names only, and each must be a RIFF/WAVE file of at most MAX_AUDIO_BYTES.
+AUDIO_FILES = tuple(name for name in SITE_FILES if name.endswith(".wav"))
+MAX_AUDIO_BYTES = 256 * 1024
 ENGINE_FILE = "pkg/ngc_wasm.wasm"
 PROXY_PATH = "/api/firmware"
 
@@ -79,6 +85,13 @@ def looks_like_firmware(name, data):
         return f"{name}: contains S-record lines"
     if suffix == ".wasm" and not data.startswith(WASM_MAGIC):
         return f"{name}: not a WebAssembly module"
+    if suffix == ".wav":
+        if name not in AUDIO_FILES:
+            return f"{name}: audio is published only for the MAV clips ({', '.join(AUDIO_FILES)})"
+        if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+            return f"{name}: not a RIFF/WAVE file"
+        if len(data) > MAX_AUDIO_BYTES:
+            return f"{name}: {len(data)} bytes is larger than the {MAX_AUDIO_BYTES} byte limit for audio clips"
     return None
 
 
@@ -209,6 +222,9 @@ def plan_files(web_dir=WEB, proxy_url=None):
     if unlisted:
         raise SiteError(f"web/ has JavaScript modules that are not on the allowlist (add them to SITE_FILES in build_site.py "
                         f"if the page needs them): {', '.join(unlisted)}")
+    unlisted_audio = sorted(path.name for path in web_dir.glob("*.wav") if path.name not in AUDIO_FILES)
+    if unlisted_audio:
+        raise SiteError(f"web/ has audio files that are not on the allowlist (only the MAV clips are published): {', '.join(unlisted_audio)}")
     plan = []
     for name in (*SITE_FILES, ENGINE_FILE):
         source = web_dir / name
