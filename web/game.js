@@ -52,6 +52,10 @@ const SWIM_TAP_GAP_MS = 300;
 // Reset all (DESIGN 23): the confirmation says what is erased.
 const RESET_ALL_TITLE = 'Reset all?';
 const RESET_ALL_MESSAGE = "This erases the dive computer's memory: settings, calibration, logbook and clock. Both boards restart as new, and the diver returns to the boat.";
+// Quit treats the device as a black box: it asks first only while the engine does not report the device in standby (a hardware
+// state, the same for original and custom builds), and never relies on the firmware's own power-off.
+const QUIT_TITLE = 'The dive computer is still on';
+const QUIT_MESSAGE = 'Turn it off on the device first, then quit. Or force a shutdown: the session closes now, and anything the device has not saved yet may be lost.';
 
 function svgNode(tag, attributes, content) {
   const node = document.createElementNS(SVG_NS, tag);
@@ -75,6 +79,45 @@ function element(tag, attributes = {}, ...children) {
   }
   node.append(...children);
   return node;
+}
+
+/**
+ * The Quit confirmation. It has the markup and the style of the page's `confirmDialog` (the Reset all confirmation), but the game
+ * can also close it from outside: when the device turns itself off while it is open. `answer` resolves to 'back' (the default and
+ * the Escape key), 'force', or the reason given to `close`. Without <dialog> support it asks with `window.confirm`, as
+ * `confirmDialog` does (a blocking prompt cannot be closed from outside).
+ */
+function openQuitDialog() {
+  if (typeof HTMLDialogElement === 'undefined' || typeof HTMLDialogElement.prototype.showModal !== 'function') {
+    return { answer: Promise.resolve(window.confirm(`${QUIT_TITLE}\n\n${QUIT_MESSAGE}`) ? 'force' : 'back'), close() {} };
+  }
+  let settle;
+  const answer = new Promise((resolve) => { settle = resolve; });
+  let open = true;
+  const dialog = element('dialog', { class: 'dialog', 'aria-labelledby': 'dialog-title' });
+  const close = (reason) => {
+    if (!open) return;
+    open = false;
+    dialog.close();
+    dialog.remove();
+    settle(reason);
+  };
+  const back = element('button', { type: 'button', autofocus: '' }, 'Back to the dive'); // the safe default has the focus
+  const force = element('button', { type: 'button', class: 'danger' }, 'Force shutdown');
+  back.addEventListener('click', () => close('back'));
+  force.addEventListener('click', () => close('force'));
+  dialog.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    close('back');
+  });
+  dialog.append(
+    element('h2', { id: 'dialog-title' }, QUIT_TITLE),
+    element('p', {}, QUIT_MESSAGE),
+    element('div', { class: 'actions-row' }, back, force),
+  );
+  document.body.append(dialog);
+  dialog.showModal();
+  return { answer, close };
 }
 
 export class GameView {
@@ -118,7 +161,8 @@ export class GameView {
     this.active = false;
     this.closing = false;
     this.resetting = false; // Reset all is under way: the old session is being discarded, so nothing is sent to it
-    this.modalOpen = false; // the Reset all confirmation is open: the keyboard belongs to it
+    this.modalOpen = false; // a confirmation (Reset all or Quit) is open: the keyboard belongs to it
+    this.quitDialog = null; // the open Quit confirmation: `close(reason)` ends it from outside (the device turned off, the game ended)
     this.notices = [];
     this.sender = null;
     this.pressTimers = new Map();
@@ -231,6 +275,7 @@ export class GameView {
   }
 
   hide() {
+    if (this.quitDialog) this.quitDialog.close('hidden'); // the session is gone: nothing is left to confirm
     this.stopWater();
     this.stopMotion({ settle: false });
     this.clock.releaseValves({ silent: true });
@@ -254,8 +299,41 @@ export class GameView {
     return this.release.custom ? 'Custom build' : this.release.name;
   }
 
+  /**
+   * Quit: the session closes (the profile is saved) and the page returns to the start screen. The dive computer is a black box
+   * here: when the engine reports it in standby, Quit goes ahead at once; while it is on, the player is asked to turn it off on
+   * the device first or to force the shutdown. A device that turns itself off while the question is open ends it (Quit goes on).
+   * With no live session to switch off (no state yet, or a lost engine) there is nothing to ask either.
+   */
   async quit() {
-    if (this.closing || this.resetting) return;
+    if (this.closing || this.resetting || this.modalOpen) return;
+    this.stopMotion();
+    this.releaseValves();
+    this.closeMenu();
+    if (this.deviceIsOn() && !(await this.confirmForceShutdown())) return;
+    await this.leave();
+  }
+
+  /** The device counts as on unless the engine reports it in standby. */
+  deviceIsOn() {
+    return !!this.state && !this.state.standby && !this.connectionError;
+  }
+
+  /** Asks whether to force the shutdown; resolves true to quit (forced, or the device turned itself off), false to stay in the dive. */
+  async confirmForceShutdown() {
+    this.modalOpen = true;
+    const dialog = openQuitDialog();
+    this.quitDialog = dialog;
+    try {
+      const answer = await dialog.answer;
+      return answer === 'force' || answer === 'standby';
+    } finally {
+      this.modalOpen = false;
+      this.quitDialog = null;
+    }
+  }
+
+  async leave() {
     this.closing = true;
     this.stopMotion();
     this.releaseValves();
@@ -319,6 +397,8 @@ export class GameView {
     this.state = state;
     this.host = host;
     this.connectionError = '';
+    // The device turned itself off while the Quit confirmation was open: there is nothing left to force, so Quit goes on.
+    if (this.quitDialog && state.standby) this.quitDialog.close('standby');
     if (rebased) {
       this.sim.rebase(virtual);
       this.sender.invalidate();
@@ -531,7 +611,7 @@ export class GameView {
    * local time, the diver is on the boat with a fresh Air loop at 1x.
    */
   async resetAll() {
-    if (!this.active || this.resetting || this.closing) return;
+    if (!this.active || this.resetting || this.closing || this.modalOpen) return;
     this.stopMotion();
     this.releaseValves();
     this.closeMenu();
@@ -608,6 +688,7 @@ export class GameView {
       const kind = button.dataset.alert;
       if (kind === 'wake') this.wakeSystem();
       else if (kind === 'resume') this.resumeEngine();
+      else if (kind === 'quit') this.quit();
       else if (kind === 'dismiss') {
         const what = button.dataset.dismiss;
         if (what === 'action') this.actionError = '';
@@ -1205,6 +1286,7 @@ export class GameView {
       const actions = element('span', { class: 'game-alert-actions' });
       if (item.action === 'wake') actions.append(element('button', { type: 'button', 'data-alert': 'wake' }, 'Wake system'));
       if (item.action === 'resume') actions.append(element('button', { type: 'button', 'data-alert': 'resume' }, 'Resume'));
+      if (item.quit) actions.append(element('button', { type: 'button', 'data-alert': 'quit', title: 'Close the session (the profile is saved) and return to the start screen' }, 'Quit'));
       if (item.dismiss) actions.append(element('button', { type: 'button', 'data-alert': 'dismiss', 'data-dismiss': item.dismiss }, 'Dismiss'));
       row.append(actions);
       return row;

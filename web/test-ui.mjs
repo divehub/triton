@@ -4663,6 +4663,210 @@ test('game (view): errors and stops stay in view, the standby has a Wake button,
   g.view.hide();
 });
 
+/** The fake DOM has no <dialog>: this gives it one that only tracks `open` (the page's `dialog` elements are children of the body). */
+function withFakeDialogs(body) {
+  return async () => {
+    try {
+      Element.prototype.showModal = function showModal() { this.open = true; };
+      Element.prototype.close = function close() { this.open = false; };
+      await body();
+    } finally {
+      delete Element.prototype.showModal;
+      delete Element.prototype.close;
+      delete globalThis.HTMLDialogElement;
+    }
+  };
+}
+
+/** Makes `<dialog>` available to the page after `mountGame` (which installs a DOM without it). */
+function supportDialogs() {
+  globalThis.HTMLDialogElement = { prototype: { showModal() {} } };
+}
+
+const openDialogs = (g) => g.document.body.children.filter((node) => node.tagName === 'DIALOG');
+const dialogButton = (dialog, label) => dialog.querySelectorAll('button').find((button) => button.textContent === label);
+
+test('game (quit): with the device in standby, Quit closes the session at once, from the header and from the standby message', withFakeDialogs(async () => {
+  const g = await mountGame();
+  supportDialogs();
+  const asked = [];
+  globalThis.window.confirm = (text) => { asked.push(text); return false; };
+  g.feed(0, 0);
+  g.feed(1, 300, { running: false, standby: true });
+  assert.equal(g.view.deviceIsOn(), false);
+  g.el('quit').click();
+  await settle();
+  assert.equal(g.quits.length, 1, 'the session is closed');
+  assert.equal(openDialogs(g).length, 0, 'without a prompt');
+  assert.deepEqual(asked, []);
+  assert.equal(g.view.modalOpen, false);
+  assert.equal(g.el('quit').disabled, false, 'and Quit works again afterwards');
+
+  // The standby message has a Quit button beside Wake system: a powered-off device is one click from closing.
+  const buttons = g.el('alerts').querySelectorAll('button');
+  assert.deepEqual(buttons.map((button) => button.dataset.alert), ['wake', 'quit']);
+  assert.equal(buttons[1].textContent, 'Quit');
+  buttons[1].click();
+  await settle();
+  assert.equal(g.quits.length, 2);
+  assert.equal(openDialogs(g).length, 0);
+  assert.deepEqual(g.actions().filter((request) => request.action === 'wake'), [], 'Quit does not wake the unit');
+  // An engine error has no Quit button (it keeps Resume); only the standby message does.
+  g.feed(2, 600, { running: false, error: 'Terminal handler reached at 0x08001234' });
+  assert.deepEqual(g.el('alerts').querySelectorAll('button').map((button) => button.dataset.alert), ['resume']);
+  g.view.hide();
+}));
+
+test('game (quit): while the device is on, Quit asks first, and Back to the dive cancels without changing anything', withFakeDialogs(async () => {
+  const g = await mountGame();
+  supportDialogs();
+  g.feed(0, 0);
+  await settle();
+  g.view.changeMotion(30);
+  g.feed(20, 300);
+  assert.ok(g.view.sim.depth > 5);
+  const depth = g.view.sim.depth;
+  await settle();
+  const sentBefore = g.requests.length;
+  assert.equal(g.view.deviceIsOn(), true);
+  g.el('quit').click();
+  await settle();
+  const dialogs = openDialogs(g);
+  assert.equal(dialogs.length, 1, 'a confirmation in the page\'s modal style');
+  const dialog = dialogs[0];
+  assert.equal(dialog.className, 'dialog', 'the markup and class of the Reset all confirmation');
+  assert.equal(dialog.querySelector('h2').textContent, 'The dive computer is still on');
+  assert.equal(dialog.querySelector('p').textContent, 'Turn it off on the device first, then quit. Or force a shutdown: the session closes now, and anything the device has not saved yet may be lost.');
+  const buttons = dialog.querySelectorAll('button');
+  assert.deepEqual(buttons.map((button) => button.textContent), ['Back to the dive', 'Force shutdown'], 'the safe choice comes first');
+  assert.equal(buttons[0].getAttribute('autofocus'), '', 'and has the focus');
+  assert.equal(buttons[1].className, 'danger');
+  assert.equal(g.quits.length, 0, 'nothing is closed yet');
+  assert.equal(g.view.modalOpen, true, 'the keyboard belongs to the confirmation');
+  assert.equal(g.view.sim.direction, 0, 'opening it let go of the water');
+  g.document.dispatch('keydown', { key: 'ArrowUp', code: 'ArrowUp', repeat: false });
+  await settle();
+  assert.equal(g.actions().some((request) => request.action === 'up'), false, 'the arrow keys do not press the handset behind it');
+  g.el('quit').click();
+  g.el('reset').click();
+  await settle();
+  assert.equal(openDialogs(g).length, 1, 'a second Quit or a Reset all does not open another one');
+
+  // Back to the dive: the dive goes on exactly as it was.
+  dialogButton(dialog, 'Back to the dive').click();
+  await settle();
+  assert.equal(openDialogs(g).length, 0);
+  assert.equal(dialog.open, false);
+  assert.equal(g.quits.length, 0);
+  assert.equal(g.view.modalOpen, false);
+  assert.equal(g.view.quitDialog, null);
+  assert.equal(g.view.closing, false);
+  assert.equal(g.el('quit').disabled, false);
+  assert.equal(g.text('run-state'), 'Running');
+  near(g.view.sim.depth, depth, 'the depth is unchanged');
+  assert.equal(g.requests.length, sentBefore, 'nothing was sent to the worker');
+  g.document.dispatch('keydown', { key: 'ArrowUp', code: 'ArrowUp', repeat: false });
+  await settle();
+  assert.equal(g.actions().some((request) => request.action === 'up'), true, 'the handset has its keys back');
+
+  // Escape is the same as Back to the dive.
+  g.el('quit').click();
+  await settle();
+  const escaped = openDialogs(g)[0];
+  escaped.dispatch('cancel');
+  await settle();
+  assert.equal(openDialogs(g).length, 0);
+  assert.equal(g.quits.length, 0);
+  assert.equal(g.view.modalOpen, false);
+  g.view.hide();
+}));
+
+test('game (quit): Force shutdown closes the session the way Quit always did and returns to the start screen', withFakeDialogs(async () => {
+  const g = await mountGame();
+  supportDialogs();
+  g.feed(0, 0);
+  await settle();
+  g.el('quit').click();
+  await settle();
+  assert.equal(openDialogs(g).length, 1);
+  dialogButton(openDialogs(g)[0], 'Force shutdown').click();
+  await settle();
+  assert.equal(openDialogs(g).length, 0);
+  assert.equal(g.quits.length, 1, 'the page\'s session close (the profile is saved) runs once');
+  assert.equal(g.view.modalOpen, false);
+  assert.equal(g.view.closing, false);
+  assert.equal(g.el('quit').disabled, false);
+  assert.deepEqual(g.requests.filter((request) => request.type === 'close-session'), [], 'the game itself sends nothing: the page does the close');
+  g.view.hide();
+}));
+
+test('game (quit): a device that turns itself off while the question is open quits automatically', withFakeDialogs(async () => {
+  const g = await mountGame();
+  supportDialogs();
+  g.feed(0, 0);
+  await settle();
+  g.el('quit').click();
+  await settle();
+  assert.equal(openDialogs(g).length, 1);
+  // Still running: the question stays.
+  g.feed(1, 300);
+  await settle();
+  assert.equal(openDialogs(g).length, 1);
+  assert.equal(g.quits.length, 0);
+  // The device enters standby: the question closes and Quit goes on, with no click.
+  g.feed(2, 600, { running: false, standby: true });
+  await settle();
+  assert.equal(openDialogs(g).length, 0);
+  assert.equal(g.quits.length, 1);
+  assert.equal(g.view.modalOpen, false);
+  assert.equal(g.view.quitDialog, null);
+  assert.equal(g.el('quit').disabled, false);
+  g.view.hide();
+}));
+
+test('game (quit): nothing is asked without a live session, a session that ends closes the question, and without <dialog> the page asks with confirm', withFakeDialogs(async () => {
+  // A lost engine: there is no device to switch off.
+  const lost = await mountGame();
+  supportDialogs();
+  lost.feed(0, 0);
+  lost.view.setConnectionError('The emulation engine stopped after an internal error (x).');
+  lost.el('quit').click();
+  await settle();
+  assert.equal(openDialogs(lost).length, 0);
+  assert.equal(lost.quits.length, 1);
+  lost.view.hide();
+
+  // The session ends under an open question (the view is hidden): the question goes with it and nothing is closed twice.
+  const ended = await mountGame();
+  supportDialogs();
+  ended.feed(0, 0);
+  ended.el('quit').click();
+  await settle();
+  assert.equal(openDialogs(ended).length, 1);
+  ended.view.hide();
+  await settle();
+  assert.equal(openDialogs(ended).length, 0);
+  assert.equal(ended.quits.length, 0);
+  assert.equal(ended.view.modalOpen, false);
+
+  // A browser without <dialog> asks with the same words through confirm.
+  const plain = await mountGame();
+  plain.feed(0, 0);
+  const asked = [];
+  globalThis.window.confirm = (text) => { asked.push(text); return false; };
+  plain.el('quit').click();
+  await settle();
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /^The dive computer is still on\n\nTurn it off on the device first, then quit\. Or force a shutdown/);
+  assert.equal(plain.quits.length, 0, 'Cancel stays in the dive');
+  globalThis.window.confirm = () => true;
+  plain.el('quit').click();
+  await settle();
+  assert.equal(plain.quits.length, 1, 'OK forces the shutdown');
+  assert.equal(plain.view.modalOpen, false);
+  plain.view.hide();
+}));
+
 test('game (view): the three indicators show the firmware\'s outputs with the pulse replay, and have no tap-to-preview', async () => {
   const g = await mountGame();
   g.feed(0, 0, { hardwareOutputs: [vibratorOrLed(pulses(0)), vibratorOrLed(pulses(0), 'vibrator')] });

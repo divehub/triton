@@ -736,7 +736,8 @@ export function runState(state, host, { connectionError = false } = {}) {
 
 /**
  * Messages the game must not hide (no silent freeze): the engine's error text, a standby, a CPU fault, a proven invalid
- * decompression state. `action` names the button the game offers (`wake`, `resume`); each item has a stable `id`.
+ * decompression state. `action` names the button the game offers (`wake`, `resume`) and `quit` adds a Quit button (a powered-off
+ * device is one click from closing the session); each item has a stable `id`.
  */
 export function stopAlerts(state) {
   const alerts = [];
@@ -746,7 +747,7 @@ export function stopAlerts(state) {
   }
   if (state.standby) {
     alerts.push({
-      id: 'standby', level: 'warning', action: 'wake',
+      id: 'standby', level: 'warning', action: 'wake', quit: true,
       text: 'The firmware requested standby, so the emulated unit is powered down and the dive clock has stopped. Wake it to continue.',
     });
   }
