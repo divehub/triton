@@ -321,8 +321,7 @@ export class GameSim {
     const gas = DILUENTS[key];
     if (!gas) throw new RangeError(`Unknown diluent ${key}`);
     this.gas = gas;
-    setDiluent(this.loop, gas, this.depth);
-    this.lastActivity = { adv: -Infinity, vent: -Infinity };
+    setDiluent(this.loop, gas); // the supply only: the loop keeps its gas until an ADV addition or a diluent MAV brings the new mix
   }
 
   setMotion(direction, rate) {

@@ -578,7 +578,7 @@ The CCR dive game prototype from the private analysis workspace (`game/`: `index
 - **Depth to pressure.** The diver depth sets both pressure inputs: surface pressure (the session setting, 1013.25 mbar by default) + EN13319 water (1020 kg/m3, 9.80665 m/s2) x depth. Inputs are sent coalesced and serialized (newest wins) whenever depth or gas changes, a few times per wall second at most; the game never writes guest RAM.
 - **Gas to oxygen cells.** The loop model (`gas-model.js`, unchanged physics) gives ppO2 = loop O2 fraction x ambient pressure. Each cell voltage is ppO2 x its sensitivity. Sensitivities are a labeled game fixture: each cell reads **12 mV in air at the surface plus a random per-cell deviation** (uniform +-1.0 mV, so 11.0..13.0 mV at ppO2 = 0.2128 bar), drawn once per profile and kept in the page settings for that profile area (a profile reset draws new ones), so a calibration stays valid across sessions like a real cell. The diver must calibrate through the firmware menu before the firmware shows valid ppO2.
 - **Temperature** stays at the emulator setting (20 C); not tied to depth.
-- **Diluent** selection sets the loop gas only. The firmware diluent is the diver's job on the handset, as in real life.
+- **Diluent** selection sets the loop gas only. The firmware diluent is the diver's job on the handset, as in real life. It switches the supply only (user decision, 2026-10-10): the counterlungs keep their gas, and the new mix enters with the next ADV addition or diluent MAV (it used to refill the loop).
 - **Reset dive**: back to the surface, a fresh Air loop and 1x; the boards keep running (the firmware ends its dive itself).
 
 ### 21.3 Wrist unit and outputs

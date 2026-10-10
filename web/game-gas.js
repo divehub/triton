@@ -75,11 +75,15 @@ export function createLoop({ depth = 0, diluent = { o2: 0.21, he: 0 } } = {}) {
   return fillLoop({}, validateMix(diluent), validateDepth(depth));
 }
 
-/** Selecting a diluent refills the loop with that mix at the current depth. */
-export function setDiluent(loop, mix, depth = loop.depth) {
+/**
+ * Selecting a diluent switches the supply only, as turning to another diluent cylinder would: the gas already in the
+ * counterlungs stays, and the new mix enters with the next ADV addition (a descent) or diluent MAV.
+ */
+export function setDiluent(loop, mix) {
   const validMix = validateMix(mix);
-  const validDepth = validateDepth(depth);
-  return fillLoop(loop, validMix, validDepth);
+  inspectLoop(loop);
+  loop.diluent = validMix;
+  return loop;
 }
 
 function inspectLoop(loop) {

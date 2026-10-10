@@ -3943,17 +3943,23 @@ test('game (dive): depth and gas advance over the emulator\'s virtual time, the 
   assert.equal(hits, 2);
   assert.equal(deep.maxDepth, MAX_DEPTH_METERS, 'the maximum stays');
 
-  // A held oxygen valve (100 SL/min, the default, = 5/3 SL/s into the 4 L loop) follows the analytic mixing; the diluent selection refills the loop.
+  // A held oxygen valve (100 SL/min, the default, = 5/3 SL/s into the 4 L loop) follows the analytic mixing; the diluent selection
+  // switches the supply only (the counterlungs keep their gas), and the descent's ADV brings the new mix in.
   const injected = new game.GameSim();
   injected.rebase(0);
   injected.advanceTo(10, { oxygen: true });
-  near(getLoopReadings(injected.loop).fractions.o2, 1 - 0.79 * Math.exp(-(100 / 60) * 10 / 4), 'ten seconds of oxygen');
+  const oxygenated = 1 - 0.79 * Math.exp(-(100 / 60) * 10 / 4);
+  near(getLoopReadings(injected.loop).fractions.o2, oxygenated, 'ten seconds of oxygen');
+  const surface = getLoopReadings(injected.loop).pressure;
   injected.setGas('tx1845');
-  near(getLoopReadings(injected.loop).fractions.he, 0.45);
+  near(getLoopReadings(injected.loop).fractions.o2, oxygenated, 'the counterlungs keep their gas');
+  near(getLoopReadings(injected.loop).fractions.he, 0);
   assert.equal(injected.gas.name, 'Trimix 18/45');
   assert.throws(() => injected.setGas('nitrox'), /Unknown diluent/);
   injected.setMotionRate(30);
   injected.advanceTo(70, {});
+  const descended = getLoopReadings(injected.loop);
+  near(descended.fractions.he, 0.45 * (1 - surface / descended.pressure), 'the ADV of the descent is the new diluent');
   injected.reset(70);
   assert.equal(injected.depth, 0);
   assert.equal(injected.maxDepth, 0);

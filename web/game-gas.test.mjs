@@ -110,17 +110,31 @@ test('one long step agrees with many short steps on a linear depth trajectory', 
   }
 });
 
-test('selecting diluent refills the current-depth loop and resets its activity', () => {
+test('selecting a diluent switches the supply only: the loop keeps its gas until ADV or the diluent MAV brings the new mix', () => {
   const loop = createLoop({ depth: 30 });
   advanceLoop(loop, { dt: 60, oxygen: true });
+  const before = getLoopReadings(loop);
   assert.equal(setDiluent(loop, { o2: 0.18, he: 0.45 }), loop);
-  const readings = getLoopReadings(loop);
-  near(readings.pressure, pressureAtDepth(30));
-  near(readings.fractions.o2, 0.18);
-  near(readings.fractions.he, 0.45);
-  near(readings.fractions.n2, 0.37);
-  near(readings.volume, 4);
-  assert.deepEqual(readings.totals, { adv: 0, vent: 0, oxygen: 0, diluent: 0 });
+  assert.deepEqual(getLoopReadings(loop), before, 'the counterlungs, the activity and the totals are untouched');
+
+  advanceLoop(loop, { dt: 60 });
+  assert.deepEqual(getLoopReadings(loop).fractions, before.fractions, 'holding depth adds no gas');
+
+  // A descent: ADV adds the compression deficit, all of it the new diluent, and nothing vents.
+  advanceLoop(loop, { depth: 40, dt: 20 });
+  const deeper = getLoopReadings(loop);
+  const added = deeper.inventory - before.inventory;
+  near(deeper.adv, added);
+  near(deeper.vent, 0);
+  near(deeper.fractions.he, 0.45 * added / deeper.inventory);
+  near(deeper.fractions.o2, (before.fractions.o2 * before.inventory + 0.18 * added) / deeper.inventory);
+
+  // A long diluent MAV flushes the loop to the new mix.
+  advanceLoop(loop, { dt: 600, diluent: true });
+  const flushed = getLoopReadings(loop);
+  near(flushed.fractions.o2, 0.18, 1e-9);
+  near(flushed.fractions.he, 0.45, 1e-9);
+  near(flushed.volume, 4);
 });
 
 test('paused virtual time changes neither gas nor depth', () => {
