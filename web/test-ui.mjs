@@ -1128,6 +1128,32 @@ test('page: a handset without power has a dark LCD with a small caption, and its
   view.hide();
 });
 
+test('page and game: a handset press refused because the previous pulse still runs is dropped without an error; other refusals still show', async () => {
+  const { isBusyPress, BUTTON_PULSE_BUSY } = await import('./conditions.js');
+  const busy = new Error(BUTTON_PULSE_BUSY);
+  for (const action of ['up', 'down', 'confirm']) assert.equal(isBusyPress({ action }, busy), true, action);
+  assert.equal(isBusyPress({ action: 'wake' }, busy), false, 'only a handset press');
+  assert.equal(isBusyPress({ action: 'up' }, new Error('The main board has not enabled the handset supply yet')), false);
+
+  installDom(html);
+  const { EmulatorView } = await import('./emulator.js');
+  const view = new EmulatorView({ send() {}, request: () => new Promise(() => {}) }, { closeSession() {}, notify() {} }, { timers: fakeTimers() });
+  view.show({ options: { mode: 'dual', adcSample: 400 }, profile: 'stored', release: describeRelease(DEFAULT_RELEASE_ID), slots: { main: fakeSlot('main.srec'), handset: fakeSlot('handset.srec') } });
+  view.queue.onError({ action: 'confirm', meta: {} }, busy);
+  assert.equal(view.actionError, '', 'the emulator view drops it');
+  view.queue.onError({ action: 'confirm', meta: {} }, new Error('refused'));
+  assert.equal(view.actionError, 'refused', 'and still shows any other refusal');
+  view.hide();
+
+  const g = await mountGame();
+  g.feed(0, 0);
+  g.view.queue.onError({ action: 'up' }, busy);
+  assert.equal(g.view.actionError, '', 'the game drops it');
+  g.view.queue.onError({ action: 'up' }, new Error('refused'));
+  assert.equal(g.view.actionError, 'refused');
+  g.view.hide();
+});
+
 test('page: a handset-only session has no sensor controls', async () => {
   const m = await mount();
   m.view.onState({ state: { ...baseState, inputs: undefined }, host: { ...hostBase } });

@@ -10,7 +10,7 @@
 // The decisions live in game-logic.js (DOM-free, tested in Node); this file is the DOM side: markup in index.html (#screen-game,
 // every id starts with `game-`), rules in game.css (every selector starts with #screen-game).
 
-import { ActionQueue } from './conditions.js';
+import { ActionQueue, isBusyPress } from './conditions.js';
 import { DEFAULT_SURFACE_MBAR, parseSurfacePressure } from './deco.js';
 import { byId, confirmDialog, prefs, setText } from './dom.js';
 import { DEFAULT_MAV_FLOW_SL_MIN, MAX_DEPTH_METERS } from './game-gas.js';
@@ -237,6 +237,7 @@ export class GameView {
         }
       },
       onError: (request, error) => {
+        if (isBusyPress(request, error)) return; // a press during the previous pulse does nothing, as on the device
         const message = (error && error.message) || 'The emulator action failed.';
         if (request.action === 'inputs') {
           this.inputsError = message;

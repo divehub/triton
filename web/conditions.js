@@ -40,6 +40,18 @@ export const STATUS = Object.freeze({
 });
 
 /** Serializes UI actions; adjacent pending basic updates coalesce to the newest. */
+/** The engine's answer to a handset press while the previous button pulse still runs (`ButtonsError::Busy`, the runner's message). */
+export const BUTTON_PULSE_BUSY = 'A button pulse is already in progress';
+const HANDSET_PRESSES = new Set(['up', 'down', 'confirm']);
+
+/**
+ * A handset press refused because the previous pulse (204.8 ms, Confirm a little longer) still runs. Like pressing a button that
+ * is already down, it simply does nothing: the views drop it without showing an error.
+ */
+export function isBusyPress(request, error) {
+  return !!request && HANDSET_PRESSES.has(request.action) && !!error && error.message === BUTTON_PULSE_BUSY;
+}
+
 export class ActionQueue {
   /**
    * @param {object} hooks

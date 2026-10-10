@@ -7,7 +7,7 @@
 //   replay.js      output histories and replay             keys.js     handset keyboard shortcuts
 
 import { byId, confirmDialog, formatBytes, formatClock, h, hex32, prefs, reportFacts, setText } from './dom.js';
-import { ActionQueue, BASIC_IDS, ConditionsController } from './conditions.js';
+import { ActionQueue, BASIC_IDS, ConditionsController, isBusyPress } from './conditions.js';
 import { decoWarnings, fixtureLines, healthLine, parseSurfacePressure } from './deco.js';
 import { faultDetail, faultReports, faultWarnings } from './faults.js';
 import { clearCellFixture } from './game-logic.js';
@@ -134,6 +134,7 @@ export class EmulatorView {
         this.showErrors();
       },
       onError: (request, error) => {
+        if (isBusyPress(request, error)) return; // a press during the previous pulse does nothing, as on the device
         this.actionError = (error && error.message) || 'The emulator action failed.';
         this.conditions.handleError(request);
         this.showErrors();
